@@ -86,8 +86,7 @@ update and delete stays owner-only. The site mirrors that:
   ข่าว and พรีเซ็ต always send to my own bot (`state.myBot()`).
 - พรีเซ็ต: "พรีเซ็ตของสมาชิก" lists friends' presets (owner chip): open read only (`#/presets/<id>`: summary + every
   value by group), download the .set, or "คัดลอกเป็นของฉัน" (creates my own row).
-- Members see one plain notice (not shown to the admin) on the invite step, on ตั้งค่าบัญชี and in วิธีใช้:
-  "ผู้ดูแลเว็บเห็นสถานะบอท ยอดเงิน ประวัติเทรด และการตั้งค่าของคุณได้ ดูอย่างเดียว สั่งงานบอทของคุณไม่ได้" (`views.ADMIN_SEES`).
+- Members are not shown a notice about the admin's access (the site owner's decision, 2026-11-07).
 
 ## Structure
 

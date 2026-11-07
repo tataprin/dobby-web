@@ -79,12 +79,6 @@ const NO_BOT_ART = `<svg viewBox="0 0 240 120" role="img" aria-label="คอม�
 <path d="M129 47v6M129 56.5v.5" stroke="var(--gold-ink)" stroke-width="2" stroke-linecap="round"/>
 </svg>`;
 
-// Members are told plainly that the admin can see (never control) their bots. Not shown to the admin.
-export const ADMIN_SEES = 'ผู้ดูแลเว็บเห็นสถานะบอท ยอดเงิน ประวัติเทรด และการตั้งค่าของคุณได้ ดูอย่างเดียว สั่งงานบอทของคุณไม่ได้';
-export function adminSeesNotice() {
-  return callout('info', 'ความเป็นส่วนตัว', h('p', null, ADMIN_SEES));
-}
-
 export function onOff(v, onText = 'เปิด', offText = 'ปิด') {
   return h('span', { class: `onoff ${v ? 'on' : 'off'}` }, v ? icon('check') : icon('x'), v ? onText : offText);
 }

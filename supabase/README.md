@@ -150,8 +150,7 @@ Things SPEC.md section 2 did not say, added here (nothing in the other parts' co
     `bot_control`, `presets` and `audit`, so the website can show what each friend's bot is doing. Every
     insert / update / delete policy is still owner-only, so the admin can never change another user's bot, settings or
     presets. An approved member sees: rows where `actor` = themselves, rows of bots they own, `preset_*` rows of presets
-    they own (`owner` in the row's before/after), and the `bot_delete` row of their own bot. Members are told on the
-    sign-up and account pages that the admin can see their bot.
+    they own (`owner` in the row's before/after), and the `bot_delete` row of their own bot.
 
 ---
 

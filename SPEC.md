@@ -106,7 +106,7 @@ news_events id bigserial pk, ts_utc timestamptz not null, name text not null, ti
 - presets: owner (approved) all; admin select all.
 - audit: select where the caller owns the bot (or actor = caller); admin select all. Insert only by triggers.
 - The admin reads every friend's bot but writes only their own (2026-11-07, site owner's request): the website shows
-  friends' bots to the admin as view-only, and members are told so on the sign-up and account pages.
+  friends' bots to the admin as view-only. The website shows members no notice about it (site owner's decision).
 - news_events: approved select; admin insert/update/delete.
 - Storage bucket `downloads` (private): approved users read; admin insert/update/delete.
 
