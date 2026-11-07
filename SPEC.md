@@ -360,3 +360,10 @@ Strategy geometry (SL/TP caps and ratios, NY times, ...) is not shown in the sim
 - The generic MT5 preset for EA v3.04 that every friend loads: "Dobby3_v304_web.set" = EA defaults + the 7.3 values for
   B = 300 + InpRemoteParams=true, InpRemoteLive=true, InpRemoteMaxLots=0.50, InpRemoteMaxCapPct=10, InpAllowLive=false.
   The web settings replace its lots/balance/locks as soon as the EA is flat.
+
+## 8. Price bars for the dashboard chart (added 2026-11-07)
+The agent adds the EA's recent M15 bars to `bots.agent_state.bars` (no DB change):
+`{"tf": "M15", "t": [utc_epoch_seconds...], "c": [close...], "vwap": [vwap or null...]}` — the last 96 bars (24 h) from
+`dobby2_bars.csv` (columns bar_time (server time), decision_time, close, ..., vwap at index 14 when present). Bar times
+are converted with the confirmed server offset; while the offset is unknown, `bars` is omitted. The website draws the
+price line and places the journal's OPEN / CLOSE rows on it. Demo mode generates synthetic bars.

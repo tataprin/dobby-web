@@ -30,7 +30,7 @@ export async function render(root, ctx) {
   let chart = null;
   let journalShown = 100;
 
-  root.append(pageHead('ประวัติ', h('span', { class: 'chip bot-chip' }, icon('monitor'), bot.name), null, 'history'));
+  root.append(pageHead('ประวัติ', h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name), h('span', null, 'ทุกไม้ กราฟพอร์ต และปฏิทินกำไรรายวัน')), null, 'history'));
   const filterBox = h('div', { class: 'filters panel', role: 'group', 'aria-label': 'ตัวกรอง' });
   const tabsBox = h('div', { class: 'segmented wide', role: 'tablist', 'aria-label': 'มุมมอง' });
   const body = h('div', { class: 'stack-lg' });
@@ -171,18 +171,26 @@ export async function render(root, ctx) {
       return;
     }
     if (!box.isConnected) return;
-    const css = getComputedStyle(document.documentElement);
-    const v = (n) => css.getPropertyValue(n).trim();
+    const dayLabel = new Intl.DateTimeFormat('th-TH-u-ca-gregory', { timeZone: 'Asia/Bangkok', day: 'numeric', month: 'short' });
+    const narrow = box.clientWidth < 520;
+    // resolve tokens (some are color-mix()) to plain rgb() for the canvas
+    const probe = h('span', { style: { position: 'absolute', visibility: 'hidden' } });
+    document.body.append(probe);
+    const col = (n) => { probe.style.color = `var(${n})`; return getComputedStyle(probe).color; };
+    const font = getComputedStyle(document.documentElement).getPropertyValue('--font-ui').trim();
+    const numFont = getComputedStyle(document.documentElement).getPropertyValue('--font-num').trim();
+    const C = { line: col('--gold-ink'), ink: col('--ink'), slate: col('--slate'), hair: col('--hair'), sheet: col('--inverse'), onSheet: col('--on-inverse') };
+    probe.remove();
     const canvas = h('canvas', { role: 'img', 'aria-label': `กราฟพอร์ตจำลอง จาก ${fmtNum(series[0].v)} ถึง ${fmtNum(series[series.length - 1].v)}` });
     box.replaceChildren(canvas);
     if (chart) chart.destroy();
     chart = new Chart(canvas, {
       type: 'line',
       data: {
-        labels: series.map((p) => fmtThai(p.utc, 'short')),
+        labels: series.map((p) => dayLabel.format(new Date(p.utc))),
         datasets: [{
-          label: 'พอร์ตจำลอง', data: series.map((p) => p.v), borderColor: v('--series-1'), backgroundColor: v('--series-1'),
-          borderWidth: 2, pointRadius: 0, pointHoverRadius: 5, pointHitRadius: 12, tension: 0,
+          label: 'พอร์ตจำลอง', data: series.map((p) => p.v), borderColor: C.line, backgroundColor: C.line,
+          borderWidth: 1.8, pointRadius: 0, pointHoverRadius: 4, pointHitRadius: 12, tension: 0, borderJoinStyle: 'round',
         }],
       },
       options: {
@@ -191,9 +199,9 @@ export async function render(root, ctx) {
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor: v('--surface-3'), titleColor: v('--ink'), bodyColor: v('--ink-2'), borderColor: v('--line'), borderWidth: 1,
+            backgroundColor: C.sheet, titleColor: C.onSheet, bodyColor: C.onSheet, borderWidth: 0, cornerRadius: 10,
             padding: 10, displayColors: false,
-            titleFont: { family: v('--font') }, bodyFont: { family: v('--font') },
+            titleFont: { family: font, weight: '600' }, bodyFont: { family: numFont },
             callbacks: {
               title: (items) => fmtThai(series[items[0].dataIndex].utc, 'datetime'),
               label: (item) => `พอร์ตจำลอง ${fmtNum(item.parsed.y)}`,
@@ -202,8 +210,8 @@ export async function render(root, ctx) {
           },
         },
         scales: {
-          x: { ticks: { color: v('--muted'), maxTicksLimit: 5, maxRotation: 0, font: { family: v('--font') } }, grid: { display: false }, border: { color: v('--axis') } },
-          y: { ticks: { color: v('--muted'), font: { family: v('--font') } }, grid: { color: v('--grid') }, border: { display: false } },
+          x: { ticks: { color: C.slate, maxTicksLimit: narrow ? 4 : 6, maxRotation: 0, autoSkipPadding: 18, font: { family: font, size: 12 } }, grid: { display: false }, border: { color: C.hair } },
+          y: { position: 'right', ticks: { color: C.slate, font: { family: numFont, size: 12 } }, grid: { color: C.hair }, border: { display: false } },
         },
       },
     });

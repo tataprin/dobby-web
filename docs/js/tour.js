@@ -12,8 +12,8 @@ const STEPS = [
   },
   {
     title: 'ภาพรวม: ดูบอทแบบสด', art: ART_DASHBOARD,
-    text: 'การ์ดใหญ่ด้านบนบอกสถานะในคำเดียว: เทรดจริงอยู่ หยุดอยู่ หรือออฟไลน์ พร้อมเหตุผล ตามด้วยยอดเงิน กำไรวันนี้ และไม้ที่เปิดอยู่',
-    points: ['ตัวเลขอัปเดตเอง ไม่ต้องรีเฟรช', 'ปุ่ม "หยุดชั่วคราว" อยู่บนการ์ดสถานะ'],
+    text: 'ตราประทับ Dobby บอกสถานะในคำเดียว: สีทองคือเทรดจริงอยู่ สีเทาคือหยุดอยู่ สีแดงชาดคือออฟไลน์หรือมีปัญหา ใต้ตราคือกราฟราคาทองวันนี้ พร้อมจุดที่บอทเข้าและออก',
+    points: ['▲ คือบอทซื้อ ▼ คือบอทขาย วงกลมคือจุดปิดไม้', 'ตัวเลขอัปเดตเอง ไม่ต้องรีเฟรช'],
   },
   {
     title: 'ตั้งค่าบอท: แก้แล้วกดส่งครั้งเดียว', art: ART_SETTINGS,
@@ -46,17 +46,16 @@ export function startTour() {
     mount(body, 
       h('div', { class: 'tour-art', html: s.art }),
       h('div', { class: 'tour-copy' },
-        h('p', { class: 'tour-step' }, `${i + 1} / ${STEPS.length}`),
         h('h2', null, s.title),
         h('p', null, s.text),
         h('ul', { class: 'tour-points' }, s.points.map((p) => h('li', null, icon('check'), h('span', null, p))))),
       h('div', { class: 'tour-foot' },
-        h('div', { class: 'tour-dots', 'aria-hidden': 'true' }, STEPS.map((_, k) => h('span', { class: k === i ? 'on' : '' }))),
+        h('div', { class: 'tour-dots', role: 'img', 'aria-label': `ขั้นที่ ${i + 1} จาก ${STEPS.length}` }, STEPS.map((_, k) => h('span', { class: k === i ? 'on' : '' }))),
         h('div', { class: 'row gap' },
           last ? null : h('button', { class: 'btn ghost', type: 'button', onclick: finish }, 'ข้าม'),
           i > 0 ? h('button', { class: 'btn', type: 'button', onclick: () => { i--; draw(); } }, 'ย้อนกลับ') : null,
           h('button', { class: 'btn primary', type: 'button', onclick: () => { if (last) finish(); else { i++; draw(); } } },
-            last ? 'เริ่มใช้งาน' : 'ถัดไป', last ? null : icon('chevron')))));
+            last ? 'เริ่มใช้งาน' : 'ถัดไป'))));
     const btn = body.querySelector('.btn.primary');
     if (btn) btn.focus();
   }

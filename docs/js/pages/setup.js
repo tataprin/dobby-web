@@ -1,11 +1,12 @@
 // Shown when js/config.js is empty (and ?demo=1 is not set).
-import { h, ingot, icon, copyButton, callout } from '../util.js';
+import { h, icon, copyButton, callout } from '../util.js';
+import { brandMark } from '../hallmark.js';
 
 export function renderSetup() {
   const sample = 'export const SUPABASE_URL = "https://abcdefghijkl.supabase.co";\nexport const SUPABASE_ANON_KEY = "sb_publishable_...";';
   const site = location.origin + location.pathname;
   return h('div', { class: 'bare-wrap' },
-    h('header', { class: 'bare-head' }, h('span', { class: 'brand' }, ingot(), h('span', null, 'Dobby'))),
+    h('header', { class: 'bare-head' }, h('span', { class: 'brand' }, brandMark(), h('span', { class: 'brand-word' }, 'Dobby'))),
     h('main', { id: 'main', class: 'bare wide' },
       h('section', { class: 'auth-card setup' },
         h('h1', null, 'เว็บนี้ยังไม่ได้เชื่อมกับฐานข้อมูล'),

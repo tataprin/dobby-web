@@ -292,4 +292,4 @@ def test_rename_from_the_website_and_interactive(tmp_path):
 def test_no_metatrader_import_and_version():
     src = open(da.__file__, encoding="utf-8").read()
     assert "MetaTrader5" not in src.replace("never imports MetaTrader5", "").replace("Never import MetaTrader5", "")
-    assert da.AGENT_VERSION == "1.0.0"
+    assert da.AGENT_VERSION == "1.1.0"

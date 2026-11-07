@@ -10,7 +10,7 @@ import { panel, pageHead, noBotState, stepper, bigToggle, segmented, progressSte
 import { normalizeParams, presetFromLive, remoteSubset, defaults } from '../params.js';
 import { buildSet, setFileName } from '../setfile.js';
 import { STRATS, ASIA, lockMode, lotsSame, mainLot, currentValues, setLotsAll, syncMaxLots, setLockMode, fixHiddenLocks,
-  autoFromBalance, autoLot, toDesiredParams, summaryParts, summaryText, describeChanges, validateSimple, riskHint,
+  autoFromBalance, autoLot, toDesiredParams, summaryRows, summaryText, describeChanges, validateSimple, riskHint,
   matchesEffective, pctText } from '../simple.js';
 
 const MIN = 60000;
@@ -83,25 +83,43 @@ export async function render(root, ctx) {
 
   // ---------------- layout
   const headBox = h('div');
-  const nowBox = h('div');
+  const nowBox = h('section', { class: 'set-sec now-card', id: 'set-now', 'aria-label': 'ค่าที่บอทใช้อยู่ตอนนี้' });
   const liveBox = h('div'), pauseBox = h('div');
   const editorBox = h('section', { class: 'editor', 'aria-label': 'ปรับการตั้งค่าบอท', id: 'edit' });
-  const sidesBox = h('div'), boBox = h('div');
+  const sidesBox = h('section', { class: 'set-sec', id: 'set-sides', 'aria-label': 'ฝั่งที่เข้าได้' });
+  const boBox = h('section', { class: 'set-sec', id: 'set-bo', 'aria-label': 'งดเข้าไม้ช่วงข่าว' });
   const bar = h('div', { class: 'action-bar', role: 'region', 'aria-label': 'บันทึกการเปลี่ยนแปลง', hidden: true });
-  root.append(headBox, nowBox,
-    h('div', { class: 'section-label' }, h('h2', null, 'สวิตช์หลัก'), h('p', { class: 'muted small' }, 'มีผลทันทีที่เครื่องรับคำสั่ง')),
-    h('div', { class: 'grid-2 quick-grid' }, liveBox, pauseBox),
-    editorBox,
-    h('div', { class: 'section-label' }, h('h2', null, 'ฝั่งที่เข้าได้และช่วงงดเข้าไม้')),
-    h('div', { class: 'grid-2 control-grid' }, sidesBox, boBox),
-    bar);
+  // section anchors (the app routes by hash, so they scroll instead of changing location.hash)
+  const ANCHORS = [['set-now', 'ค่าที่ใช้อยู่'], ['set-switch', 'สวิตช์หลัก'], ['set-money', 'ทุนและล็อต'], ['set-strat', 'สูตร'],
+    ['set-lock', 'ล็อกกำไร'], ['set-cap', 'ขาดทุนต่อวัน'], ['set-adv', 'ขั้นสูง'], ['set-sides', 'ฝั่งที่เข้าได้'], ['set-bo', 'งดเข้าไม้']];
+  const smooth = () => (window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
+  const anchors = h('nav', { class: 'anchors', 'aria-label': 'ส่วนต่าง ๆ ของหน้านี้' }, ANCHORS.map(([id, label]) => h('a', {
+    href: `#${id}`, dataset: { target: id },
+    onclick: (e) => { e.preventDefault(); const el = document.getElementById(id); if (!el) return; if (el.tagName === 'DETAILS') el.open = true; el.scrollIntoView({ behavior: smooth(), block: 'start' }); },
+  }, label)));
+  const markAnchor = () => {
+    let cur = ANCHORS[0][0];
+    for (const [id] of ANCHORS) { const el = document.getElementById(id); if (el && el.getBoundingClientRect().top < 150) cur = id; }
+    anchors.querySelectorAll('a').forEach((a) => a.classList.toggle('on', a.dataset.target === cur));
+  };
+  let anchorQueued = false;
+  const onScroll = () => { if (anchorQueued) return; anchorQueued = true; requestAnimationFrame(() => { anchorQueued = false; markAnchor(); }); };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  root.append(headBox, h('div', { class: 'settings-layout' }, anchors, h('div', { class: 'settings-main' },
+    nowBox,
+    h('section', { class: 'set-sec', id: 'set-switch', 'aria-label': 'สวิตช์หลัก' },
+      h('div', { class: 'set-sec-head' }, h('h2', null, 'สวิตช์หลัก'), h('p', null, 'มีผลทันทีที่เครื่องรับคำสั่ง')),
+      h('div', { class: 'group' }, liveBox, pauseBox)),
+    editorBox, sidesBox, boBox)),
+  bar);
+  requestAnimationFrame(markAnchor);
 
   const sigs = {};
   const changed = (key, val) => { const s = JSON.stringify(val); if (sigs[key] === s) return false; sigs[key] = s; return true; };
 
   function drawHead() {
     mount(headBox, pageHead('ตั้งค่าบอท',
-      h('span', { class: 'row gap wrap' }, h('span', { class: 'chip bot-chip' }, icon('monitor'), bot.name), onlineBadge(onlineInfo(bot, st)),
+      h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name), onlineBadge(onlineInfo(bot, st)),
         eaVer() ? h('span', { class: 'chip' }, `EA ${eaVer()}`) : null),
       null, 'settings'));
   }
@@ -113,24 +131,23 @@ export async function render(root, ctx) {
     const as = bot.agent_state || {};
     if (!changed('now', [B.now, B.pending, B.readOnly, B.hasStatus, prog, justSent, d.params, as.rejected, as.last_error,
       st && st.remote && st.remote.rejects, st && st.control && st.control.warn, ctl.version, appliedVersion(bot), cur()]) && force !== true) return;
-    const parts = summaryParts(B.now, cur());
     const showProg = prog && (!prog.done || justSent);
-    mount(nowBox, h('section', { class: `now-card${B.readOnly ? ' ro' : ''}`, 'aria-live': 'polite' },
-      h('div', { class: 'now-head' },
-        h('p', { class: 'now-kicker' }, icon('zap'), 'ค่าที่บอทใช้อยู่ตอนนี้'),
-        B.readOnly ? h('span', { class: 'chip warn' }, icon('lock'), `อ่านอย่างเดียว — บอทนี้เป็น v${eaVer() || '3.03'}`)
+    mount(nowBox,
+      h('div', { class: 'set-sec-head' }, h('h2', null, 'ค่าที่บอทใช้อยู่ตอนนี้'),
+        B.readOnly ? h('span', { class: 'chip warn' }, icon('lock'), `อ่านอย่างเดียว (บอทรุ่น ${eaVer() || '3.03'})`)
           : h('span', { class: 'chip good' }, icon('check'), 'เปลี่ยนจากเว็บได้')),
-      B.hasStatus ? h('ul', { class: 'now-pills' }, parts.map((p) => h('li', null, p)))
-        : h('p', { class: 'muted' }, 'ยังไม่ได้รับค่าจากบอท เมื่อเครื่องออนไลน์ ค่าจะขึ้นที่นี่'),
-      showProg ? h('div', { class: 'now-progress' },
-        B.pending ? h('p', { class: 'small' }, h('strong', null, 'ค่าใหม่ที่ส่งไป: '), summaryText(normalizeParams({ ...B.now, ...d.params }), cur())) : null,
-        progressSteps(prog.steps),
-        prog.done ? h('p', { class: 'good-text small' }, icon('check'), ' บอทใช้ค่าใหม่แล้ว') : null) : null,
-      !showProg && prog && prog.done ? h('p', { class: 'muted small' }, icon('check'), ' ค่าล่าสุดที่ส่งจากเว็บ บอทใช้แล้ว') : null,
-      rejectionsBlock(bot, st),
-      h('div', { class: 'row gap wrap' },
-        h('a', { class: 'btn small', href: '#edit', onclick: (e) => { e.preventDefault(); editorBox.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, icon('sliders'), editable() ? 'ปรับค่า' : 'ดูค่าทั้งหมด'),
-        pendingChip(bot, ctl, onlineInfo(bot, st)))));
+      h('div', { class: 'group', 'aria-live': 'polite' },
+        B.hasStatus ? h('dl', { class: 'now-grid' }, summaryRows(B.now, cur()).map(([k, val]) => h('div', { class: 'now-item' }, h('dt', null, k), h('dd', null, val))))
+          : h('p', { class: 'muted group-note' }, 'ยังไม่ได้รับค่าจากบอท เมื่อเครื่องออนไลน์ ค่าจะขึ้นที่นี่'),
+        showProg ? h('div', { class: 'now-progress' },
+          B.pending ? h('p', { class: 'small' }, h('strong', null, 'ค่าใหม่ที่ส่งไป '), summaryText(normalizeParams({ ...B.now, ...d.params }), cur())) : null,
+          progressSteps(prog.steps),
+          prog.done ? h('p', { class: 'good-text small' }, icon('check'), ' บอทใช้ค่าใหม่แล้ว') : null) : null,
+        rejectionsBlock(bot, st),
+        h('div', { class: 'now-foot' },
+          h('a', { class: 'btn small', href: '#edit', onclick: (e) => { e.preventDefault(); editorBox.scrollIntoView({ behavior: smooth(), block: 'start' }); } }, icon('sliders'), editable() ? 'ปรับค่า' : 'ดูค่าทั้งหมด'),
+          pendingChip(bot, ctl, onlineInfo(bot, st)),
+          !showProg && prog && prog.done ? h('span', { class: 'muted small' }, 'ค่าล่าสุดที่ส่งจากเว็บ บอทใช้แล้ว') : null)));
   }
 
   // ---------------- live + pause cards
@@ -145,13 +162,12 @@ export async function render(root, ctx) {
     const pend = isPending(bot, ctl);
     if (!changed('pause', [paused, pend]) && force !== true) return;
     mount(pauseBox, h('section', { class: `quick-card${paused ? ' is-paused' : ''}`, 'aria-label': 'หยุดชั่วคราว' },
-      h('div', { class: 'quick-head' }, h('span', { class: 'quick-ico' }, icon(paused ? 'pause' : 'play')),
+      h('div', { class: 'quick-head' },
         h('div', null, h('h2', null, paused ? 'หยุดชั่วคราวอยู่' : 'หยุดชั่วคราว'),
-          h('p', { class: 'muted' }, paused ? 'บอทไม่เปิดไม้ใหม่ จนกว่าจะกด "ทำงานต่อ"' : 'หยุดเปิดไม้ใหม่ชั่วคราว ไม้ที่เปิดอยู่ยังมี SL/TP ตามเดิม'))),
-      h('div', { class: 'row gap wrap' },
+          h('p', { class: 'muted' }, paused ? 'บอทไม่เปิดไม้ใหม่ จนกว่าจะกด "ทำงานต่อ"' : 'หยุดเปิดไม้ใหม่ชั่วคราว ไม้ที่เปิดอยู่ยังมี SL/TP ตามเดิม'),
+          pend ? h('p', { class: 'muted small' }, 'รอเครื่องรับคำสั่ง…') : null),
         h('button', { class: `btn ${paused ? 'primary' : ''}`, type: 'button', onclick: (e) => togglePause(e.currentTarget, !paused) },
-          icon(paused ? 'play' : 'pause'), paused ? 'ทำงานต่อ' : 'หยุดชั่วคราว'),
-        pend ? h('span', { class: 'muted small' }, 'รอเครื่องรับคำสั่ง…') : null)));
+          icon(paused ? 'play' : 'pause'), paused ? 'ทำงานต่อ' : 'หยุดชั่วคราว'))));
   }
   async function togglePause(btn, pause) {
     if (!pause) {
@@ -218,10 +234,10 @@ export async function render(root, ctx) {
     const autoBtn = h('button', { class: 'btn auto-btn', type: 'button', onclick: () => doAuto() }, icon('wand'), 'ตั้งให้อัตโนมัติจากทุน');
     autoBtn.update = () => { autoBtn.disabled = locked(); };
     reg(autoBtn);
-    const autoText = h('p', { class: 'hint' });
+    const autoText = h('span', { class: 'hint' });
     autoText.update = () => {
       const L = autoLot(v.InpVirtualStart);
-      autoText.textContent = `ทุน ${fmtNum(v.InpVirtualStart, 0)} → ล็อต ${fmtNum(L)} ทุกสูตร (ทุก 100 ${cur()} = 0.01 ล็อต) · เปิด 3 สูตร · ล็อก 2 ชั้น 85→83 และ 95→93 · หยุดเมื่อขาดทุน 10%/วัน`;
+      autoText.textContent = `ทุน ${fmtNum(v.InpVirtualStart, 0)} ได้ล็อต ${fmtNum(L)} ทุกสูตร (ทุก 100 ${cur()} = 0.01 ล็อต) เปิด 3 สูตร ล็อกกำไร 2 ชั้น (85→83 และ 95→93) และหยุดเมื่อขาดทุน 10% ต่อวัน`;
     };
     reg(autoText);
     const risk = h('div', { class: 'risk-hint', 'aria-live': 'polite' });
@@ -243,19 +259,20 @@ export async function render(root, ctx) {
     const lotMax = () => { const c = ceilings().lots; return c != null ? c : 5; };
     const sameStep = reg(stepper({ label: 'ล็อตต่อไม้ ทุกสูตร', get: () => mainLot(v), set: (x) => { setLotsAll(v, x); onChange(); }, step: 0.01, min: 0.01, max: lotMax(), decimals: 2, unit: 'ล็อต', disabled: locked }));
     sameStep.classList.add('big');
-    const sameRow = h('div', { class: 'lot-same' }, sameStep);
+    const sameRow = setRow(h('label', { class: 'set-label', for: sameStep.input.id }, 'ล็อตต่อไม้'), [h('span', { class: 'hint' }, 'ทุกสูตรใช้ล็อตเท่ากัน')], sameStep);
     const perRows = h('div', { class: 'lot-per' }, STRATS.map((s) => h('div', { class: 'lot-row' },
       h('span', { class: 'lot-name' }, h('span', { class: `mod m${STRATS.indexOf(s) + 1}` }, h('span', { class: 'sw' })), s.title),
       reg(stepper({ label: `ล็อต ${s.title}`, get: getKey(s.lots), set: (x) => { v[s.lots] = x; syncMaxLots(v); onChange(); }, step: 0.01, min: 0.01, max: lotMax(), decimals: 2, unit: 'ล็อต', disabled: locked })))));
     const lotWrap = h('div', { class: 'lot-wrap' }, sameRow, perRows);
+    lotWrap.style.display = 'contents';
     lotWrap.update = () => { sameRow.hidden = lotMode !== 'same'; perRows.hidden = lotMode !== 'per'; };
     reg(lotWrap);
     const ceilHint = h('p', { class: 'hint' });
     ceilHint.update = () => {
       const c = ceilings();
       const atMax = c.lots != null && mainLot(v) >= c.lots - 1e-9;
-      mount(ceilHint, c.lots != null ? [`เพดานของเครื่อง ${bot.name}: ไม่เกิน ${fmtNum(c.lots)} ล็อตต่อไม้`,
-        atMax ? h('span', { class: 'warn-text' }, ' — ถึงเพดานแล้ว ถ้าต้องการมากกว่านี้ เพิ่ม "ล็อตสูงสุดที่เว็บสั่งได้" ในแอป Dobby ที่เครื่องนั้น (ตั้งค่า → ความปลอดภัย)') : null]
+      mount(ceilHint, c.lots != null ? [`เพดานของเครื่อง ${bot.name} คือไม่เกิน ${fmtNum(c.lots)} ล็อตต่อไม้`,
+        atMax ? h('span', { class: 'warn-text' }, ' ถึงเพดานแล้ว ถ้าต้องการมากกว่านี้ เพิ่ม "ล็อตสูงสุดที่เว็บสั่งได้" ในแอป Dobby ที่เครื่องนั้น (ตั้งค่า แล้วเลือก ความปลอดภัย)') : null]
         : 'เครื่องยังไม่ได้รายงานเพดานล็อต');
     };
     reg(ceilHint);
@@ -269,13 +286,14 @@ export async function render(root, ctx) {
       lotErr.hidden = !msgs.length;
     };
     reg(lotErr);
-    const secMoney = h('section', { class: 'ed-sec' },
-      secHead('1', 'ทุนและล็อต', 'บอทใช้ทุนนี้คำนวณกำไรขาดทุนและจุดหยุดรายวัน'),
-      h('div', { class: 'ed-grid' },
-        h('div', { class: 'ed-field' }, h('label', { class: 'ed-label', for: balStep.input.id }, 'ทุนในบัญชี'), balStep, useBal, ...errLines('InpVirtualStart')),
-        h('div', { class: 'ed-field auto-field' }, autoBtn, autoText)),
-      risk,
-      h('div', { class: 'ed-field' }, h('span', { class: 'ed-label' }, 'ล็อตต่อไม้'), lotSeg, lotWrap, ceilHint, lotErr));
+    const secMoney = h('section', { class: 'ed-sec', id: 'set-money' },
+      secHead('ทุนและล็อต', 'บอทใช้ทุนนี้คำนวณกำไรขาดทุนและจุดหยุดรายวัน'),
+      h('div', { class: 'group' },
+        setRow(h('label', { class: 'set-label', for: balStep.input.id }, 'ทุนในบัญชี'), [useBal], balStep, errLines('InpVirtualStart')),
+        setRow(h('span', { class: 'set-label' }, 'ตั้งให้อัตโนมัติจากทุน'), [autoText], autoBtn),
+        risk,
+        setRow(h('span', { class: 'set-label' }, 'วิธีตั้งล็อต'), [], lotSeg),
+        lotWrap, h('div', { class: 'group-note' }, ceilHint, lotErr)));
 
     // --- สูตร
     const stratCards = STRATS.map((s) => {
@@ -296,9 +314,9 @@ export async function render(root, ctx) {
       mount(noneWarn, !STRATS.some((s) => v[s.use]) ? callout('warn', 'ปิดทุกสูตรหลัก', h('p', null, 'บอทจะไม่เปิดไม้ใหม่จากสูตรหลัก ถ้าแค่อยากพักชั่วคราว ใช้ปุ่ม "หยุดชั่วคราว" ด้านบนง่ายกว่า')) : '');
     };
     reg(noneWarn);
-    const secStrat = h('section', { class: 'ed-sec' },
-      secHead('2', 'สูตรที่เปิดใช้', 'เปิดได้หลายสูตรพร้อมกัน แต่ละสูตรเข้าไม้แยกกัน'),
-      h('div', { class: 'toggle-grid' }, stratCards, asia), noneWarn);
+    const secStrat = h('section', { class: 'ed-sec', id: 'set-strat' },
+      secHead('สูตรที่เปิดใช้', 'เปิดได้หลายสูตรพร้อมกัน แต่ละสูตรเข้าไม้แยกกัน'),
+      h('div', { class: 'group toggle-grid' }, stratCards, asia, noneWarn));
 
     // --- ล็อกกำไร
     const lockSeg = reg(segmented({
@@ -308,19 +326,15 @@ export async function render(root, ctx) {
     const stageRow = (name, atKey, toKey, cls) => {
       const atS = reg(stepper({ label: `${name}: กำไรถึงกี่ % ของ TP`, get: getKey(atKey), set: setKey(atKey), step: 1, min: atKey === 'InpLockAtPct' ? 50 : 10, max: 99.5, decimals: 1, unit: '%', trim: true, disabled: locked }));
       const toS = reg(stepper({ label: `${name}: เลื่อน SL ไปที่กี่ %`, get: getKey(toKey), set: setKey(toKey), step: 1, min: 1, max: 99, decimals: 1, unit: '%', trim: true, disabled: locked }));
-      const barEl = h('div', { class: 'lockbar', role: 'img' });
-      barEl.update = () => drawLockBar(barEl, v[atKey], v[toKey]);
-      reg(barEl);
       const txt = h('p', { class: 'small' });
-      txt.update = () => { txt.textContent = `เมื่อกำไรวิ่งถึง ${pctText(v[atKey])}% ของทาง TP บอทจะเลื่อน SL ไปที่ ${pctText(v[toKey])}% ต่อให้ราคากลับ ก็ยังได้กำไรราว ${pctText(v[toKey])}% ของ TP`; };
+      txt.update = () => { txt.textContent = `เมื่อกำไรวิ่งถึง ${pctText(v[atKey])}% ของทางไป TP บอทจะเลื่อน SL ไปที่ ${pctText(v[toKey])}% ต่อให้ราคากลับ ก็ยังได้กำไรราว ${pctText(v[toKey])}% ของ TP`; };
       reg(txt);
       const row = h('div', { class: `stage ${cls}` },
         h('p', { class: 'stage-name' }, name),
         h('div', { class: 'stage-ctrls' },
-          h('div', { class: 'stage-ctrl' }, h('span', { class: 'small muted' }, 'กำไรถึง (% ของ TP)'), atS),
-          h('span', { class: 'stage-arrow', 'aria-hidden': 'true' }, icon('arrow')),
-          h('div', { class: 'stage-ctrl' }, h('span', { class: 'small muted' }, 'เลื่อน SL ไปที่ (%)'), toS)),
-        barEl, txt, errLine(atKey), errLine(toKey));
+          h('div', { class: 'stage-ctrl' }, h('span', { class: 'small muted' }, 'เมื่อกำไรถึง (% ของทางไป TP)'), atS),
+          h('div', { class: 'stage-ctrl' }, h('span', { class: 'small muted' }, 'เลื่อน SL ไปที่ (% ของทางไป TP)'), toS)),
+        txt, errLine(atKey), errLine(toKey));
       return row;
     };
     const st1 = stageRow('ชั้นแรก', 'InpLock1AtPct', 'InpLock1ToPct', 's1');
@@ -329,24 +343,30 @@ export async function render(root, ctx) {
     const stages = h('div', { class: 'stages' }, noLock, st1, st2);
     stages.update = () => { const m = lockMode(v); noLock.hidden = m !== 0; st1.hidden = m !== 2; st2.hidden = m === 0; };
     reg(stages);
-    const secLock = h('section', { class: 'ed-sec' },
-      secHead('3', 'ล็อกกำไร', h('span', null, 'เลื่อน SL ขึ้นมาเป็นกำไรเมื่อราคาใกล้ TP ', h('a', { href: '#/guide/lock' }, 'ล็อกกำไรคืออะไร?'))),
-      lockSeg, stages);
+    const ladder = h('div', { class: 'ladder', role: 'img' });
+    ladder.update = () => drawLadder(ladder);
+    reg(ladder);
+    const secLock = h('section', { class: 'ed-sec', id: 'set-lock' },
+      secHead('ล็อกกำไร', h('span', null, 'เลื่อน SL ขึ้นมาเป็นกำไรเมื่อราคาใกล้ TP ', h('a', { href: '#/guide/lock' }, 'ล็อกกำไรคืออะไร'))),
+      h('div', { class: 'group' },
+        setRow(h('span', { class: 'set-label' }, 'จำนวนชั้น'), [], lockSeg),
+        ladder, stages));
 
     // --- ขาดทุนสูงสุดต่อวัน
     const capMax = () => { const c = ceilings().cap; return c != null ? c : 100; };
     const capStep = reg(stepper({ label: 'ขาดทุนสูงสุดต่อวัน', get: getKey('InpDailyCapPct'), set: setKey('InpDailyCapPct'), step: 0.5, min: 1, max: capMax(), decimals: 1, unit: '%', trim: true, disabled: locked }));
     capStep.classList.add('big');
-    const capText = h('p', { class: 'small' });
+    const capText = h('span', { class: 'hint' });
     capText.update = () => {
       const amt = (v.InpDailyCapPct / 100) * v.InpVirtualStart;
       capText.textContent = `≈ ${fmtNum(amt, 0)} ${cur()} ต่อวัน (จากทุน ${fmtNum(v.InpVirtualStart, 0)}) ถึงแล้วบอทหยุดเปิดไม้ใหม่ถึงพรุ่งนี้ ไม้ที่เปิดอยู่ยังวิ่งต่อ`;
     };
     reg(capText);
-    const secCap = h('section', { class: 'ed-sec' },
-      secHead('4', 'ขาดทุนสูงสุดต่อวัน', 'นับจากไม้ที่ปิดแล้ววันนี้ เทียบกับทุนต้นวัน'),
-      h('div', { class: 'ed-field' }, capStep, capText, errLine('InpDailyCapPct'),
-        ceilings().cap != null ? h('p', { class: 'hint' }, `เพดานของเครื่อง: ไม่เกิน ${pctText(ceilings().cap)}%`) : null));
+    const secCap = h('section', { class: 'ed-sec', id: 'set-cap' },
+      secHead('ขาดทุนสูงสุดต่อวัน', 'นับจากไม้ที่ปิดแล้ววันนี้ เทียบกับทุนต้นวัน'),
+      h('div', { class: 'group' },
+        setRow(h('label', { class: 'set-label', for: capStep.input.id }, 'หยุดเปิดไม้เมื่อขาดทุนถึง'),
+          [capText, ceilings().cap != null ? h('span', { class: 'hint' }, `เพดานของเครื่องคือไม่เกิน ${pctText(ceilings().cap)}%`) : null], capStep, [errLine('InpDailyCapPct')])));
 
     // --- ขั้นสูง
     const adv = (label, key, ctrl, help) => h('div', { class: 'adv-row' },
@@ -361,9 +381,9 @@ export async function render(root, ctx) {
     const volT = h('input', { type: 'checkbox', class: 'toggle', role: 'switch', 'aria-label': 'เปิดตัวกรองความผันผวน', onchange: (e) => { v.InpVolGate = e.target.checked; onChange(); } });
     volT.update = () => { volT.checked = !!v.InpVolGate; volT.disabled = locked(); };
     reg(volT);
-    const advBox = h('details', { class: 'ed-sec adv' },
-      h('summary', null, h('span', { class: 'sec-num' }, '5'), h('span', null, h('strong', null, 'ขั้นสูง'), h('span', { class: 'muted small' }, ' ไม้แก้ จำนวนไม้ สัญญาณตรงกัน สเปรด ตัวกรอง (ไม่ต้องแก้ก็ได้)'))),
-      h('div', { class: 'adv-list' },
+    const advBox = h('details', { class: 'ed-sec adv', id: 'set-adv' },
+      h('summary', null, h('strong', null, 'ขั้นสูง'), h('span', { class: 'muted small' }, 'ไม้แก้ จำนวนไม้ สัญญาณตรงกัน สเปรด และตัวกรอง ไม่ต้องแก้ก็ได้')),
+      h('div', { class: 'group adv-list' },
         adv('ตัวคูณล็อตไม้แก้หลังแพ้', 'InpRecoveryMult', reg(stepper({ label: 'ตัวคูณไม้แก้', get: getKey('InpRecoveryMult'), set: setKey('InpRecoveryMult'), step: 0.1, min: 1, max: 2, decimals: 1, unit: '×', disabled: locked })), '1.0 = ไม้แก้ขนาดเท่าเดิม 1.5 = ใหญ่ขึ้นครึ่งหนึ่ง'),
         adv('ไม้สูงสุดต่อสูตรต่อวัน', 'InpMaxAttempts', reg(stepper({ label: 'ไม้สูงสุดต่อสูตรต่อวัน', get: getKey('InpMaxAttempts'), set: setKey('InpMaxAttempts'), step: 1, min: 1, max: 4, decimals: 0, unit: 'ไม้', disabled: locked })), 'รวมไม้แรกและไม้แก้หลังแพ้'),
         adv('ตัวคูณล็อตเมื่อสัญญาณตรงกัน', 'InpConfluenceMult', reg(stepper({ label: 'ตัวคูณสัญญาณตรงกัน', get: getKey('InpConfluenceMult'), set: setKey('InpConfluenceMult'), step: 0.1, min: 1, max: 2, decimals: 1, unit: '×', disabled: locked })), 'เมื่ออีกสูตรเพิ่งเข้าทางเดียวกัน 1.0 = ปิด'),
@@ -385,8 +405,8 @@ export async function render(root, ctx) {
 
     mount(editorBox, 
       h('div', { class: 'ed-head' },
-        h('div', null, h('h2', null, B.readOnly ? 'ค่าทั้งหมดของบอท' : 'ปรับการตั้งค่าบอท'),
-          h('p', { class: 'muted small' }, B.readOnly ? 'ค่าที่บอทรุ่นนี้รายงานมา' : 'แก้ได้หลายอย่าง แล้วกด "บันทึกและส่งให้บอท" ครั้งเดียว')),
+        h('div', { class: 'section-label' }, h('h2', null, B.readOnly ? 'ค่าทั้งหมดของบอท' : 'ปรับการตั้งค่า'),
+          h('p', { class: 'muted small' }, B.readOnly ? 'ค่าที่บอทรุ่นนี้รายงานมา' : 'แก้ได้หลายอย่าง แล้วกด "บันทึกและส่งให้บอท" ที่แถบด้านล่างครั้งเดียว')),
         helpBtn('settings')),
       roBox,
       h('div', { class: `editor-body${ro ? ' readonly' : ''}` }, secMoney, secStrat, secLock, secCap, advBox),
@@ -394,23 +414,35 @@ export async function render(root, ctx) {
     for (const u of updaters) u.update();
     editorBox.querySelector('.editor-body').classList.toggle('readonly', locked());
   }
-  const secHead = (n, title, sub) => h('div', { class: 'sec-head' }, h('span', { class: 'sec-num', 'aria-hidden': 'true' }, n),
-    h('div', null, h('h3', null, title), sub ? h('p', { class: 'muted small' }, sub) : null));
+  const secHead = (title, sub) => h('div', { class: 'sec-head' }, h('h3', null, title), sub ? h('p', null, sub) : null);
+  // one settings row: label (+ hints) left, control right; extra lines (errors) under it
+  const setRow = (label, hints, control, extra) => h('div', { class: 'set-row' },
+    h('div', { class: 'set-row-main' }, h('div', { class: 'set-copy' }, label, ...(hints || []).filter(Boolean)), h('div', { class: 'set-ctrl' }, control)),
+    ...(extra || []));
 
-  function drawLockBar(el, at, to) {
-    const a = Math.max(0, Math.min(100, Number(at) || 0)), t = Math.max(0, Math.min(100, Number(to) || 0));
-    el.setAttribute('aria-label', `ราคาเข้า ถึง TP: เมื่อถึง ${pctText(a)}% เลื่อน SL ไป ${pctText(t)}%`);
-    // grid: [ราคาเข้า] [track] [TP]; the trigger tag sits above the track, the new-SL tag below it
-    const pos = (p) => `clamp(1.8em, ${p}%, calc(100% - 1.8em))`;
-    mount(el, 
-      h('div', { class: 'lb-top' }, h('span', { class: 'lb-tag at', style: { left: pos(a) } }, `ถึง ${pctText(a)}%`)),
-      h('span', { class: 'lb-l' }, 'ราคาเข้า'),
-      h('div', { class: 'lb-track' },
-        h('span', { class: 'lb-locked', style: { width: `${t}%` } }),
-        h('span', { class: 'lb-sl', style: { left: `${t}%` } }),
-        h('span', { class: 'lb-at', style: { left: `${a}%` } })),
-      h('span', { class: 'lb-r' }, 'TP'),
-      h('div', { class: 'lb-bottom' }, h('span', { class: 'lb-tag to', style: { left: pos(t) } }, `SL ไป ${pctText(t)}%`)));
+  // The lock ladder: price levels from TP down to the original SL, equally spaced (a trading "price ladder"), so
+  // stages a few percent apart stay readable. The rail between the entry and the highest new SL is the profit kept.
+  function drawLadder(el) {
+    const m = lockMode(v);
+    el.hidden = m === 0;
+    if (m === 0) { mount(el); return; }
+    const lv = [{ p: 100, k: 'tp', t: [h('strong', null, 'TP'), ' ปิดไม้ที่กำไรเต็ม'] }];
+    const stage = (name, at, to) => {
+      lv.push({ p: at, k: 'at', t: [h('strong', null, name), ` เมื่อกำไรวิ่งมาถึง ${pctText(at)}%`] });
+      lv.push({ p: to, k: 'to', t: [h('strong', null, `SL ใหม่ ${pctText(to)}%`), ' ล็อกกำไรไว้เท่านี้'] });
+    };
+    stage(m === 2 ? 'ชั้นใกล้ TP' : 'ล็อกกำไร', v.InpLockAtPct, v.InpLockToPct);
+    if (m === 2) stage('ชั้นแรก', v.InpLock1AtPct, v.InpLock1ToPct);
+    lv.sort((a, b) => b.p - a.p || (a.k === 'at' ? -1 : 1));
+    const keep = Math.max(...lv.filter((x) => x.k === 'to').map((x) => x.p));
+    el.setAttribute('aria-label', `บันไดราคา: ${lv.map((x) => `${pctText(x.p)}%`).join(' ')} ราคาเข้า และ SL เดิม`);
+    const row = (pct, k, text, cls = '') => h('div', { class: `ladder-row ${k} ${cls}`.trim() },
+      h('span', { class: 'ladder-pct' }, pct), h('span', { class: 'ladder-rail' }, h('span', { class: 'ladder-mark' })), h('span', { class: 'ladder-text' }, text));
+    mount(el,
+      lv.map((x) => row(`${pctText(x.p)}%`, x.k, x.t, x.p <= keep ? 'safe' : '')),
+      h('div', { class: 'ladder-row gap-row safe', 'aria-hidden': 'true' }, h('span'), h('span', { class: 'ladder-rail' }), h('span')),
+      row('0%', 'entry', [h('strong', null, 'ราคาเข้า')], 'risk'),
+      row('SL', 'sl', [h('strong', null, 'SL เดิม'), ' ขาดทุนเต็มถ้าราคาไม่ถึงชั้นแรก'], 'risk'));
   }
 
   async function doAuto() {
@@ -578,10 +610,12 @@ export async function render(root, ctx) {
         refreshAll();
       },
     });
-    mount(sidesBox, panel('ฝั่งที่เข้าได้', { icon: 'bars', sub: 'เลือกแล้วส่งทันที ไม้ที่เปิดอยู่ไม่ถูกปิด' },
-      seg,
-      sideVal === 'none' ? callout('warn', 'ปิดทั้งสองฝั่งอยู่', h('p', null, 'บอทจะไม่เปิดไม้ใหม่ เลือก "ซื้อและขาย" เพื่อกลับมาปกติ')) : null,
-      advancedControl(d)));
+    mount(sidesBox,
+      h('div', { class: 'set-sec-head' }, h('h2', null, 'ฝั่งที่เข้าได้'), h('p', null, 'เลือกแล้วส่งทันที ไม้ที่เปิดอยู่ไม่ถูกปิด')),
+      h('div', { class: 'group' },
+        h('div', { class: 'set-row' }, seg),
+        sideVal === 'none' ? callout('warn', 'ปิดทั้งสองฝั่งอยู่', h('p', null, 'บอทจะไม่เปิดไม้ใหม่ เลือก "ซื้อและขาย" เพื่อกลับมาปกติ')) : null,
+        advancedControl(d)));
   }
   function advancedControl(d) {
     const lim = limits();
@@ -649,15 +683,16 @@ export async function render(root, ctx) {
       serverHint.textContent = Number.isFinite(a) && Number.isFinite(b) ? `เวลาเซิร์ฟเวอร์ของโบรก: ${utcToServer(a, off())} ถึง ${utcToServer(b, off())}` : '';
     };
     fromIn.addEventListener('input', updHint); toIn.addEventListener('input', updHint); updHint();
-    mount(boBox, panel('งดเข้าไม้ช่วงข่าว', { icon: 'clock', sub: 'ช่วงนี้บอทไม่เปิดไม้ใหม่ ไม้ที่เปิดอยู่ยังวิ่งต่อ', actions: helpBtn('news', 'วิธีใช้') },
-      h('div', { class: 'row gap wrap' },
+    mount(boBox,
+      h('div', { class: 'set-sec-head' }, h('h2', null, 'งดเข้าไม้ช่วงข่าว'), helpBtn('news', 'วิธีใช้'), h('p', null, 'ช่วงนี้บอทไม่เปิดไม้ใหม่ ไม้ที่เปิดอยู่ยังวิ่งต่อ')),
+      h('div', { class: 'group' }, h('div', { class: 'set-row bo-quick' },
         h('button', { class: 'btn', type: 'button', onclick: (e) => addBo(Date.now(), Date.now() + 2 * 3600e3, 'งดเข้าไม้ 2 ชม.', e.currentTarget) }, icon('clock'), 'งด 2 ชม. จากตอนนี้'),
         nextNews ? h('button', {
           class: 'btn wrap', type: 'button',
           onclick: (e) => addBo(Date.parse(nextNews.ts_utc) - 30 * MIN, Date.parse(nextNews.ts_utc) + 90 * MIN, nextNews.name, e.currentTarget),
-        }, icon('news'), `งดข่าวถัดไป (${nextNews.name.replace(/\s*\(.*\)/, '')} ${fmtThai(Date.parse(nextNews.ts_utc), 'short')})`) : null),
-      list.length ? h('ul', { class: 'bo-list' }, list.map(item)) : h('p', { class: 'muted' }, 'ยังไม่มีช่วงงดเข้าไม้'),
-      past.length ? h('button', { class: 'btn small ghost', type: 'button', onclick: () => clearPast() }, icon('trash'), `ล้างช่วงที่ผ่านไปแล้ว (${past.length})`) : null,
+        }, icon('news'), `งดข่าวถัดไป ${nextNews.name.replace(/\s*\(.*\)/, '')} ${fmtThai(Date.parse(nextNews.ts_utc), 'short')} น.`) : null),
+      list.length ? h('ul', { class: 'bo-list' }, list.map(item)) : h('p', { class: 'muted group-note' }, 'ยังไม่มีช่วงงดเข้าไม้'),
+      past.length ? h('div', { class: 'group-note' }, h('button', { class: 'btn small ghost', type: 'button', onclick: () => clearPast() }, icon('trash'), `ล้างช่วงที่ผ่านไปแล้ว (${past.length})`)) : null,
       h('details', { class: 'subpanel' }, h('summary', null, 'เลือกข่าวอื่น หรือกำหนดเวลาเอง'),
         h('div', { class: 'stack' },
           h('p', { class: 'small' }, 'งดช่วงข่าว (ก่อน 30 นาที หลัง 90 นาที)'),
@@ -749,6 +784,7 @@ export async function render(root, ctx) {
   // Unsent edits are kept as a session draft and restored on return (no "Leave site?" prompt).
   return () => {
     unsub(); offCtl(); clearInterval(tick); clearInterval(poll);
+    window.removeEventListener('scroll', onScroll);
     document.body.classList.remove('has-action-bar');
   };
 }

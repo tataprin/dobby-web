@@ -29,7 +29,8 @@ export async function render(root, ctx) {
       h('div', { class: 'dl-hero-ico', 'aria-hidden': 'true' }, icon('monitor')),
       h('div', { class: 'grow' },
         h('h2', null, 'แอป Dobby สำหรับ Windows'),
-        h('p', { class: 'muted' }, appFile ? `${appFile.name} · ${fmtBytes(appFile.size)} · ไฟล์เดียว ไม่ต้องติดตั้ง` : 'ผู้ดูแลยังไม่ได้อัปโหลดไฟล์แอป'),
+        appFile ? h('div', { class: 'dl-meta' }, h('span', { class: 'chip' }, appFile.name), h('span', { class: 'chip' }, h('span', { class: 'num' }, fmtBytes(appFile.size))), h('span', { class: 'chip quiet-chip' }, 'ไฟล์เดียว ไม่ต้องติดตั้ง'))
+          : h('p', { class: 'muted' }, 'ผู้ดูแลยังไม่ได้อัปโหลดไฟล์แอป'),
         h('p', { class: 'small muted' }, 'ครั้งแรก Windows อาจเตือน "Windows protected your PC" กด More info แล้ว Run anyway ', h('a', { href: '#/guide/windows' }, 'ดูรูป'))),
       appFile ? h('button', { class: 'btn primary big', type: 'button', onclick: (e) => fetchFile(appFile, e.currentTarget) }, icon('download'), 'ดาวน์โหลดแอป') : null));
     const up = h('input', { type: 'file', class: 'sr-only', id: newId('up') });
@@ -93,7 +94,7 @@ function guide(ctx) {
           h('li', null, h('strong', null, 'ตั้งค่าบอท'), ': ใส่เงินในบัญชีเทรด แล้วกด "ตั้งให้อัตโนมัติ" (เช่น 300 USD = ล็อต 0.03) หรือกด "ปรับเอง"'),
           h('li', null, h('strong', null, 'เชื่อม MT5'), ': แอปติดตั้ง EA กับพรีเซ็ตให้เอง แล้วกด "เปิด MT5 พร้อม Dobby" (ต้องปิด MT5 ก่อน) หรือเลือก "ทำเองใน MT5" ตามขั้นด้านล่าง'),
           h('li', null, h('strong', null, 'ความปลอดภัย'), ': แนะนำ "ให้เว็บควบคุมได้ทุกอย่าง" จะได้เปลี่ยนค่าและเปิด/ปิดเทรดจริงจากเว็บได้'),
-          h('li', null, h('strong', null, 'เสร็จแล้ว'), ' → กด "เริ่มทำงาน Dobby" จบ เปิดคอมกับ MT5 ทิ้งไว้'))),
+          h('li', null, h('strong', null, 'เสร็จแล้ว'), ' กด "เริ่มทำงาน Dobby" แล้วเปิดคอมกับ MT5 ทิ้งไว้'))),
       step('ถ้าเลือก "ทำเองใน MT5": ติด EA ใส่กราฟ (ครั้งเดียว)',
         h('ul', null,
           h('li', null, 'กด Ctrl+N เปิดหน้าต่าง Navigator คลิกขวาที่ Expert Advisors แล้วกด ', h('strong', null, 'Refresh')),

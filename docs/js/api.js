@@ -524,6 +524,9 @@ export class DemoApi {
       sim.tick(now);
       bot.last_seen = new Date(now - 1000).toISOString();
       bot.agent_state.ea_heartbeat_age_s = 1 + Math.floor(Math.random() * 4);
+      // a new M15 bar closed: the agent sends the rolled 24 h window (SPEC 8)
+      const bars = bot.agent_state.bars;
+      if (bars && bars.t && now / 1000 - bars.t[bars.t.length - 1] >= 1800) bot.agent_state = { ...bot.agent_state, bars: sim.bars(now) };
       this.emit(bot.id, 'status', this.statusRow(bot.id));
       this.emit(bot.id, 'bot', bot);
     }

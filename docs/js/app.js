@@ -1,8 +1,10 @@
 // Boot, theme, hash router and the app shell.
 import { createApi, isConfigured, wantsDemo } from './api.js';
 import { app, on, emit, isAdmin, loadBots, selectBot, currentBot, prefs } from './state.js';
-import { h, icon, ingot, mount, loadingState, errorState, emptyState, errText, openModal } from './util.js';
+import { h, icon, mount, loadingState, errorState, emptyState, errText, openModal } from './util.js';
 import { maybeStartTour } from './tour.js';
+import { brandMark } from './hallmark.js';
+import { ticker } from './ticker.js';
 
 // ------------------------------------------------------------------ theme
 const THEMES = ['system', 'light', 'dark'];
@@ -19,7 +21,7 @@ function applyTheme() {
   if (p === 'system') delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = p;
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = resolvedTheme() === 'dark' ? '#0e1116' : '#f4f3ee';
+  if (meta) meta.content = resolvedTheme() === 'dark' ? '#14191B' : '#F1F2EE';
   document.querySelectorAll('[data-theme-btn]').forEach(updateThemeBtn);
   emit('theme', resolvedTheme());
 }
@@ -149,10 +151,10 @@ function botPicker() {
   const draw = () => {
     mount(box);
     if (!app.bots.length) return;
-    if (app.bots.length === 1) { box.append(h('a', { class: 'botname', href: '#/machines', title: 'เครื่องของฉัน' }, icon('monitor'), h('span', null, app.bots[0].name))); return; }
-    const sel = h('select', { class: 'input select', 'aria-label': 'เลือกบอท', onchange: (e) => selectBot(e.target.value) },
+    if (app.bots.length === 1) { box.append(h('a', { class: 'botname', href: '#/machines', title: 'เครื่องของฉัน' }, h('span', { class: 'botname-label' }, 'บอท'), h('span', { class: 'botname-text' }, app.bots[0].name))); return; }
+    const sel = h('select', { class: 'botpick-select', 'aria-label': 'เลือกบอท', onchange: (e) => selectBot(e.target.value) },
       app.bots.map((b) => h('option', { value: b.id, selected: b.id === app.botId }, b.name)));
-    box.append(h('span', { class: 'botpick-ico', 'aria-hidden': 'true' }, icon('monitor')), sel);
+    box.append(h('label', { class: 'botpick-field' }, h('span', { class: 'botname-label' }, 'บอท'), sel, h('span', { class: 'botpick-chev', 'aria-hidden': 'true' }, icon('chevron'))));
   };
   draw();
   on('bots-loaded', draw);
@@ -208,15 +210,18 @@ function demoBanner() {
   return box;
 }
 
+// first letter for the avatar; a Thai leading vowel (เ แ โ ใ ไ) travels with its consonant
+const initial = (name) => { const s = String(name).trim(); return (/^[เ-ไ]/.test(s) ? s.slice(0, 2) : s.slice(0, 1)).toUpperCase(); };
+
 function buildShell() {
   const main = h('main', { id: 'main', class: 'main', tabindex: '-1' });
   const userBox = h('div', { class: 'side-user' });
   const drawUser = () => mount(userBox, 
     h('div', { class: 'side-user-row' },
-      h('span', { class: 'avatar', 'aria-hidden': 'true' }, ((app.profile && app.profile.display_name) || (app.user && app.user.email) || '?').slice(0, 1).toUpperCase()),
+      h('span', { class: 'avatar', 'aria-hidden': 'true' }, initial((app.profile && app.profile.display_name) || (app.user && app.user.email) || '?')),
       h('div', { class: 'grow' },
         h('div', { class: 'side-user-name' }, (app.profile && app.profile.display_name) || (app.user && app.user.email) || ''),
-        h('div', { class: 'muted small side-user-mail' }, app.user ? app.user.email : '', isAdmin() ? ' · ผู้ดูแล' : ''))),
+        h('div', { class: 'muted small side-user-mail', title: isAdmin() ? 'ผู้ดูแลระบบ' : null }, app.user ? app.user.email : ''))),
     h('div', { class: 'row gap between' }, themeSegment(() => {}, true),
       h('button', { class: 'btn ghost small', type: 'button', onclick: signOut }, icon('logout'), 'ออกจากระบบ')));
   drawUser();
@@ -232,11 +237,12 @@ function buildShell() {
   const el = h('div', { class: 'shell' },
     h('a', { class: 'skip', href: '#main', onclick: (e) => { e.preventDefault(); main.focus(); } }, 'ข้ามไปที่เนื้อหา'),
     h('aside', { class: 'sidebar' },
-      h('a', { class: 'brand', href: '#/dashboard' }, ingot(), h('span', null, 'Dobby')),
+      h('a', { class: 'brand', href: '#/dashboard' }, brandMark(), h('span', { class: 'brand-word' }, 'Dobby')),
       sideNav, userBox),
     h('div', { class: 'col' },
       h('header', { class: 'topbar' },
-        h('a', { class: 'brand brand-top', href: '#/dashboard', 'aria-label': 'Dobby หน้าแรก' }, ingot(), h('span', null, 'Dobby')),
+        h('a', { class: 'brand brand-top', href: '#/dashboard', 'aria-label': 'Dobby หน้าแรก' }, brandMark(), h('span', { class: 'brand-word' }, 'Dobby')),
+        ticker(),
         botPicker(),
         h('div', { class: 'top-actions' },
           h('a', { class: 'icon-btn top-help', href: '#/guide', 'aria-label': 'วิธีใช้', title: 'วิธีใช้' }, icon('help')),
@@ -262,7 +268,7 @@ function bareRoot() {
   shell = null;
   const root = h('main', { id: 'main', class: 'bare', tabindex: '-1' });
   const page = h('div', { class: 'bare-wrap' },
-    h('header', { class: 'bare-head' }, h('span', { class: 'brand' }, ingot(), h('span', null, 'Dobby')), themeButton()),
+    h('header', { class: 'bare-head' }, h('span', { class: 'brand' }, brandMark(), h('span', { class: 'brand-word' }, 'Dobby')), themeButton()),
     demoBanner(), root);
   mount(document.getElementById('app'), page);
   return root;

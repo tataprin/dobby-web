@@ -2,7 +2,8 @@
 
 Static site served by GitHub Pages from `docs/`. Vanilla JS ES modules, no build step, no npm runtime dependencies.
 External code (pinned): `@supabase/supabase-js@2.118.0` and `chart.js@4.4.1` from cdn.jsdelivr.net (both loaded only
-when needed), IBM Plex Sans Thai Looped from Google Fonts (optional; falls back to IBM Plex Sans Thai / system Thai fonts).
+when needed); Google Fonts Anuphan (Thai + UI) and a Chakra Petch glyph subset (numerals), both `display=swap` with
+system Thai fallbacks. Visual design: `DESIGN.md` ("Hallmark").
 
 ## Run locally
 
@@ -23,17 +24,19 @@ Open http://localhost:8765/?demo=1 (demo) or http://localhost:8765/ (login with 
 `js/config.js` exports `SUPABASE_URL` and `SUPABASE_ANON_KEY` (Project URL + Publishable key `sb_publishable_...` or the
 legacy anon key). Both empty -> setup screen with a "ดูโหมดตัวอย่าง" button. `?demo=1` always forces demo mode.
 
-## Navigation (redesign 2026-11-07)
+## Navigation (redesign 2026-11-07, restyled "Hallmark" the same day)
 
-Main (sidebar top; mobile bottom bar = ภาพรวม, ตั้งค่าบอท, ประวัติ, เครื่อง, เมนู):
+Main (sidebar top; mobile bottom bar = ภาพรวม, ตั้งค่าบอท, ประวัติ, เครื่อง, เมนู). The header carries a live XAUUSD
+ticker for the selected bot (`status.market.bid`, change since the first M15 bar of the broker's day from
+`agent_state.bars`, or the first priced journal row of that day while bars are missing), the bot picker and the theme.
 
 | route | page | what it does |
 |---|---|---|
-| `#/dashboard` | ภาพรวม | hero "บอทกำลังเทรดจริง / หยุดอยู่ / ออฟไลน์" + one sentence why, pause / 2 h blackout, the settings summary; balance, today (cap meter), profit since start, trades; open trade with an SL - entry - TP bar; last 8 closed trades; details (modules, NY, locks, last event) collapsed |
-| `#/bot` | ตั้งค่าบอท | SPEC 7: "ค่าที่บอทใช้อยู่ตอนนี้" in plain Thai + 3-step apply progress; live switch + pause cards; the simple editor (balance, auto-from-balance, same/per-strategy lots, strategies incl. ASIA16, lock 0/1/2 stages with bars, daily loss cap, ขั้นสูง); sticky save bar; save / load preset; .set download; sides; blackouts (2 h, next news, any news, custom); control-file overrides (lots / spread / note) under a details |
-| `#/history` | ประวัติ | unchanged features (journal, trades, equity chart, calendar, module stats, CSV), new head + filter card |
+| `#/dashboard` | ภาพรวม | hero sheet: hallmark stamp (gold = trading live, slate = paused / not connected, cinnabar = offline / needs attention) + one sentence why + today's P&L, then the last 24 h XAUUSD line from `agent_state.bars` (SPEC 8) with faint VWAP, the current price and Dobby's trades from the journal (OPEN ▲ jade buy / ▼ cinnabar sell, CLOSE ring coloured by P&L; hover / tap shows the trade; without bars: "กราฟราคาจะขึ้นเมื่อแอปเวอร์ชันใหม่ส่งข้อมูล"), the settings summary as one sentence, pause / 2 h blackout; engraved numbers row (balance, equity, today with cap meter, since start); open trade with an SL - entry - price - TP gauge; last 8 closed trades; details collapsed |
+| `#/bot` | ตั้งค่าบอท | SPEC 7, as grouped rows (label left, control right) with section anchors (sticky chips on a phone, a side list on wide screens): "ค่าที่บอทใช้อยู่ตอนนี้" (label / value grid) + 3-step apply progress; live switch + pause rows; the simple editor (balance, auto-from-balance, same/per-strategy lots, strategies incl. ASIA16, lock 0/1/2 stages with a price-ladder diagram, daily loss cap, ขั้นสูง); sticky save bar; save / load preset; .set download; sides; blackouts (2 h, next news, any news, custom); control-file overrides (lots / spread / note) under a details |
+| `#/history` | ประวัติ | journal, trades, equity chart (gold line, right axis), calendar heatmap (jade / cinnabar intensity), module stats, CSV |
 | `#/news` | ข่าว | unchanged |
-| `#/machines` | เครื่องของฉัน | one card per bot: status, last seen, EA / app version, account, rename, set as default (บอทหลัก), delete from the website (explained confirm + "I understand" tick), add-a-PC card |
+| `#/machines` | เครื่องของฉัน | one hairline-separated row per bot: status, last seen, EA / app version, account, rename, set as default (บอทหลัก), delete from the website (explained confirm + "I understand" tick), add-a-PC row |
 | `#/guide`, `#/guide/<section>` | วิธีใช้ | illustrated sections: start, dashboard, settings, live, news, lock, risk, history, machines, trouble (FAQ ids offline, pending, unchanged, windows, password) |
 
 "เพิ่มเติม": `#/presets` (+ `#/presets/<id>`, `#/calc?balance=&lot=`) พรีเซ็ตที่บันทึกไว้, `#/downloads` ดาวน์โหลดแอป,
@@ -49,9 +52,12 @@ sign-in (`localStorage` `dobby-tour-done`, read/written through `prefs` with try
 
 ```
 index.html            shell; applies the saved theme before paint, loads js/app.js
-css/app.css           all styles; tokens on :root, dark via prefers-color-scheme or [data-theme]
+css/app.css           all styles; DESIGN.md tokens on :root (porcelain / vault), dark via prefers-color-scheme or [data-theme]
 js/config.js          SUPABASE_URL / SUPABASE_ANON_KEY
 js/app.js             boot, theme, hash router (#/name/part?query) + aliases, shell (grouped sidebar / bottom tabs), tour hook
+js/hallmark.js        the hallmark stamp (rounded octagon, double engraved outline, "Dobby" + state) and the brand mark
+js/pricechart.js      readBars (agent_state.bars) + the hero's SVG price line with trade marks, tooltip, first-load motion
+js/ticker.js          header XAUUSD ticker (bid + change since the broker day's first bar)
 js/api.js             the API interface + SupabaseApi + DemoApi, Thai error mapping (DB error codes)
 js/demo.js            synthetic deterministic demo data (2 bots, ~3 weeks of journal, live status, invites, news...)
 js/state.js           app state + event bus (bots, selected bot, default bot, profile)
@@ -64,7 +70,8 @@ js/params.js          every EA input (v3.03 + v3.04), groups, remote allow-list,
 js/setfile.js         .set parse (UTF-16LE/BE/UTF-8) and build (UTF-16LE + BOM, CRLF)
 js/lotcalc.js         SPEC 5.1 lot calculator data + interpolation/scaling
 js/journal.js         journal rows -> paired trades, module stats, daily P&L, equity series, CSV
-js/util.js            DOM helper h() / mount(), formatting (Intl, Asia/Bangkok), server-time conversion, dialogs, toasts, icons
+js/util.js            DOM helper h() / mount() (glues Thai loanwords for line breaking), formatting (Intl, Asia/Bangkok),
+                      server-time conversion, dialogs, toasts, icons
 js/views.js           shared pieces: page head + help button, teaching empty state, stepper, big toggle, segmented, progress
 js/tour.js            first-login welcome tour
 js/guide-art.js       inline SVG illustrations (theme tokens, 360-wide canvas so text stays readable on phones)
@@ -88,6 +95,9 @@ js/pages/*.js         one module per page, `render(root, ctx)` returns an option
   `status.control`, writes a CONTROL journal row). Settings sent to คอมหลัก wait for the open position ("รอให้ไม่มีไม้ค้าง"),
   the demo closes it after about 12 s and applies them (`REMOTE APPLY` row), so all three progress steps can be watched.
 - Data is generated by `createDemoDb(now)` with fixed seeds: dates are relative to today, "today" is always a trading day.
+- Each demo bot has `agent_state.bars` (SPEC 8): the last 96 closed M15 bars on the same price path as the demo trades
+  (so the marks sit on the line) with a small deterministic jitter and a VWAP anchored to each server day; the window
+  rolls forward when a new bar closes.
 
 ## Contract notes (what the site relies on)
 

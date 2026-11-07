@@ -30,7 +30,7 @@ export async function render(root, ctx) {
         h('span', { class: 'add-ico' }, icon('plus')),
         h('div', { class: 'grow' }, h('h2', null, 'เพิ่มเครื่องใหม่'),
           h('p', { class: 'muted' }, 'โหลดแอป Dobby ไปเปิดที่คอมเครื่องใหม่ เข้าสู่ระบบด้วยบัญชีนี้ แล้วทำตามตัวช่วย เครื่องจะขึ้นที่นี่เอง')),
-        h('a', { class: 'btn', href: '#/downloads' }, icon('download'), 'ดาวน์โหลดแอป')));
+        h('a', { class: 'btn small', href: '#/downloads' }, icon('download'), 'ดาวน์โหลดแอป')));
   }
 
   function card(b, isDefault) {
@@ -40,7 +40,7 @@ export async function render(root, ctx) {
     const acc = (st && st.account) || {};
     const ver = (st && st.ea_version) || b.ea_version || '';
     const old = ver && parseFloat(ver) < 3.04;
-    const tone = info.online ? 'good' : info.agentOnline ? 'warn' : 'off';
+    const tone = info.online ? 'good' : info.agentOnline ? 'warn' : Number.isFinite(info.seenAge) ? 'off' : 'new';
     const statusText = info.online ? 'ออนไลน์' : info.agentOnline ? 'MT5 ไม่ตอบ' : Number.isFinite(info.seenAge) ? 'ออฟไลน์' : 'ยังไม่เคยเชื่อมต่อ';
     const live = !!d.live && d.control.mode !== 'pause';
     return h('article', { class: `machine tone-${tone}${b.id === app.botId ? ' current' : ''}` },
@@ -48,13 +48,13 @@ export async function render(root, ctx) {
         h('span', { class: 'machine-ico' }, icon('monitor')),
         h('div', { class: 'grow' },
           h('h2', { class: 'machine-name' }, b.name),
-          h('p', { class: 'machine-status' }, h('span', { class: 'dot', 'aria-hidden': 'true' }), statusText,
-            h('span', { class: 'muted' }, ` · เห็นล่าสุด ${b.last_seen ? ago(Date.parse(b.last_seen)) : 'ไม่เคย'}`))),
+          h('p', { class: 'machine-status' }, h('span', { class: 'dot', 'aria-hidden': 'true' }), h('span', { class: 'st' }, statusText),
+            h('span', null, b.last_seen ? `เห็นล่าสุด ${ago(Date.parse(b.last_seen))}` : 'ยังไม่เคยส่งข้อมูล'))),
         isDefault ? h('span', { class: 'chip live' }, icon('star'), 'บอทหลัก') : null),
       h('dl', { class: 'machine-facts' },
         h('div', null, h('dt', null, 'รุ่น EA'), h('dd', null, ver ? `v${ver}` : '—', old ? h('span', { class: 'chip warn' }, 'อัปเดตได้') : null)),
-        h('div', null, h('dt', null, 'เทรดจริง'), h('dd', null, live ? h('span', { class: 'good-text' }, 'เปิด') : 'ปิด')),
-        h('div', null, h('dt', null, 'บัญชี'), h('dd', null, acc.balance != null ? `${acc.mode === 'REAL' ? 'จริง' : acc.mode || ''} ${fmtNum(acc.balance)} ${acc.currency || ''}`.trim() : '—')),
+        h('div', null, h('dt', null, 'เทรดจริง'), h('dd', null, live ? h('span', { class: 'chip live' }, 'เปิดอยู่') : 'ปิด')),
+        h('div', null, h('dt', null, acc.mode === 'REAL' ? 'บัญชีจริง' : acc.mode ? `บัญชี ${acc.mode}` : 'บัญชี'), h('dd', null, acc.balance != null ? [h('span', { class: 'num' }, fmtNum(acc.balance)), ` ${acc.currency || ''}`] : '—')),
         h('div', null, h('dt', null, 'แอป Dobby'), h('dd', null, b.agent_version ? `v${b.agent_version}` : '—')),
         h('div', null, h('dt', null, 'สัญลักษณ์'), h('dd', null, (st && st.symbol) || b.symbol || '—')),
         h('div', null, h('dt', null, 'เชื่อมเมื่อ'), h('dd', null, b.created_at ? fmtThai(Date.parse(b.created_at), 'date') : '—'))),

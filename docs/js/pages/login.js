@@ -1,6 +1,7 @@
 // Sign in / sign up with invite code / forgot password.
 import { h, icon, field, busy, errText, callout } from '../util.js';
 import { rememberInvite } from '../app.js';
+import { hallmark } from '../hallmark.js';
 
 const TABS = [
   { id: 'signin', label: 'เข้าสู่ระบบ' },
@@ -13,7 +14,7 @@ export const CODE_RE = /^[A-HJ-NP-Z2-9]{10}$/;
 export function render(root, ctx) {
   let tab = TABS.some((t) => t.id === ctx.query.get('tab')) ? ctx.query.get('tab') : 'signin';
   const body = h('div', { class: 'auth-body' });
-  const tabs = h('div', { class: 'segmented wide', role: 'tablist', 'aria-label': 'เลือกการทำงาน' });
+  const tabs = h('div', { class: 'login-tabs', role: 'tablist', 'aria-label': 'เลือกการทำงาน' });
   const draw = () => {
     tabs.replaceChildren(...TABS.map((t) => h('button', {
       type: 'button', role: 'tab', 'aria-selected': t.id === tab ? 'true' : 'false', class: t.id === tab ? 'on' : '',
@@ -22,13 +23,14 @@ export function render(root, ctx) {
     body.replaceChildren(tab === 'signin' ? signInForm(ctx) : tab === 'signup' ? signUpForm(ctx) : forgotForm(ctx));
   };
   draw();
-  root.append(h('div', { class: 'auth-col' },
-    h('section', { class: 'auth-card' },
-      h('h1', null, 'Dobby Web'),
-      h('p', { class: 'lead' }, 'ดูบอททองของคุณแบบสด ดูประวัติ และสั่งงานบอทจากมือถือ'),
-      tabs, body),
+  root.append(h('div', { class: 'login-page' },
+    h('div', { class: 'login-mark' },
+      hallmark({ tone: 'gold', state: 'XAUUSD', size: 'xl', title: 'Dobby' }),
+      h('h1', { class: 'sr-only' }, 'Dobby Web'),
+      h('p', { class: 'lead' }, h('span', { class: 'nowrap' }, 'ดูบอททองของคุณแบบสด ดูประวัติ'), ' ', h('span', { class: 'nowrap' }, 'และสั่งงานบอทได้จากมือถือ'))),
+    h('section', { class: 'auth-card', 'aria-label': 'เข้าสู่ระบบ' }, tabs, body),
     h('section', { class: 'auth-help', 'aria-label': 'ครั้งแรก' },
-      h('p', { class: 'auth-help-title' }, 'ครั้งแรก? ทำ 3 ขั้นนี้'),
+      h('p', { class: 'auth-help-title' }, 'ครั้งแรกที่ใช้ ทำ 3 ขั้นนี้'),
       h('ol', { class: 'teach-steps' },
         h('li', null, h('strong', null, 'สมัครด้วยรหัสเชิญ'), h('span', null, 'ขอรหัส 10 ตัวจากเจ้าของบอท แล้วกดแท็บ "สมัครด้วยรหัสเชิญ"')),
         h('li', null, h('strong', null, 'โหลดแอป Dobby ไปเปิดที่คอม'), h('span', null, 'คอม Windows ที่เปิด MT5 ไว้ ทำตามตัวช่วยในแอป แล้วกดเริ่ม')),

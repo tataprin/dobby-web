@@ -43,7 +43,7 @@ try:
 except ImportError:  # only the real HTTP transport needs it; the tests inject a fake transport
     requests = None
 
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.1.0"
 
 LOG = logging.getLogger("dobby_agent")
 LOG.addHandler(logging.NullHandler())
@@ -54,6 +54,8 @@ LOG.addHandler(logging.NullHandler())
 STATUS_NAME = "dobby2_status.json"
 JOURNAL_NAME = "dobby2_journal.csv"
 CONTROL_NAME = "dobby2_control.txt"
+BARS_NAME = "dobby2_bars.csv"
+BARS_KEEP = 96                 # 24 h of M15 bars for the website chart (SPEC 8)
 REMOTE_NAME = "dobby3_remote.txt"
 CONFIG_NAME = "agent_config.json"
 STATE_NAME = "agent_state.json"
@@ -370,6 +372,34 @@ def parse_server_dt(s):
 def naive_to_epoch(dt):
     """Treat a naive datetime as UTC."""
     return calendar.timegm(dt.timetuple())
+
+
+def parse_bars_text(text, offset_min, keep=BARS_KEEP):
+    """SPEC 8: the EA's dobby2_bars.csv -> {"tf": "M15", "t": [utc], "c": [close], "vwap": [vwap|None]} for the last
+    `keep` bars. Column 0 = bar_time (server time), 2 = close, 14 = vwap (newer EA rows only). None when nothing usable
+    or the server offset is unknown."""
+    if text is None or offset_min is None:
+        return None
+    rows = []
+    for line in text.splitlines()[1:]:
+        parts = line.split(",")
+        if len(parts) < 3:
+            continue
+        dt = parse_server_dt(parts[0])
+        close = to_num(parts[2])
+        if dt is None or close is None or close <= 0:
+            continue
+        vwap = to_num(parts[14]) if len(parts) > 14 else None
+        rows.append((naive_to_epoch(dt) - int(offset_min) * 60, round(close, 2),
+                     round(vwap, 3) if vwap is not None and vwap > 0 else None))
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r[0])
+    dedup = {}
+    for r in rows:
+        dedup[r[0]] = r
+    rows = [dedup[k] for k in sorted(dedup)][-keep:]
+    return {"tf": "M15", "t": [r[0] for r in rows], "c": [r[1] for r in rows], "vwap": [r[2] for r in rows]}
 
 
 def epoch_to_naive(t):
@@ -1724,6 +1754,8 @@ class Agent(object):
         self.status_path = os.path.join(common_dir, STATUS_NAME)
         self.journal_path = os.path.join(common_dir, JOURNAL_NAME)
         self.control_path = os.path.join(common_dir, CONTROL_NAME)
+        self.bars_path = os.path.join(common_dir, BARS_NAME)
+        self._bars_cache = (None, None, None)   # (mtime, offset, bars)
         self.remote_path = os.path.join(common_dir, REMOTE_NAME)
         self.config = load_config(self.config_path)
         self.client = client
@@ -2154,6 +2186,21 @@ class Agent(object):
         return new_row
 
     # -- bots row
+    def recent_bars(self):
+        """SPEC 8: last 24 h of M15 bars for the website, only with a confirmed (or configured) server offset."""
+        off, src = self.effective_offset()
+        if off is None or src not in ("confirmed", "config"):
+            return None
+        try:
+            mtime = os.stat(self.bars_path).st_mtime
+        except OSError:
+            return None
+        if self._bars_cache[0] == mtime and self._bars_cache[1] == off:
+            return self._bars_cache[2]
+        bars = parse_bars_text(read_text(self.bars_path, sleep=self.sleep), off)
+        self._bars_cache = (mtime, off, bars)
+        return bars
+
     def agent_state(self, now):
         st = self.state
         age = None
@@ -2162,7 +2209,7 @@ class Agent(object):
             age = int(now - hb)
         text = read_text(self.control_path, sleep=self.sleep)
         _, src = self.effective_offset()
-        return {
+        out = {
             "agent_version": AGENT_VERSION,
             "applied_version": st["applied_version"],
             "applied_at": st["applied_at"],
@@ -2176,6 +2223,10 @@ class Agent(object):
             "warnings": list(self.warnings),
             "offset_source": src,
         }
+        bars = self.recent_bars()
+        if bars:
+            out["bars"] = bars
+        return out
 
     def _update_bot_row(self, status, now):
         if not self._force_bots and self._last_bots_update is not None and \

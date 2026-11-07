@@ -68,17 +68,15 @@ export async function restoreDemoBots() {
 }
 
 const NO_BOT_ART = `<svg viewBox="0 0 240 120" role="img" aria-label="คอมกับเว็บยังไม่ได้เชื่อมกัน">
-<rect x="18" y="22" width="86" height="58" rx="8" fill="var(--surface-2)" stroke="var(--line-2)" stroke-width="2"/>
-<rect x="28" y="32" width="66" height="38" rx="4" fill="var(--surface)"/>
-<path d="M40 60l10-12 9 7 13-16 12 21" fill="none" stroke="var(--gold)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M50 92h22M61 80v12" stroke="var(--line-2)" stroke-width="3" stroke-linecap="round"/>
-<rect x="150" y="18" width="70" height="88" rx="12" fill="var(--surface-2)" stroke="var(--line-2)" stroke-width="2"/>
-<rect x="160" y="32" width="50" height="12" rx="6" fill="var(--primary-soft)"/>
-<rect x="160" y="52" width="50" height="8" rx="4" fill="var(--line)"/><rect x="160" y="66" width="36" height="8" rx="4" fill="var(--line)"/>
-<circle cx="185" cy="92" r="5" fill="var(--line-2)"/>
-<path d="M112 52h30" stroke="var(--muted)" stroke-width="3" stroke-dasharray="4 6" stroke-linecap="round"/>
-<circle cx="127" cy="52" r="11" fill="var(--surface)" stroke="var(--gold)" stroke-width="2.5"/>
-<path d="M127 46v7M127 57.5v.5" stroke="var(--gold-lo)" stroke-width="2.6" stroke-linecap="round"/>
+<rect x="16" y="22" width="90" height="60" rx="9" fill="var(--sheet)" stroke="var(--hair-strong)"/>
+<path d="M28 66l12-10 9 5 13-15 14 9 18-13" fill="none" stroke="var(--ink)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M50 96h22M61 82v14" stroke="var(--hair-strong)" stroke-width="2" stroke-linecap="round"/>
+<rect x="152" y="16" width="70" height="90" rx="13" fill="var(--sheet)" stroke="var(--hair-strong)"/>
+<path d="M175.5 30h17l6 6v17l-6 6h-17l-6-6V36z" fill="none" stroke="var(--slate)" stroke-width="1.4"/>
+<rect x="164" y="70" width="46" height="6" rx="3" fill="var(--well-strong)"/><rect x="164" y="82" width="32" height="6" rx="3" fill="var(--well-strong)"/>
+<path d="M114 52h30" stroke="var(--slate)" stroke-width="1.6" stroke-dasharray="2 5" stroke-linecap="round"/>
+<circle cx="129" cy="52" r="10" fill="var(--bg)" stroke="var(--gold-ink)" stroke-width="1.4"/>
+<path d="M129 47v6M129 56.5v.5" stroke="var(--gold-ink)" stroke-width="2" stroke-linecap="round"/>
 </svg>`;
 
 export function onOff(v, onText = 'เปิด', offText = 'ปิด') {

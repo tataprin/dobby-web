@@ -236,6 +236,31 @@ export class BotSim {
     this.nextId = cfg.idBase + this.rows.length;
   }
 
+  // SPEC 8: the last 96 closed M15 bars as bots.agent_state.bars = {tf, t: [bar open, UTC s], c: [close], vwap: [...]}.
+  // Closes follow the same price path as the demo trades (so the trade marks sit on the line) plus a small
+  // deterministic jitter that does not touch the simulation's random sequence. VWAP is anchored to each server day.
+  bars(nowUtc) {
+    const tf = 15 * MIN, n = 96;
+    const nowWall = nowUtc + DEMO_OFFSET_MIN * MIN;
+    const lastOpen = Math.floor(nowWall / tf) * tf - tf; // the newest closed bar
+    const jitter = (k) => { const r = rng((this.cfg.seed % 997) * 7919 + k); return (r() - 0.5) * 1.1 + (r() - 0.5) * 0.7; };
+    const t = [], c = [], vwap = [];
+    let day = null, pv = 0, vol = 0;
+    for (let i = n - 1; i >= 0; i--) {
+      const open = lastOpen - i * tf;
+      const k = Math.floor(open / tf);
+      const close = r2(price(open + tf) + jitter(k));
+      const d = Math.floor(open / DAY);
+      if (d !== day) { day = d; pv = 0; vol = 0; }
+      const v = 1 + rng(k * 31 + 7)() * 2.5;
+      pv += close * v; vol += v;
+      t.push(Math.floor((open - DEMO_OFFSET_MIN * MIN) / 1000));
+      c.push(close);
+      vwap.push(r2(pv / vol));
+    }
+    return { tf: 'M15', t, c, vwap };
+  }
+
   tick(nowUtc) {
     const nowWall = nowUtc + DEMO_OFFSET_MIN * MIN;
     const anchor = this.position ? this.position.open_price + 2.6 : price(nowWall);
@@ -406,6 +431,7 @@ export function createDemoDb(nowUtc = Date.now()) {
   const agentState = (v, limits, sim) => ({
     agent_version: '1.0.0', applied_version: v, applied_at: iso(nowUtc - 26 * HOUR), limits, rejected: [], last_error: null,
     ea_heartbeat_age_s: 2, control_file_id: `W${pad3(v)}`, remote_file_version: sim.remote ? v : null,
+    bars: sim.bars(nowUtc),
   });
   const bots = [
     {

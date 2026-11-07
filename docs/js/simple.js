@@ -122,7 +122,7 @@ export function strategiesText(v) {
   if (on.length === STRATS.length) return `เปิด ${on.length} สูตร`;
   return `เปิด ${on.length} สูตร (${on.map((s) => s.title).join(', ')})`;
 }
-// One line like "เปิด 3 สูตร · ล็อต 0.03 ทุกสูตร · ทุน 300 USD · ล็อก 2 ชั้น (85→83, 95→93) · เอเชียปิด · หยุดเมื่อขาดทุน 10%/วัน"
+// Short parts (presets, lists): "เปิด 3 สูตร", "ล็อต 0.03 ทุกสูตร", "ทุน 300 USD", "ล็อก 2 ชั้น (85→83, 95→93)", ...
 export function summaryParts(v, currency = 'USD') {
   return [
     strategiesText(v),
@@ -133,7 +133,30 @@ export function summaryParts(v, currency = 'USD') {
     `หยุดเมื่อขาดทุน ${pctText(v.InpDailyCapPct)}%/วัน`,
   ];
 }
-export const summaryText = (v, currency) => summaryParts(v, currency).join(' · ');
+// One plain Thai sentence: "เปิด 3 สูตร ล็อต 0.03 ทุกสูตร จากทุน 300 USD ล็อกกำไร 2 ชั้น (85→83 และ 95→93) ปิดสูตรเอเชีย
+// และหยุดเปิดไม้เมื่อขาดทุนถึง 10% ต่อวัน"
+export function summaryText(v, currency = 'USD') {
+  const m = lockMode(v);
+  const near = `${pctText(v.InpLockAtPct)}→${pctText(v.InpLockToPct)}`;
+  const first = `${pctText(v.InpLock1AtPct)}→${pctText(v.InpLock1ToPct)}`;
+  const lock = m === 0 ? 'ไม่ล็อกกำไร' : m === 1 ? `ล็อกกำไร 1 ชั้น (${near})` : `ล็อกกำไร 2 ชั้น (${first} และ ${near})`;
+  const asia = v.InpUseAsia ? `เปิดสูตรเอเชีย ${fmtNum(v.InpLotsAsia)} ล็อต` : 'ปิดสูตรเอเชีย';
+  return `${strategiesText(v)} ${lotsText(v)} จากทุน ${fmtNum(v.InpVirtualStart, 0)} ${currency} ${lock} ${asia} และหยุดเปิดไม้เมื่อขาดทุนถึง ${pctText(v.InpDailyCapPct)}% ต่อวัน`.replace(/\s+/g, ' ').trim();
+}
+
+// Label / value pairs for "ค่าที่บอทใช้อยู่ตอนนี้".
+export function summaryRows(v, currency = 'USD') {
+  const on = enabledStrats(v);
+  const m = lockMode(v);
+  return [
+    ['สูตรที่เปิด', on.length ? on.map((s) => s.title).join(', ') : 'ปิดทุกสูตร'],
+    ['ล็อตต่อไม้', on.length ? lotsText(v).replace(/^ล็อต /, '') : '—'],
+    ['ทุนในบัญชี', `${fmtNum(v.InpVirtualStart, 0)} ${currency}`.trim()],
+    ['ล็อกกำไร', m === 0 ? 'ไม่ล็อก' : m === 1 ? `1 ชั้น ${pctText(v.InpLockAtPct)}→${pctText(v.InpLockToPct)}` : `2 ชั้น ${pctText(v.InpLock1AtPct)}→${pctText(v.InpLock1ToPct)}, ${pctText(v.InpLockAtPct)}→${pctText(v.InpLockToPct)}`],
+    ['สูตรเอเชีย', v.InpUseAsia ? `เปิด ${fmtNum(v.InpLotsAsia)} ล็อต` : 'ปิด'],
+    ['ขาดทุนสูงสุดต่อวัน', `${pctText(v.InpDailyCapPct)}%`],
+  ];
+}
 
 const onOffText = (b) => (b ? 'เปิด' : 'ปิด');
 // Field descriptors used to list (and count) changes in plain Thai.

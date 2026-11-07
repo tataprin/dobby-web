@@ -22,10 +22,18 @@ export function h(tag, attrs, ...kids) {
   return el;
 }
 
+// Thai line breaking is dictionary based, and the dictionary does not know some loanwords used all over this site
+// ("บอท" can break as "บอ|ท", "สเปรด" as "ส|เปร|ด"). Glue them with word joiners between grapheme clusters and allow a
+// break on both sides. Applied to every text node built with h() / append().
+const THAI_KEEP = ['โบรกเกอร์', 'เซิร์ฟเวอร์', 'พรีเซ็ต', 'ออนไลน์', 'ออฟไลน์', 'เอเจนต์', 'สเปรด', 'สเต็ป', 'กำไร', 'โบรก', 'บอท'];
+const KEEP_RE = new RegExp(THAI_KEEP.join('|'), 'g');
+const glue = (w) => '\u200B' + w.replace(/(.)(?=[^\u0E31\u0E34-\u0E3A\u0E47-\u0E4E])/gu, '$1\u2060') + '\u200B';
+export const thaiBreaks = (s) => (/[\u0E00-\u0E7F]/.test(s) ? s.replace(KEEP_RE, glue) : s);
+
 export function append(el, kids) {
   for (const k of kids.flat(Infinity)) {
     if (k === null || k === undefined || k === false || k === '') continue;
-    el.append(k instanceof Node ? k : document.createTextNode(String(k)));
+    el.append(k instanceof Node ? k : document.createTextNode(thaiBreaks(String(k))));
   }
   return el;
 }
@@ -90,13 +98,6 @@ export function icon(name, cls = '') {
   return h('span', {
     class: `ico ${cls}`.trim(), 'aria-hidden': 'true',
     html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`,
-  });
-}
-
-export function ingot(cls = 'ingot') {
-  return h('span', {
-    class: cls, 'aria-hidden': 'true',
-    html: '<svg viewBox="0 0 32 20"><path d="M7 2h18l6 16H1L7 2z" fill="var(--gold)"/><path d="M7 2h18l-2.2 5.5H9.2L7 2z" fill="var(--gold-hi)"/><path d="M1 18h30" stroke="var(--gold-lo)" stroke-width="1.5"/></svg>',
   });
 }
 

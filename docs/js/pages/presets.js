@@ -80,7 +80,7 @@ async function renderList(root, ctx) {
               Object.keys(errors).length ? h('span', { class: 'chip bad' }, icon('warn'), `ค่าไม่ถูกต้อง ${Object.keys(errors).length}`) : null),
             h('p', { class: 'muted small' }, `แก้ไขล่าสุด ${fmtThai(Date.parse(p.updated_at || p.created_at), 'short')}`)),
           h('div', { class: 'preset-actions' },
-            bot ? h('a', { class: 'btn small primary', href: `#/bot?preset=${encodeURIComponent(p.id)}`, title: `เปิดค่านี้ในหน้าตั้งค่าบอทของ ${bot.name}` }, icon('sliders'), 'ใช้กับบอท') : null,
+            bot ? h('a', { class: 'btn small', href: `#/bot?preset=${encodeURIComponent(p.id)}`, title: `เปิดค่านี้ในหน้าตั้งค่าบอทของ ${bot.name}` }, icon('sliders'), 'ใช้กับบอท') : null,
             h('a', { class: 'btn small', href: `#/presets/${encodeURIComponent(p.id)}` }, icon('edit'), 'แก้ไข'),
             h('button', { class: 'btn small', type: 'button', onclick: () => exportSet(p.name, v, p.notes) }, icon('download'), '.set'),
             h('button', {
@@ -192,7 +192,7 @@ async function renderEditor(root, ctx, id) {
 
   root.append(
     h('div', { class: 'editor-head' },
-      h('a', { class: 'back', href: '#/presets' }, '‹ พรีเซ็ตทั้งหมด'),
+      h('a', { class: 'back', href: '#/presets' }, icon('chevron'), 'พรีเซ็ตทั้งหมด'),
       nameIn, notesIn,
       h('div', { class: 'toolbar' }, saveBtn, exportBtn, applyBtn,
         h('button', {
