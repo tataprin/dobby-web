@@ -1,0 +1,21 @@
+time_server,event,tag,side,lots,price,sl,tp,pnl,v_balance,step,detail
+2026.11.02 00:05:00,CONTROL,ALL,NONE,0.00,,,,0.00,280.00,0,control file absent -> inputs; mode=run lots=0.03 long=true short=true max_spread=1.00 blackouts=0
+2026.11.02 00:05:00,START,ALL,NONE,0.00,,,,0.00,280.00,0,"v3.03 A_new+NY+C5G lots 0.03/0.03/0.03 (max 0.03) virtual 280.00 since 2026.10.23 10:00:00, balance 280.00 | mode DEMO"
+2026.11.02 09:00:00,SIGNAL,A_new,SELL,0.00,,,,0.00,280.00,0,d=6.00 tp=9.00 | bear div: high 2519.44 rsi 62.3 vs earlier high 2516.67 rsi 64.4
+2026.11.02 09:00:00,OPEN,A_new,SELL,0.03,2514.16,2520.16,2505.16,0.00,280.00,0,bear div + H4 down d=6.00 tp=9.00 atr=6.85 rsi=60.9 step=0 | bear div: high 2519.44 rsi 62.3 vs earlier high 2516.67 rsi 64.4
+2026.11.02 09:20:07,CLOSE,A_new,SELL,0.03,2505.08,,,27.24,307.24,0,reason=TP pos=1000001
+2026.11.02 16:45:00,ARM,NY,NONE,0.00,,,,0.00,307.24,0,range 2500.11-2510.34 spread 0.20 d=8.00 -> buy stop 2510.74 / sell stop 2499.91
+2026.11.02 16:45:00,ORDER,NY,SELL,0.03,2499.91,2507.91,2491.91,0.00,307.24,0,sell stop at 2499.91 d=8.00
+2026.11.02 17:04:00,SKIP,C5G,SELL,0.00,,,,0.00,307.24,0,"position already open: signal ignored | C5G short: VWAP 2512.39 touched, close 2509.59, RSI hook 50.5->44.7"
+2026.11.03 08:57:03,NEARTP,C5G,SELL,0.03,2491.20,2509.72,2490.63,0.00,307.24,0,gain 10.88 = 95% of TP 11.45 (lock ON)
+2026.11.03 08:57:04,LOCK,C5G,SELL,0.03,2502.08,2491.43,2490.63,0.00,307.24,0,gain 10.88 >= 95% of TP 11.45 -> SL 2491.43 locks about +31.95 (93%)
+2026.11.03 09:10:00,CLOSE,C5G,SELL,0.03,2491.43,,,31.95,339.19,0,reason=SL pos=1000002
+2026.11.03 10:19:11,LOCK1,C5G,SELL,0.03,2500.44,2492.37,2490.35,0.00,339.19,0,gain 8.30 >= 82% of TP 10.09 -> SL 2492.37 locks about +24.21 (80%)
+2026.11.03 21:57:50,ERROR,C5G,SELL,0.03,2530.19,2520.64,2519.92,0.00,339.19,0,lock modify failed: retcode 10036 position closed
+2026.11.04 17:04:50,DAYCAP,ALL,NONE,0.00,,,,-31.93,307.26,0,day P&L -31.93 <= -10.0% of 319.19: no new entries today
+2026.11.05 14:07:28,LOCKED,ALL,NONE,0.00,,,,0.00,307.26,0,account known mode REAL server Broker-Live
+2026.11.05 14:07:36,UNLOCKED,ALL,NONE,0.00,,,,0.00,307.26,0,account known mode REAL server Broker-Live
+2026.11.05 15:00:00,CONTROL,ALL,NONE,0.00,,,,0.00,307.26,0,"mode=pause lots A/NY/C5G=0.03/0.03/0.03 long=true short=true max_spread=0.60 blackouts=1 id=W017 note=web: NFP, then ""CPI"""
+2026.11.06 15:31:00,OPEN,NY,BUY,0.03,2510.74,2502.74,2522.74,0.00,307.26,0,buy stop filled d=8.00
+2026.11.06 16:02:10,CLOSE,NY,BUY,0.03,2502.74,,,-24.00,283.26,1,reason=SL pos=1000003
+2026.11.06 23:54:59,STOP,ALL,NONE,0.00,,,,0.00,283.26,0,deinit reason 9 (a pending NY stop order, if any, stays on the server until the next start or 21:00 cleanup)

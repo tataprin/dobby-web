@@ -1,0 +1,13 @@
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+agent/agent_config.json
+agent/agent_state.json
+agent/agent.log*
+agent/agent_decisions.log
+*.ex5
+*.mq5
+*.set
+.env
+.DS_Store

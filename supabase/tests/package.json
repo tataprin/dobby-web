@@ -1,0 +1,13 @@
+{
+  "name": "dobby-web-db-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "PGlite tests for supabase/schema.sql (stubbed Supabase auth/storage/realtime)",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.15"
+  }
+}

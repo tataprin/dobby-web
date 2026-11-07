@@ -1,0 +1,176 @@
+# Dobby Web - database (Supabase)
+
+Files:
+
+| file | what |
+|---|---|
+| `schema.sql` | the whole database: tables, RLS, RPCs, triggers incl. the live gate, realtime, storage bucket, news seed, bootstrap admin invite. One file, safe to run again. |
+| `seed_news.sql` | tier-1 US news (NFP, CPI, FOMC decision + press conference) from 2026-11-01, in UTC. Already included at the end of `schema.sql`. |
+| `tests/` | PGlite (Postgres in WebAssembly) tests with stubbed Supabase `auth` / `storage` / realtime. `npm test`. |
+
+---
+
+## ภาษาไทย (สั้น ๆ)
+
+### ติดตั้ง schema
+1. เปิดโปรเจกต์ใน Supabase -> เมนู **SQL Editor** -> **New query**
+2. เปิดไฟล์ `supabase/schema.sql` คัดลอก **ทั้งไฟล์** ไปวาง แล้วกด **Run**
+   (ถ้า Supabase เตือนว่ามีคำสั่ง destructive เช่น `drop policy` ให้กด *Run this query* ได้ - ไฟล์นี้ไม่ลบตารางหรือข้อมูล)
+3. ผลลัพธ์บรรทัดสุดท้ายคือ **bootstrap_admin_invite** = รหัสเชิญแอดมิน 10 ตัว (เช่น `7FKEKYJUVZ`) อายุ 7 วัน
+4. ไปที่เว็บ https://tataprin.github.io/dobby-web/ -> สมัครด้วยอีเมล + รหัสผ่าน -> ใส่รหัสเชิญนี้ -> คุณจะเป็น **admin**
+5. รันไฟล์ซ้ำได้ทุกเมื่อ (เช่นตอนอัปเดต) ข้อมูลเดิมอยู่ครบ ถ้ามีแอดมินแล้ว ผลลัพธ์จะบอก `admin already exists`
+
+**รหัส bootstrap คืออะไร:** รหัสเชิญพิเศษที่สร้างอัตโนมัติเมื่อยังไม่มีแอดมินและยังไม่มีรหัสเชิญแอดมินที่ใช้ได้
+ใครใช้รหัสนี้ก่อนจะได้สิทธิ์แอดมิน ดังนั้น **อย่าส่งให้ใคร** ใช้เองทันที ถ้าหมดอายุ (7 วัน) ให้รัน `schema.sql` ใหม่ จะได้รหัสใหม่
+หลังจากนั้นแอดมินสร้างรหัสเชิญเพื่อนได้ที่หน้า Users
+
+### ตั้งค่า Auth ที่ต้องเช็ก (Authentication)
+- **Sign In / Providers -> Email**: เปิด Email provider
+  - *Confirm email*: **เปิด** (แนะนำ: ต้องกดลิงก์ยืนยันในอีเมลก่อนล็อกอิน) หรือ **ปิด** (ง่ายกว่าสำหรับเพื่อน แต่ใครก็สมัครด้วยอีเมลมั่วได้ - ก็ยังไม่เห็นอะไรจนกว่าจะใส่รหัสเชิญ)
+  - ไม่ต้องปิด "Allow new users to sign up" - คนที่สมัครแต่ไม่มีรหัสเชิญจะไม่เห็นข้อมูลใดเลย (RLS)
+- **URL Configuration**:
+  - *Site URL* = `https://tataprin.github.io/dobby-web/`
+  - *Redirect URLs* เพิ่ม `https://tataprin.github.io/dobby-web/**` (ใช้กับลิงก์ยืนยันอีเมลและลืมรหัสผ่าน)
+- **Multi-Factor**: ให้ TOTP เปิดอยู่ (ค่าเริ่มต้น) เพื่อใช้ 2FA ในหน้า Settings
+- คีย์ที่ใส่ในเว็บและ agent คือ **anon / publishable key เท่านั้น** ห้ามใช้ `service_role` key ที่ไหนเลย
+
+### ความปลอดภัยของการเปิด Live
+การเปลี่ยน `desired.live` จาก false เป็น true ต้องล็อกอินด้วยรหัสผ่านใหม่ภายใน 5 นาที และถ้าเปิด 2FA ต้องยืนยัน 2FA (aal2)
+ตรวจในฐานข้อมูลเอง (trigger) ไม่ใช่แค่ในหน้าเว็บ การปิด Live (true -> false) ทำได้เสมอ
+
+---
+
+## English (short)
+
+### Apply
+SQL Editor -> New query -> paste the whole `schema.sql` -> Run (confirm the "destructive operations" prompt; nothing
+is dropped except policies/triggers that are re-created). The last result row is the **bootstrap admin invite**.
+Sign up on the website, enter the code, you are admin. Re-run any time; data is kept.
+
+### Bootstrap code
+Created only when there is no active admin and no usable admin invite. 10 chars (A-Z, 2-9, no I/O/0/1), admin role,
+valid 7 days. Whoever redeems it first becomes admin: use it yourself right away. Expired? Run `schema.sql` again.
+
+### Auth settings to check
+- Email provider on. *Confirm email* on (recommended) or off (simpler; unapproved accounts still see nothing).
+- Site URL `https://tataprin.github.io/dobby-web/`; Redirect URLs `https://tataprin.github.io/dobby-web/**`.
+- MFA: TOTP enabled (default).
+- Only the anon/publishable key goes into `docs/js/config.js` and the agent. Never the service_role key.
+
+### Run the tests
+```
+cd supabase/tests
+npm install
+npm test
+```
+
+---
+
+## Design notes (for the agent and website builders)
+
+**Live gate (SPEC 2.4) - how it is enforced.** `bot_control_before` is a BEFORE INSERT/UPDATE trigger, declared
+SECURITY INVOKER so `current_user` is the role that runs the statement. Every request from the website or the agent
+comes through the Supabase API as role `authenticated` (or `anon`). For those roles the trigger requires, on a
+`false -> true` change of `desired.live` (missing/null counts as false):
+(a) an `amr` entry with method `password`, `otp` or `totp` and a numeric `timestamp` >= now() - 300 s, else
+`reauth_required`; (b) if the user has a row in `auth.mfa_factors` with status `verified`, JWT `aal` = `aal2`, else
+`mfa_required`. `true -> false` and edits while live stays true are never gated. The same check is the RPC
+`live_gate_status()` so the UI can ask first.
+
+**register_bot insert path - why it is safe.**
+1. Clients have **no INSERT privilege and no INSERT policy** on `bot_control`. The only way to create a row is
+   `register_bot()`. (Upsert is an INSERT too, so it is refused as well.)
+2. `register_bot()` is SECURITY DEFINER: inside it `current_user` is the function owner (`postgres`), not a client
+   role, so the trigger does not gate that one insert. There is no session flag, setting or nonce a client could
+   set to imitate it (`set_config(...)` changes nothing).
+3. Defence in depth: if someone later grants INSERT by mistake, the trigger still gates any client insert with
+   `live = true` (tested).
+4. `register_bot()` always creates a NEW bot id. It cannot touch an existing bot's control row, and the PC agent is
+   bound to the bot id stored in its local config, so a stolen web session cannot use it to switch a real PC live.
+5. `postgres` (SQL editor) and `service_role` are not gated: they bypass RLS and could drop the trigger anyway; the
+   website and agent never use them.
+
+**Contract notes**
+- `bot_control`: website and agent must **UPDATE (PATCH)** only, never insert/upsert. `version`, `updated_by`,
+  `updated_at` are set by the trigger (client values are ignored); `bot_id` is immutable.
+- `desired` must be a JSON object; `desired.live` must be a JSON boolean or null (CHECK constraint).
+- `journal`: duplicates of `(bot_id, line_hash)` are skipped silently by a trigger, so a plain insert batch is fine.
+  If you use PostgREST upsert, pass `?on_conflict=bot_id,line_hash` with `Prefer: resolution=ignore-duplicates`.
+- `bot_status`: upsert with `?on_conflict=bot_id` and `Prefer: resolution=merge-duplicates`. `updated_at` is set
+  to the server time on every write.
+- `bots.last_seen`: when a client writes any value, the server stores `now()` (PC clocks drift). Do not put balances
+  in `bots.agent_state` - the admin can read `bots`.
+- Errors are raised with a short code as the message: `not_authenticated`, `not_approved`, `admin_only`,
+  `invite_invalid`, `account_disabled`, `invite_not_found`, `role_invalid`, `days_invalid`, `user_not_found`,
+  `cannot_demote_self`, `cannot_disable_self`, `name_invalid`, `desired_invalid`, `reauth_required`,
+  `mfa_required`, `bot_id_immutable`.
+- Audit actions: `control`, `preset_insert|update|delete`, `bot_delete`, `invite_redeem`, `profile_display_name`,
+  `admin_create_invite`, `admin_revoke_invite`, `admin_set_user`, `admin_bootstrap_invite`. The admin's Audit page
+  shows other users' `admin_*` / `invite_*` rows only (Spec addition 19); everyone sees their own bots and presets.
+- News rows: `name` is one of `US NFP (Non-Farm Payrolls)`, `US CPI`, `FOMC rate decision`,
+  `FOMC press conference`; `note` = `YYYY-MM-DD HH:MM ET (US Eastern); <code>; source: ...`.
+
+---
+
+## Spec additions
+
+Things SPEC.md section 2 did not say, added here (nothing in the other parts' contracts was removed):
+
+1. **bot_control has no client INSERT** (SPEC 2.3 said owner insert). `register_bot()` is the only insert path; this
+   is what makes the register exemption of the live gate safe (see above). Website/agent only UPDATE it.
+2. **Gate scope:** the live gate applies to client roles (`authenticated`, `anon`); `postgres` / `service_role` are
+   trusted. On insert the trigger also forces `version = 1`, `updated_by = auth.uid()`, `updated_at = now()`.
+   `bot_id` cannot be changed by an update (`bot_id_immutable`).
+3. **CHECK on `bot_control.desired`:** JSON object; `live` absent, null or a JSON boolean.
+4. **New RPCs:** `live_gate_status() returns text` ('ok' | 'reauth_required' | 'mfa_required') and
+   `owns_bot(p_bot uuid) returns boolean`. Both security definer, stable, authenticated only.
+5. **`admin_overview()` has an extra last column `email text`** (display names can collide). Still no balances.
+6. **`admin_set_user`:** a null argument keeps the current value. Self-protection also blocks setting your own
+   `approved = false`. Errors `cannot_demote_self`, `cannot_disable_self`, `user_not_found`, `role_invalid`.
+7. **`redeem_invite`:** also removes inner spaces and dashes; a disabled caller gets `account_disabled` (code stays
+   unused); creates the caller's profile if it is missing.
+8. **`create_invite`:** `p_role` must be admin/member (`role_invalid`), `p_days` 1..365 (`days_invalid`).
+9. **Validation:** `register_bot` name 1..100 chars, desired object (`name_invalid`, `desired_invalid`);
+   `set_display_name` 1..60 chars (`name_invalid`).
+10. **Extra audit rows:** `invite_redeem`, `profile_display_name`, `bot_delete`, `admin_bootstrap_invite` (actor null).
+11. **Server-side stamps:** `bot_status.updated_at` on every write; `bots.last_seen` = server `now()` whenever a
+    client writes it; `presets.updated_at` on update (`created_at` cannot be changed).
+12. **Journal duplicate trigger:** an insert whose `(bot_id, line_hash)` already exists is skipped without error,
+    whatever conflict target the client uses.
+13. **Defaults:** `bots.owner` and `presets.owner` default to `auth.uid()`.
+14. **Foreign keys:** `invites.created_by` / `invites.used_by` are `on delete set null` (deleting a user does not fail
+    on old invites; `used_at` keeps the invite marked used).
+15. **Backfill:** profiles are created for `auth.users` rows that existed before the schema was applied.
+16. **auth.users trigger** is named `dobby_on_auth_user_created` and created only if missing (no drop on `auth.users`).
+17. **Storage policy names** are prefixed `dobby_downloads_*` (storage.objects is shared with any other app).
+18. **Privileges:** anon has none on tables, sequences or functions; authenticated has no TRUNCATE anywhere and only
+    the commands each table's policies allow; internal and trigger functions are not executable by clients.
+19. **Audit visibility narrowed** (SPEC 2.3 said "admin select all"; changed for the same privacy reason as
+    `admin_overview` having no balances). An approved user sees: rows where `actor` = themselves, rows of bots they
+    own, `preset_*` rows of presets they own (`owner` in the row's before/after), and the `bot_delete` row of their
+    own bot. The admin additionally sees **only** `admin_*` and `invite_*` rows of other users - never their
+    `control`, `preset_*` or `bot_delete` rows (those carry lots, `InpVirtualStart`, `InpKillBalance`). RLS cannot
+    hide single columns, so other users' `bot_delete` rows are hidden from the admin completely.
+
+---
+
+## Tests (`tests/`) and known limits
+
+`npm test` runs 59 tests in 4 files (schema, invites, rls, control) on PGlite 0.5 (Postgres 18 in WebAssembly).
+`supabase_stub.sql` creates the Supabase pieces schema.sql relies on: roles `anon` / `authenticated` /
+`service_role` with Supabase-like default privileges (ALL on new public objects, so the revokes are really tested),
+`auth.users`, `auth.mfa_factors` (status enum), `auth.uid()` / `auth.jwt()` with the same definitions as Supabase,
+`storage.buckets` / `storage.objects` with RLS on, and the `supabase_realtime` publication. `schema.sql` is run twice
+(and a third time with data) to prove it is re-runnable. A client is simulated exactly like PostgREST does it:
+`set role authenticated` + `set_config('request.jwt.claims', '<json>', false)`.
+
+Limits:
+- No real GoTrue / PostgREST / Realtime / Storage API: JWT claims are written by hand, storage policies are tested on
+  `storage.objects` directly, realtime is checked only for publication membership.
+- One connection only: no concurrency test (two people redeeming the same code at once relies on `select ... for
+  update` in `redeem_invite`).
+- In PGlite `postgres` is a superuser; in Supabase it is the (non-superuser) owner of the tables. Both bypass RLS as
+  owner, so security definer functions behave the same. Supabase runs Postgres 15/17: no Postgres 18-only syntax is
+  used.
+- `create or replace function` cannot change a function's return columns; a future change to `admin_overview`'s
+  columns needs `drop function public.admin_overview();` first.
