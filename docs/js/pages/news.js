@@ -1,7 +1,7 @@
 // News: upcoming news_events in Thai time, one-click blackout per bot (default -30/+90 min), admin add/edit/delete.
 import { h, mount, icon, fmtThai, thaiDayKey, until, toast, errText, confirmDialog, openModal, errorState, loadingState, emptyState,
   field, busy, isoUtc, utcToThaiInput, thaiInputToUtc, utcToServer } from '../util.js';
-import { app, currentBot, isAdmin } from '../state.js';
+import { app, myBot, isAdmin } from '../state.js';
 import { normDesired, patchDesired } from '../botctl.js';
 import { panel, pageHead } from '../views.js';
 
@@ -9,7 +9,7 @@ const MIN = 60000;
 const TIER = { 1: ['สำคัญมาก', 'tier1'], 2: ['สำคัญ', 'tier2'], 3: ['ทั่วไป', 'tier3'] };
 
 export async function render(root, ctx) {
-  const bot = currentBot();
+  const bot = myBot(); // blackouts go to my own bot, also while the admin is viewing a friend's bot
   root.append(pageHead('ข่าว', 'ข่าวเศรษฐกิจที่มีผลกับราคาทอง (เวลาไทย) กดปุ่มข้างข่าวเพื่อให้บอทงดเข้าไม้ช่วงนั้น', null, 'news'));
   const ctrlBox = h('div'), listBox = h('div', { class: 'stack-lg' }), adminBox = h('div');
   root.append(ctrlBox, listBox, adminBox);

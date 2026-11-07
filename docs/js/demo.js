@@ -1,5 +1,7 @@
-// Synthetic, deterministic demo data (no real account data). Two bots with ~3 weeks of journal, a live status with an
-// open position, invites, presets, news and audit rows. Dates are relative to "now" so the demo always looks current;
+// Synthetic, deterministic demo data (no real account data). The owner's two bots with ~3 weeks of journal, a live status
+// with an open position, invites, presets, news and audit rows; plus friends the owner (admin) sees read-only: นก (live,
+// open trade), บีม (paused, offline for 3 h, a blackout, an agent rejection), มิ้นท์ (approved, no bot yet), พลอย (waiting
+// for approval) and a disabled old account. Dates are relative to "now" so the demo always looks current;
 // the pattern itself is fixed by the seeds below. "Today" is always treated as a trading day.
 import { templateParams, remoteSubset, normalizeParams } from './params.js';
 import { autoFromBalance } from './simple.js';
@@ -425,14 +427,41 @@ export function createDemoDb(nowUtc = Date.now()) {
     },
   }, nowUtc);
 
+  // Friends (read-only for the admin). นก: EA v3.04 on a 500 balance, live, an open trade.
+  const pNok = { ...autoFromBalance(templateParams('ea-default'), 500), InpRemoteParams: true, InpRemoteLive: true, InpRemoteMaxLots: 0.50, InpRemoteMaxCapPct: 10 };
+  const simNok = new BotSim({
+    id: 'demo-bot-nok', seed: 777029, idBase: 700000, ea: '3.04', remote: true, params: pNok, openPosition: true, accountExtra: 12.4, spread: 0.22,
+    applied: {
+      version: 9, live: true, mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: '',
+      blackouts: [], applied_at: tsEa(nowUtc + DEMO_OFFSET_MIN * MIN - 30 * HOUR),
+    },
+  }, nowUtc);
+  // บีม: EA v3.04 on 250, one lock stage 90->88 plus ASIA16, paused from the web, the PC offline for 3 h, a news blackout.
+  const beamOffline = nowUtc - 3 * HOUR - 12 * MIN;
+  const pBeam = {
+    ...templateParams('std-003'), InpLotsA: 0.02, InpLotsNY: 0.02, InpLotsC5G: 0.02, InpMaxLots: 0.02, InpVirtualStart: 250,
+    InpLockEnable: true, InpLockAtPct: 90, InpLockToPct: 88, InpLock1Enable: false, InpUseAsia: true, InpLotsAsia: 0.01,
+    InpRemoteParams: true, InpRemoteLive: true, InpRemoteMaxLots: 0.10, InpRemoteMaxCapPct: 10, InpDailyCapPct: 8,
+  };
+  const simBeam = new BotSim({
+    id: 'demo-bot-beam', seed: 31337, idBase: 800000, ea: '3.04', remote: true, params: pBeam, openPosition: false, accountExtra: 0, pausedDays: 1,
+    spread: 0.25, offlineAt: beamOffline,
+    applied: {
+      version: 5, live: true, mode: 'pause', lots: null, allow_long: true, allow_short: true, max_spread: null, note: 'ไปต่างจังหวัด พักไว้',
+      blackouts: [[srv(nfpFrom), srv(nfpTo)]], applied_at: tsEa(beamOffline + DEMO_OFFSET_MIN * MIN - 20 * HOUR),
+    },
+  }, beamOffline);
+
   // local limits: SPEC 7.3 defaults (max lots = min(0.50, max(0.02, 2 x L)), daily cap 10)
   const limits1 = { allow_remote_control: true, allow_remote_live: true, allow_remote_params: true, max_lots: 0.06, max_daily_cap_pct: 10 };
   const limits2 = { allow_remote_control: true, allow_remote_live: false, allow_remote_params: false, max_lots: 0.04, max_daily_cap_pct: 10 };
-  const agentState = (v, limits, sim) => ({
-    agent_version: '1.0.0', applied_version: v, applied_at: iso(nowUtc - 26 * HOUR), limits, rejected: [], last_error: null,
+  const agentState = (v, limits, sim, at = nowUtc, rejected = []) => ({
+    agent_version: '1.0.0', applied_version: v, applied_at: iso(at - 26 * HOUR), limits, rejected, last_error: null,
     ea_heartbeat_age_s: 2, control_file_id: `W${pad3(v)}`, remote_file_version: sim.remote ? v : null,
-    bars: sim.bars(nowUtc),
+    bars: sim.bars(at),
   });
+  const limitsNok = { allow_remote_control: true, allow_remote_live: true, allow_remote_params: true, max_lots: 0.10, max_daily_cap_pct: 10 };
+  const limitsBeam = { allow_remote_control: true, allow_remote_live: true, allow_remote_params: true, max_lots: 0.04, max_daily_cap_pct: 10 };
   const bots = [
     {
       id: 'demo-bot-1', owner: DEMO_USER.id, name: 'คอมหลัก', created_at: iso(nowUtc - 21 * DAY), last_seen: iso(nowUtc - 2000),
@@ -442,8 +471,17 @@ export function createDemoDb(nowUtc = Date.now()) {
       id: 'demo-bot-2', owner: DEMO_USER.id, name: 'DESKTOP-NPNL85P', created_at: iso(nowUtc - 20 * DAY), last_seen: iso(nowUtc - 4000),
       agent_version: '1.0.0', ea_version: '3.03', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN, agent_state: agentState(6, limits2, sim2),
     },
+    {
+      id: 'demo-bot-nok', owner: 'demo-nok', name: 'คอมนก', created_at: iso(nowUtc - 11 * DAY), last_seen: iso(nowUtc - 3000),
+      agent_version: '1.0.0', ea_version: '3.04', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN, agent_state: agentState(9, limitsNok, simNok),
+    },
+    {
+      id: 'demo-bot-beam', owner: 'demo-beam', name: 'โน้ตบุ๊กบีม', created_at: iso(nowUtc - 8 * DAY), last_seen: iso(beamOffline), offline: true,
+      agent_version: '1.0.0', ea_version: '3.04', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN,
+      agent_state: agentState(5, limitsBeam, simBeam, beamOffline, [{ code: 'lots_clamped', detail: '0.05 -> 0.04' }]),
+    },
   ];
-  const ctl = (bot_id, version, desired, ago) => ({ bot_id, version, desired, updated_by: DEMO_USER.id, updated_at: iso(nowUtc - ago) });
+  const ctl = (bot_id, version, desired, ago, by = DEMO_USER.id) => ({ bot_id, version, desired, updated_by: by, updated_at: iso(nowUtc - ago) });
   const control = [
     ctl('demo-bot-1', 14, {
       live: true, control: { mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: '' },
@@ -453,21 +491,31 @@ export function createDemoDb(nowUtc = Date.now()) {
       live: false, control: { mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: 'พักไว้ก่อน' },
       blackouts: [], params: null,
     }, 50 * HOUR),
+    ctl('demo-bot-nok', 9, {
+      live: true, control: { mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: '' },
+      blackouts: [], params: remoteSubset(normalizeParams(pNok)),
+    }, 30 * HOUR, 'demo-nok'),
+    ctl('demo-bot-beam', 5, {
+      live: true, control: { mode: 'pause', lots: null, allow_long: true, allow_short: true, max_spread: null, note: 'ไปต่างจังหวัด พักไว้' },
+      blackouts: [{ from_utc: isoUtc(nfpFrom), to_utc: isoUtc(nfpTo), label: nextTier1.name }], params: remoteSubset(normalizeParams(pBeam)),
+    }, 4 * HOUR, 'demo-beam'),
   ];
 
   const profiles = [
     { id: DEMO_USER.id, email: DEMO_USER.email, display_name: 'เจ้าของบอท', role: 'admin', approved: true, disabled: false, created_at: iso(nowUtc - 40 * DAY) },
     { id: 'demo-nok', email: 'nok@example.com', display_name: 'นก', role: 'member', approved: true, disabled: false, created_at: iso(nowUtc - 12 * DAY) },
     { id: 'demo-beam', email: 'beam@example.com', display_name: 'บีม', role: 'member', approved: true, disabled: false, created_at: iso(nowUtc - 9 * DAY) },
+    { id: 'demo-mint', email: 'mint@example.com', display_name: 'มิ้นท์', role: 'member', approved: true, disabled: false, created_at: iso(nowUtc - 2 * DAY) },
     { id: 'demo-ploy', email: 'ploy@example.com', display_name: 'พลอย', role: 'member', approved: false, disabled: false, created_at: iso(nowUtc - 1 * DAY) },
     { id: 'demo-old', email: 'old@example.com', display_name: 'บัญชีทดสอบเก่า', role: 'member', approved: true, disabled: true, created_at: iso(nowUtc - 30 * DAY) },
   ];
-  const otherBots = { 'demo-nok': { bots: 1, last_seen: iso(nowUtc - 20000) }, 'demo-beam': { bots: 1, last_seen: iso(nowUtc - 3 * HOUR) } };
 
   const invites = [
     { code: 'DEMKH7K3QP', role: 'member', note: 'สำหรับเพื่อนคนใหม่', created_by: DEMO_USER.id, created_at: iso(nowUtc - DAY), expires_at: iso(nowUtc + 6 * DAY), used_by: null, used_at: null, revoked: false },
     { code: 'NKW4Z8RTBX', role: 'member', note: 'นก', created_by: DEMO_USER.id, created_at: iso(nowUtc - 13 * DAY), expires_at: iso(nowUtc - 6 * DAY), used_by: 'demo-nok', used_at: iso(nowUtc - 12 * DAY), revoked: false },
     { code: 'XPRD5M2HCD', role: 'member', note: 'ไม่ได้ใช้ หมดอายุ', created_by: DEMO_USER.id, created_at: iso(nowUtc - 11 * DAY), expires_at: iso(nowUtc - 4 * DAY), used_by: null, used_at: null, revoked: false },
+    { code: 'BM3Q7XWT4K', role: 'member', note: 'บีม', created_by: DEMO_USER.id, created_at: iso(nowUtc - 10 * DAY), expires_at: iso(nowUtc - 3 * DAY), used_by: 'demo-beam', used_at: iso(nowUtc - 9 * DAY), revoked: false },
+    { code: 'MT8K2PQRZ5', role: 'member', note: 'มิ้นท์', created_by: DEMO_USER.id, created_at: iso(nowUtc - 3 * DAY), expires_at: iso(nowUtc + 4 * DAY), used_by: 'demo-mint', used_at: iso(nowUtc - 2 * DAY), revoked: false },
     { code: 'RVK9P6LGEZ', role: 'admin', note: 'ส่งผิดคน', created_by: DEMO_USER.id, created_at: iso(nowUtc - 5 * DAY), expires_at: iso(nowUtc + 2 * DAY), used_by: null, used_at: null, revoked: true },
   ];
 
@@ -476,7 +524,14 @@ export function createDemoDb(nowUtc = Date.now()) {
     { id: 'demo-preset-2', owner: DEMO_USER.id, name: 'ทดลอง 0.04 ล็อก 1 ชั้น', params: { ...templateParams('std-003'), InpLotsA: 0.04, InpLotsNY: 0.04, InpLotsC5G: 0.04, InpMaxLots: 0.04, InpVirtualStart: 400, InpRemoteMaxLots: 0.05 }, notes: 'ลองใน Strategy Tester ก่อนใช้จริง', created_at: iso(nowUtc - 6 * DAY), updated_at: iso(nowUtc - 6 * DAY) },
   ];
 
+  presets.push(
+    { id: 'demo-preset-nok-1', owner: 'demo-nok', name: 'ทุน 500 อัตโนมัติ', params: { ...pNok }, notes: 'ใช้อยู่บนคอมนก', created_at: iso(nowUtc - 10 * DAY), updated_at: iso(nowUtc - 30 * HOUR) },
+    { id: 'demo-preset-nok-2', owner: 'demo-nok', name: 'ระวัง 0.03 ล็อก 1 ชั้น', params: { ...pNok, InpLotsA: 0.03, InpLotsNY: 0.03, InpLotsC5G: 0.03, InpMaxLots: 0.03, InpLock1Enable: false }, notes: 'สำรองไว้ช่วงข่าว', created_at: iso(nowUtc - 6 * DAY), updated_at: iso(nowUtc - 6 * DAY) },
+    { id: 'demo-preset-beam-1', owner: 'demo-beam', name: 'บีม 250 ล็อก 90→88', params: { ...pBeam }, notes: null, created_at: iso(nowUtc - 7 * DAY), updated_at: iso(nowUtc - 2 * DAY) },
+  );
+
   const d14 = control[0].desired;
+  const dNok = control[2].desired, dBeam = control[3].desired;
   const audit = [
     { ts: iso(nowUtc - 26 * HOUR), actor: DEMO_USER.id, bot_id: 'demo-bot-1', action: 'control', before: { ...d14, blackouts: [] }, after: d14 },
     { ts: iso(nowUtc - 50 * HOUR), actor: DEMO_USER.id, bot_id: 'demo-bot-2', action: 'control', before: { ...control[1].desired, live: true, control: { ...control[1].desired.control, note: '' } }, after: control[1].desired },
@@ -487,6 +542,15 @@ export function createDemoDb(nowUtc = Date.now()) {
     { ts: iso(nowUtc - 6 * DAY), actor: DEMO_USER.id, bot_id: null, action: 'preset_insert', before: null, after: { name: 'ทดลอง 0.04 ล็อก 1 ชั้น' } },
     { ts: iso(nowUtc - 12 * DAY), actor: 'demo-nok', bot_id: null, action: 'invite_redeem', before: { approved: false }, after: { approved: true, role: 'member' } },
     { ts: iso(nowUtc - 21 * DAY), actor: DEMO_USER.id, bot_id: 'demo-bot-1', action: 'control', before: null, after: { ...d14, blackouts: [] } },
+    // friends: the admin reads every row; members read their own
+    { ts: iso(nowUtc - 4 * HOUR), actor: 'demo-beam', bot_id: 'demo-bot-beam', action: 'control', before: { ...dBeam, blackouts: [] }, after: dBeam },
+    { ts: iso(nowUtc - 26 * HOUR), actor: 'demo-beam', bot_id: 'demo-bot-beam', action: 'control', before: { ...dBeam, control: { ...dBeam.control, mode: 'run', note: '' }, blackouts: [] }, after: { ...dBeam, blackouts: [] } },
+    { ts: iso(nowUtc - 2 * DAY), actor: 'demo-beam', bot_id: null, action: 'preset_update', before: { name: 'บีม 250', owner: 'demo-beam' }, after: { name: 'บีม 250 ล็อก 90→88', owner: 'demo-beam' } },
+    { ts: iso(nowUtc - 8 * DAY), actor: 'demo-beam', bot_id: 'demo-bot-beam-old', action: 'bot_delete', before: { id: 'demo-bot-beam-old', owner: 'demo-beam', name: 'คอมเก่าบีม' }, after: null },
+    { ts: iso(nowUtc - 9 * DAY), actor: 'demo-beam', bot_id: null, action: 'invite_redeem', before: { approved: false }, after: { approved: true, role: 'member' } },
+    { ts: iso(nowUtc - 30 * HOUR), actor: 'demo-nok', bot_id: 'demo-bot-nok', action: 'control', before: { ...dNok, live: false }, after: dNok },
+    { ts: iso(nowUtc - 6 * DAY), actor: 'demo-nok', bot_id: null, action: 'preset_insert', before: null, after: { name: 'ระวัง 0.03 ล็อก 1 ชั้น', owner: 'demo-nok' } },
+    { ts: iso(nowUtc - 2 * DAY), actor: 'demo-mint', bot_id: null, action: 'invite_redeem', before: { approved: false }, after: { approved: true, role: 'member' } },
   ].sort((a, b) => b.ts.localeCompare(a.ts)).map((a, i) => ({ id: 900 - i, ...a }));
 
   const downloads = [
@@ -497,7 +561,7 @@ export function createDemoDb(nowUtc = Date.now()) {
   ];
 
   return {
-    user: DEMO_USER, profiles, otherBots, invites, bots, control, sims: { 'demo-bot-1': sim1, 'demo-bot-2': sim2 },
+    user: DEMO_USER, profiles, invites, bots, control, sims: { 'demo-bot-1': sim1, 'demo-bot-2': sim2, 'demo-bot-nok': simNok, 'demo-bot-beam': simBeam },
     presets, audit, news, downloads,
     factors: [{ id: 'demo-totp-1', factor_type: 'totp', status: 'verified', friendly_name: 'มือถือ (ตัวอย่าง)', created_at: iso(nowUtc - 30 * DAY) }],
   };

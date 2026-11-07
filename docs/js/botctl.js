@@ -32,7 +32,9 @@ export function normDesired(d) {
 }
 
 // Read-modify-write with optimistic concurrency (version); one retry on a conflict.
+// Only for my own bots: the admin viewing a friend's bot never sends anything (the API checks again).
 export async function patchDesired(botId, mutate) {
+  if (!app.bots.some((b) => b.id === botId)) throw new ApiError('read_only');
   for (let attempt = 0; attempt < 2; attempt++) {
     const ctl = await app.api.botControl(botId);
     if (!ctl) throw new ApiError('not_found', 'no bot_control row', 'บอทนี้ยังไม่มีแถวควบคุม ให้รัน python dobby_agent.py register ที่เครื่องอีกครั้ง');

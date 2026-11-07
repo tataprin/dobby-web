@@ -919,7 +919,6 @@ ol.steps { margin: 0; padding-left: 1.3em; display: grid; gap: var(--s2); }
 .adv-ctrl { display: grid; gap: var(--s1); justify-items: end; margin-left: auto; }
 .adv-ctrl.checks { display: flex; flex-wrap: wrap; gap: 0 var(--s5); justify-content: flex-start; margin-left: 0; }
 .ed-tools { display: flex; flex-wrap: wrap; gap: var(--s2); }
-.editor-body.readonly .group { background: transparent; }
 .upgrade-box { display: grid; gap: var(--s4); padding: var(--panel-pad); border-radius: var(--r-panel); background: var(--gold-tint); }
 .upgrade-head { display: flex; gap: var(--s3); align-items: flex-start; }
 .upgrade-head h3 { font-size: var(--fs-18); font-weight: 600; }
@@ -1403,3 +1402,72 @@ details:where(:not(.panel, .faq, .ed-sec))[open] > summary::before { transform: 
 }
 .set-ctrl > .btn.ghost:last-child { margin-right: calc(-1 * var(--s3)); }
 .filters .segmented > button { padding: 0 var(--s2); min-width: 0; }
+
+/* ================================================================ admin: view-only friends' bots */
+/* the mode line under the header (inverse, like the save bar) */
+.view-banner { background: var(--inverse); color: var(--on-inverse); }
+.view-in { display: flex; align-items: center; gap: var(--s3); min-height: 48px; padding-top: var(--s1); padding-bottom: var(--s1); font-size: var(--fs-14); }
+.view-in strong { font-weight: 600; }
+.view-ico { display: inline-flex; flex: none; }
+.view-in .btn { background: transparent; color: var(--on-inverse); border-color: color-mix(in srgb, var(--on-inverse) 45%, transparent); }
+.view-in .btn:hover { background: color-mix(in srgb, var(--on-inverse) 12%, transparent); border-color: var(--on-inverse); }
+.botpick-field.is-friend { border-color: var(--ink); }
+/* ผู้ใช้ > บอทของสมาชิก */
+.members { display: grid; gap: var(--s6); }
+.member { display: grid; gap: var(--s4); min-width: 0; }
+.member-head { display: flex; align-items: center; gap: var(--s2) var(--s3); flex-wrap: wrap; min-height: var(--h-btn); }
+.member-who { display: grid; min-width: 0; }
+.member-name { font-size: var(--fs-18); line-height: 1.4; overflow-wrap: anywhere; }
+.member-chips { justify-content: flex-end; }
+.member-empty { display: flex; align-items: center; gap: var(--s4); flex-wrap: wrap; min-height: 96px; background: var(--sheet); border: 1px solid var(--hair); border-radius: var(--r-panel); padding: var(--panel-pad); }
+.member-empty .pos-empty-ico { margin: 0; flex: none; }
+.member-empty .state-title { font-size: var(--fs-16); }
+.member-empty > .btn { margin-left: auto; }
+.fbot { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; background: var(--sheet); border: 1px solid var(--hair); border-radius: var(--r-panel); padding: var(--panel-pad); }
+.fbot-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s2) var(--s4); }
+.fbot-name { font-size: var(--fs-18); line-height: 1.4; overflow-wrap: anywhere; }
+.machine-status.is-on .dot { background: var(--jade); box-shadow: 0 0 0 3px var(--jade-tint); }
+.machine-status.is-on .st { color: var(--jade); font-weight: 600; }
+.machine-status.is-off .dot { background: var(--cinnabar); }
+.machine-status.is-off .st { color: var(--cinnabar); font-weight: 600; }
+.fbot-figs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair); }
+.fbot-figs > div { display: grid; gap: 2px; padding: var(--s3) var(--s3) var(--s3) 0; min-width: 0; align-content: start; }
+.fbot-figs > div + div { padding-left: var(--s3); border-left: 1px solid var(--hair); }
+.fbot-figs dt { font-size: var(--fs-14); color: var(--slate); }
+.fbot-figs dd { margin: 0; font-family: var(--font-num); font-size: var(--fs-18); font-weight: 600; line-height: 1.35; }
+.fbot-facts { display: grid; grid-template-columns: 112px minmax(0, 1fr); column-gap: var(--s4); margin: 0; }
+.fbot-fact { display: contents; }
+.fbot-fact dt, .fbot-fact dd { padding: var(--s2) 0; border-top: 1px solid var(--hair); min-width: 0; }
+.fbot-fact:first-child dt, .fbot-fact:first-child dd { border-top: 0; padding-top: 0; }
+.fbot-fact dt { font-size: var(--fs-14); color: var(--slate); line-height: 28px; }
+.fbot-fact dd { margin: 0; min-height: 28px; display: flex; align-items: center; flex-wrap: wrap; gap: var(--s1); overflow-wrap: anywhere; }
+.fbot-fact dd .chips { gap: var(--s1); }
+.fbot-open { display: grid; gap: var(--s1); }
+.fbot-pos { display: inline-flex; align-items: baseline; gap: var(--s1); flex-wrap: wrap; }
+.fbot-summary { font-size: var(--fs-14); color: var(--slate); line-height: 1.55; }
+.fbot-summary strong { color: var(--ink); font-weight: 600; }
+.fbot-presets { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.fbot-presets .chip { text-decoration: none; max-width: 100%; }
+.fbot-presets .chip:hover { border-color: var(--hair-strong); }
+.fbot-foot { margin-top: auto; display: flex; flex-wrap: wrap; gap: var(--s2); padding-top: var(--s4); border-top: 1px solid var(--hair); }
+@media (max-width: 599px) {
+  .fbot-facts { grid-template-columns: 96px minmax(0, 1fr); column-gap: var(--s3); }
+  .fbot-figs dd { font-size: var(--fs-16); }
+  .fbot-foot .btn { flex: 1 1 40%; }
+  .member-empty > .btn { margin-left: 0; }
+}
+/* a friend's preset, read only */
+.pf-label { font-weight: 500; }
+.pf-value { font-size: var(--fs-16); font-weight: 600; }
+.audit-who { color: var(--ink); font-weight: 600; }
+.fig-value > .unit { margin-left: 6px; }
+.member-bots.single { display: grid; }
+@media (min-width: 1024px) {
+  .member-bots.single .fbot-facts { grid-template-columns: 112px minmax(0, 1fr) 112px minmax(0, 1fr); }
+  .member-bots.single .fbot-fact:nth-child(-n+2) dt, .member-bots.single .fbot-fact:nth-child(-n+2) dd { border-top: 0; padding-top: 0; }
+  .member-bots.single .fbot-fact:nth-child(even) dt { padding-left: var(--s4); border-left: 1px solid var(--hair); }
+}
+.botname-label { white-space: nowrap; flex: none; }
+.fbot-fact dd { align-items: flex-start; line-height: 28px; }
+.fbot-fact dd .chip { line-height: 1; }
+.quick-head > .chip, .live-row > .chip { margin-left: auto; }

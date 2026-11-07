@@ -394,8 +394,8 @@ begin
 end;
 $$;
 
--- NO balances, status or journal data: only who the users are and how many bots they run.
--- email is a spec addition (display_name alone cannot tell two "john" apart).
+-- Who the users are and how many bots they run (the admin reads each bot's status / settings / journal directly
+-- through the select policies). email is a spec addition (display_name alone cannot tell two "john" apart).
 create or replace function public.admin_overview()
 returns table (user_id uuid, display_name text, role text, approved boolean, disabled boolean,
                created_at timestamptz, bots int, last_seen timestamptz, email text)
@@ -740,11 +740,14 @@ drop policy if exists bots_delete on public.bots;
 create policy bots_delete on public.bots for delete to authenticated
   using (owner = (select auth.uid()) and (select public.is_approved()));
 
--- bot_status / journal / bot_control: approved owner of the bot. (The admin does NOT see them: balances stay private.)
+-- bot_status / journal / bot_control: approved owner of the bot writes; the admin READS every bot (2026-11-07: the
+-- owner of the site wants to see what every friend's bot is doing). Writes stay owner-only, so the admin can look
+-- but never change another user's bot.
 drop policy if exists bot_status_select on public.bot_status;
 create policy bot_status_select on public.bot_status for select to authenticated
-  using ((select public.is_approved())
-         and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+  using (((select public.is_approved())
+          and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+         or (select public.is_admin()));
 drop policy if exists bot_status_insert on public.bot_status;
 create policy bot_status_insert on public.bot_status for insert to authenticated
   with check ((select public.is_approved())
@@ -758,8 +761,9 @@ create policy bot_status_update on public.bot_status for update to authenticated
 
 drop policy if exists journal_select on public.journal;
 create policy journal_select on public.journal for select to authenticated
-  using ((select public.is_approved())
-         and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+  using (((select public.is_approved())
+          and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+         or (select public.is_admin()));
 drop policy if exists journal_insert on public.journal;
 create policy journal_insert on public.journal for insert to authenticated
   with check ((select public.is_approved())
@@ -773,8 +777,9 @@ create policy journal_update on public.journal for update to authenticated
 
 drop policy if exists bot_control_select on public.bot_control;
 create policy bot_control_select on public.bot_control for select to authenticated
-  using ((select public.is_approved())
-         and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+  using (((select public.is_approved())
+          and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+         or (select public.is_admin()));
 drop policy if exists bot_control_insert on public.bot_control;   -- deliberately none: register_bot() only
 drop policy if exists bot_control_update on public.bot_control;
 create policy bot_control_update on public.bot_control for update to authenticated
@@ -783,10 +788,10 @@ create policy bot_control_update on public.bot_control for update to authenticat
   with check ((select public.is_approved())
               and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
 
--- presets: approved owner all
+-- presets: approved owner all; the admin reads every preset (read only)
 drop policy if exists presets_select on public.presets;
 create policy presets_select on public.presets for select to authenticated
-  using (owner = (select auth.uid()) and (select public.is_approved()));
+  using ((owner = (select auth.uid()) and (select public.is_approved())) or (select public.is_admin()));
 drop policy if exists presets_insert on public.presets;
 create policy presets_insert on public.presets for insert to authenticated
   with check (owner = (select auth.uid()) and (select public.is_approved()));
@@ -799,9 +804,7 @@ create policy presets_delete on public.presets for delete to authenticated
   using (owner = (select auth.uid()) and (select public.is_approved()));
 
 -- audit (approved users): rows I made, rows of bots I own, rows of presets I own, the delete row of my own bot.
--- The admin additionally sees ONLY admin_* and invite_* rows of other users - never their control / preset /
--- bot_delete rows (desired and preset params reveal lots and account size; same privacy rule as admin_overview).
--- Inserts only by triggers / RPCs (no grant).
+-- The admin reads every row (2026-11-07: who changed what on which bot). Inserts only by triggers / RPCs (no grant).
 drop policy if exists audit_select on public.audit;
 create policy audit_select on public.audit for select to authenticated
   using ((select public.is_approved())
@@ -810,7 +813,7 @@ create policy audit_select on public.audit for select to authenticated
               or (action like 'preset\_%'
                   and coalesce(after ->> 'owner', before ->> 'owner') = (select auth.uid())::text)
               or (action = 'bot_delete' and before ->> 'owner' = (select auth.uid())::text)
-              or ((select public.is_admin()) and (action like 'admin\_%' or action like 'invite\_%'))));
+              or (select public.is_admin())));
 
 -- news_events: approved read; admin write
 drop policy if exists news_select on public.news_events;

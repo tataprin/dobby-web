@@ -1,6 +1,6 @@
 // Boot, theme, hash router and the app shell.
 import { createApi, isConfigured, wantsDemo } from './api.js';
-import { app, on, emit, isAdmin, loadBots, selectBot, currentBot, prefs } from './state.js';
+import { app, on, emit, isAdmin, loadBots, selectBot, currentBot, prefs, viewingFriend, backToMyBot } from './state.js';
 import { h, icon, mount, loadingState, errorState, emptyState, errText, openModal } from './util.js';
 import { maybeStartTour } from './tour.js';
 import { brandMark } from './hallmark.js';
@@ -122,7 +122,7 @@ export async function refreshSession() {
   app.user = app.api.user();
   app.profile = null;
   app.needMfa = false;
-  if (!app.user) { app.bots = []; app.botId = null; return; }
+  if (!app.user) { app.bots = []; app.friendBots = []; app.people = {}; app.botId = null; return; }
   try {
     const a = await app.api.aal();
     app.needMfa = a.current === 'aal1' && a.next === 'aal2';
@@ -146,15 +146,27 @@ function navLink(item, cls, short = false) {
 }
 const visible = (n) => !n.admin || isAdmin();
 
+// Header bot picker. For the admin it also lists everyone else's bots, grouped under the owner's name (view only).
 function botPicker() {
   const box = h('div', { class: 'botpick' });
   const draw = () => {
     mount(box);
-    if (!app.bots.length) return;
-    if (app.bots.length === 1) { box.append(h('a', { class: 'botname', href: '#/machines', title: 'เครื่องของฉัน' }, h('span', { class: 'botname-label' }, 'บอท'), h('span', { class: 'botname-text' }, app.bots[0].name))); return; }
-    const sel = h('select', { class: 'botpick-select', 'aria-label': 'เลือกบอท', onchange: (e) => selectBot(e.target.value) },
-      app.bots.map((b) => h('option', { value: b.id, selected: b.id === app.botId }, b.name)));
-    box.append(h('label', { class: 'botpick-field' }, h('span', { class: 'botname-label' }, 'บอท'), sel, h('span', { class: 'botpick-chev', 'aria-hidden': 'true' }, icon('chevron'))));
+    const friends = app.friendBots || [];
+    if (!app.bots.length && !friends.length) return;
+    if (app.bots.length === 1 && !friends.length) { box.append(h('a', { class: 'botname', href: '#/machines', title: 'เครื่องของฉัน' }, h('span', { class: 'botname-label' }, 'บอท'), h('span', { class: 'botname-text' }, app.bots[0].name))); return; }
+    const opt = (b) => h('option', { value: b.id, selected: b.id === app.botId }, b.name);
+    let options = app.bots.map(opt);
+    if (friends.length) {
+      const owners = [];
+      for (const b of friends) { let g = owners.find((x) => x.owner === b.owner); if (!g) owners.push(g = { owner: b.owner, name: b.owner_name, bots: [] }); g.bots.push(b); }
+      options = [
+        h('optgroup', { label: 'บอทของฉัน' }, app.bots.length ? app.bots.map(opt) : h('option', { value: '', disabled: true }, 'ยังไม่มีบอท')),
+        ...owners.map((g) => h('optgroup', { label: `ของ ${g.name} (ดูอย่างเดียว)` }, g.bots.map(opt))),
+      ];
+    }
+    const sel = h('select', { class: 'botpick-select', 'aria-label': 'เลือกบอท', onchange: (e) => { if (e.target.value) selectBot(e.target.value); } }, options);
+    const friend = viewingFriend();
+    box.append(h('label', { class: `botpick-field${friend ? ' is-friend' : ''}` }, h('span', { class: 'botname-label' }, friend ? 'ดูบอท' : 'บอท'), sel, h('span', { class: 'botpick-chev', 'aria-hidden': 'true' }, icon('chevron'))));
   };
   draw();
   on('bots-loaded', draw);
@@ -193,7 +205,7 @@ export function themeSegment(onChange, iconsOnly = false) {
 
 export async function signOut() {
   try { await app.api.signOut(); } catch { /* ignore */ }
-  app.user = null; app.profile = null; app.bots = []; app.botId = null;
+  app.user = null; app.profile = null; app.bots = []; app.friendBots = []; app.people = {}; app.botId = null;
   nav('#/login', true);
 }
 
@@ -209,6 +221,28 @@ function demoBanner() {
     isConfigured() ? h('a', { href: location.pathname }, 'ออกจากโหมดตัวอย่าง') : null);
   draw();
   on('bots-loaded', draw);
+  return box;
+}
+
+// Admin looking at someone else's bot: one clear line under the header, with the way back to their own bot.
+function viewBanner() {
+  const box = h('div', { class: 'view-banner', role: 'status', hidden: true });
+  const inner = h('div', { class: 'view-in wrap-col' });
+  box.append(inner);
+  const draw = () => {
+    const b = currentBot();
+    const friend = viewingFriend();
+    box.hidden = !friend;
+    document.body.classList.toggle('viewing-friend', friend);
+    if (!friend) { mount(inner); return; }
+    mount(inner,
+      h('span', { class: 'view-ico', 'aria-hidden': 'true' }, icon('eye')),
+      h('p', { class: 'grow' }, 'กำลังดูบอทของ ', h('strong', null, b.owner_name || 'สมาชิก'), ' ดูอย่างเดียว สั่งงานไม่ได้'),
+      app.bots.length ? h('button', { class: 'btn small', type: 'button', onclick: () => backToMyBot() }, 'กลับไปบอทของฉัน') : null);
+  };
+  draw();
+  on('bots-loaded', draw);
+  on('bot-changed', draw);
   return box;
 }
 
@@ -249,6 +283,7 @@ function buildShell() {
         h('div', { class: 'top-actions' },
           h('a', { class: 'icon-btn top-help', href: '#/guide', 'aria-label': 'วิธีใช้', title: 'วิธีใช้' }, icon('help')),
           themeButton()))),
+      viewBanner(),
       demoBanner(),
       main),
     tabbar);
@@ -375,7 +410,7 @@ async function boot() {
     app.api.onAuth(async (event, user) => {
       if (event === 'PASSWORD_RECOVERY') { await refreshSession(); nav('#/reset', true); return; }
       if (event === 'SIGNED_OUT') {
-        if (app.user) { app.user = null; app.profile = null; app.bots = []; route(); }
+        if (app.user) { app.user = null; app.profile = null; app.bots = []; app.friendBots = []; app.people = {}; route(); }
         return;
       }
       if (user && (!app.user || app.user.id !== user.id)) { await refreshSession(); route(); }

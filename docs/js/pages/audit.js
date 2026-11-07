@@ -1,4 +1,5 @@
-// Audit: who changed what, when (control, presets, bot deletes, invites, admin actions).
+// Audit: who changed what, when (control, presets, bot deletes, invites, admin actions). The admin receives every user's
+// rows (RLS): each row names who did it and which bot (name + owner), with a filter by user.
 import { h, icon, fmtThai, errorState, loadingState, emptyState, callout, field } from '../util.js';
 import { app, isAdmin } from '../state.js';
 import { panel, pageHead } from '../views.js';
@@ -18,32 +19,58 @@ const FILTERS = [['', 'ทั้งหมด'], ['bot', 'คำสั่งบ�
 export async function render(root, ctx) {
   root.append(pageHead('บันทึกการเปลี่ยนแปลง', 'ทุกการเปลี่ยนแปลงถูกบันทึกโดยฐานข้อมูล ใคร เมื่อไร ก่อนและหลัง', null, 'settings'));
   if (isAdmin()) {
-    root.append(callout('info', null, h('p', null, 'ในฐานะผู้ดูแล คุณเห็นรายการของตัวเองทั้งหมด และเห็นเฉพาะรายการผู้ใช้/รหัสเชิญของคนอื่น คำสั่งบอทและพรีเซ็ตของเพื่อนเป็นข้อมูลส่วนตัว จึงไม่แสดงที่นี่')));
+    root.append(callout('info', null, h('p', null, 'ในฐานะผู้ดูแล คุณเห็นรายการของสมาชิกทุกคน: คำสั่งบอท พรีเซ็ต การลบบอท และผู้ใช้กับรหัสเชิญ เลือกดูทีละคนได้จากช่อง "ผู้ใช้"')));
   }
   const filterBox = h('div', { class: 'audit-filters', role: 'group', 'aria-label': 'ตัวกรอง' });
   const listBox = h('div');
   root.append(filterBox, listBox);
   listBox.append(loadingState());
-  let rows = [], names = {};
+  let rows = [], names = {}, others = [];
   try {
     rows = await ctx.api.listAudit({ limit: 500 });
     if (isAdmin()) {
-      try { for (const u of await ctx.api.adminOverview()) names[u.user_id] = u.display_name || u.email; } catch { /* names optional */ }
+      try {
+        const [users, bots] = await Promise.all([ctx.api.adminOverview(), ctx.api.adminBots ? ctx.api.adminBots() : []]);
+        for (const u of users) names[u.user_id] = u.display_name || u.email;
+        others = bots;
+      } catch { /* names optional */ }
     }
   } catch (e) { listBox.replaceChildren(errorState(e, () => ctx.route())); return; }
-  const botName = (id) => { const b = app.bots.find((x) => x.id === id); return b ? b.name : id ? 'บอทที่ลบแล้วหรือของผู้ใช้อื่น' : ''; };
-  const actor = (id) => (!id ? 'ระบบ' : app.user && id === app.user.id ? 'คุณ' : names[id] || `ผู้ใช้ ${String(id).slice(0, 8)}`);
+  const me = app.user && app.user.id;
+  // every bot this page can name: mine, everyone else's (admin), and deleted ones (from their bot_delete row)
+  const botInfo = {};
+  for (const b of app.bots) botInfo[b.id] = { name: b.name, owner: b.owner };
+  for (const b of others) botInfo[b.id] = { name: b.name, owner: b.owner };
+  for (const r of rows) if (r.action === 'bot_delete' && r.bot_id && r.before && !botInfo[r.bot_id]) botInfo[r.bot_id] = { name: r.before.name || 'บอทที่ลบแล้ว', owner: r.before.owner, deleted: true };
+  const person = (id) => (!id ? 'ระบบ' : id === me ? 'คุณ' : names[id] || `ผู้ใช้ ${String(id).slice(0, 8)}`);
+  const actor = person;
+  const botName = (id) => { const b = botInfo[id]; return b ? b.name : id ? 'บอทที่ลบแล้วหรือของผู้ใช้อื่น' : ''; };
+  const botLabel = (id) => {
+    const b = botInfo[id];
+    if (!b) return botName(id);
+    return `${b.name}${b.owner && b.owner !== me ? ` ของ ${person(b.owner)}` : ''}${b.deleted ? ' (ลบแล้ว)' : ''}`;
+  };
+  // the people a row concerns: who did it, the bot's owner, the preset's owner, the user an admin action was about
+  const concerns = (r) => {
+    const out = new Set([r.actor]);
+    if (r.bot_id && botInfo[r.bot_id]) out.add(botInfo[r.bot_id].owner);
+    for (const x of [r.before, r.after]) if (x && typeof x === 'object' && x.owner) out.add(x.owner);
+    return out;
+  };
 
-  let group = '', bot = '', shown = 100;
+  let group = '', bot = '', who = '', shown = 100;
   const groupSel = h('select', { class: 'input select', onchange: (e) => { group = e.target.value; shown = 100; draw(); } },
     FILTERS.map(([v, t]) => h('option', { value: v }, t)));
   const botIds = [...new Set(rows.map((r) => r.bot_id).filter(Boolean))];
   const botSel = h('select', { class: 'input select', onchange: (e) => { bot = e.target.value; shown = 100; draw(); } },
-    h('option', { value: '' }, 'ทุกบอท'), botIds.map((id) => h('option', { value: id }, botName(id))));
-  filterBox.append(field('ประเภท', groupSel), botIds.length > 1 ? field('บอท', botSel) : null);
+    h('option', { value: '' }, 'ทุกบอท'), botIds.map((id) => h('option', { value: id }, botLabel(id))));
+  const people = [...new Set(rows.flatMap((r) => [...concerns(r)]).filter(Boolean))].sort((a, b) => (a === me ? -1 : b === me ? 1 : person(a).localeCompare(person(b), 'th')));
+  const whoSel = h('select', { class: 'input select', onchange: (e) => { who = e.target.value; shown = 100; draw(); } },
+    h('option', { value: '' }, 'ทุกคน'), people.map((id) => h('option', { value: id }, person(id))));
+  filterBox.append(field('ประเภท', groupSel), isAdmin() && people.length > 1 ? field('ผู้ใช้', whoSel) : null, botIds.length > 1 ? field('บอท', botSel) : null);
 
   function draw() {
-    const list = rows.filter((r) => (!group || GROUP(r.action) === group) && (!bot || r.bot_id === bot));
+    const list = rows.filter((r) => (!group || GROUP(r.action) === group) && (!bot || r.bot_id === bot) && (!who || concerns(r).has(who)));
     if (!list.length) { listBox.replaceChildren(emptyState('ยังไม่มีรายการ', 'เมื่อมีการเปลี่ยนคำสั่ง พรีเซ็ต หรือผู้ใช้ รายการจะขึ้นที่นี่')); return; }
     listBox.replaceChildren(panel(null, {},
       h('ol', { class: 'audit-list' }, list.slice(0, shown).map((r) => {
@@ -51,8 +78,8 @@ export async function render(root, ctx) {
         return h('li', { class: `audit g-${GROUP(r.action)}` },
           h('div', { class: 'audit-head' },
             h('span', { class: 'audit-action' }, ACTIONS[r.action] || r.action),
-            r.bot_id ? h('span', { class: 'chip' }, botName(r.bot_id)) : null,
-            h('span', { class: 'muted small' }, `${actor(r.actor)} เมื่อ ${fmtThai(Date.parse(r.ts), 'seconds')}`)),
+            r.bot_id ? h('span', { class: 'chip' }, icon('monitor'), botLabel(r.bot_id)) : null,
+            h('span', { class: 'muted small' }, h('strong', { class: 'audit-who' }, actor(r.actor)), ` เมื่อ ${fmtThai(Date.parse(r.ts), 'seconds')}`)),
           changes.length ? h('ul', { class: 'changes' }, changes.slice(0, 10).map((c) => h('li', null, c)), changes.length > 10 ? h('li', { class: 'muted' }, `และอีก ${changes.length - 10} รายการ`) : null)
             : h('p', { class: 'muted small' }, 'ไม่มีค่าที่เปลี่ยน'),
           h('details', null, h('summary', null, 'ดูข้อมูลดิบ'),

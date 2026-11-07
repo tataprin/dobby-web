@@ -93,7 +93,7 @@ news_events id bigserial pk, ts_utc timestamptz not null, name text not null, ti
   remove their own admin role or disable themselves.
 - `set_display_name(p_name text)` — own profile.
 - `admin_overview() returns table(user_id, display_name, role, approved, disabled, created_at, bots int, last_seen timestamptz)`
-  — admin only; NO balances (friends' money stays private).
+  — admin only (friends' bot details come from the admin select policies, see 2.3).
 - `register_bot(p_name text, p_desired jsonb) returns uuid` — approved caller; inserts bots + bot_control
   (version 1, desired = p_desired). Used by the agent on first setup.
 
@@ -101,10 +101,12 @@ news_events id bigserial pk, ts_utc timestamptz not null, name text not null, ti
 - profiles: select own row; admin selects all. No direct insert/update/delete (RPCs only).
 - invites: admin select. Writes through RPCs only.
 - bots: owner (approved) select/insert/update/delete own; admin select all.
-- bot_status, journal: owner of the bot (approved) select/insert/update. No delete except cascade.
-- bot_control: owner (approved) select/insert/update. No delete except cascade.
-- presets: owner (approved) all.
+- bot_status, journal: owner of the bot (approved) select/insert/update; admin select all. No delete except cascade.
+- bot_control: owner (approved) select/update (insert only through register_bot); admin select all. No delete.
+- presets: owner (approved) all; admin select all.
 - audit: select where the caller owns the bot (or actor = caller); admin select all. Insert only by triggers.
+- The admin reads every friend's bot but writes only their own (2026-11-07, site owner's request): the website shows
+  friends' bots to the admin as view-only, and members are told so on the sign-up and account pages.
 - news_events: approved select; admin insert/update/delete.
 - Storage bucket `downloads` (private): approved users read; admin insert/update/delete.
 

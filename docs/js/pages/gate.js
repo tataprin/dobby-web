@@ -2,6 +2,7 @@
 import { h, icon, field, busy, errText, callout, toast, loadingState } from '../util.js';
 import { cleanCode, CODE_RE } from './login.js';
 import { THAI_ERRORS } from '../api.js';
+import { adminSeesNotice } from '../views.js';
 
 function card(title, lead, ...kids) {
   return h('section', { class: 'auth-card' }, h('h1', null, title), lead ? h('p', { class: 'lead' }, lead) : null, ...kids);
@@ -34,6 +35,7 @@ export function renderInvite(root, ctx) {
         }
       },
     }, field('รหัสเชิญ', code), ctx.app.mode === 'demo' ? h('p', { class: 'hint' }, 'โหมดตัวอย่าง: ใช้ DEMKH7K3QP') : null, err, btn),
+    adminSeesNotice(),
     signOutBtn(ctx)));
 }
 

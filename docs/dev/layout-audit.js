@@ -15,7 +15,8 @@
 //   overlap     children of a grid / flex container that run into each other (content wider than its track)
 //   gaps        neighbours in one row of a CSS grid that are not exactly one column-gap apart
 // Special routes: 'login' (signs the demo out and back in), 'nobot' (demo account without bots), 'dialogs'
-// (welcome tour, a confirm dialog, a sheet with a form, a toast).
+// (welcome tour, a confirm dialog, a sheet with a form, a toast), 'friend' (admin: ภาพรวม / ประวัติ / ตั้งค่าบอท of the
+// first other user's bot, view only), 'friendpreset' (admin: the first other user's preset, read only).
 (() => {
   const TOL = 1.5;
   const BOX = ['.panel', '.fig', '.machine', '.group', '.hero', '.g-sec', '.g-toc', '.news-day', '.filters', '.audit-filters', '.dl-hero',
@@ -248,6 +249,24 @@
   async function special(name, wait, themes, results) {
     const app = await import('../js/state.js');
     for (let i = 0; i < 50 && !app.app.api; i++) await sleep(100); // the app may still be booting after a reload
+    if (name === 'friend' || name === 'friendpreset') {
+      if (name === 'friend') {
+        const fb = app.app.friendBots[0];
+        if (!fb) return;
+        app.selectBot(fb.id);
+        for (const r of ['dashboard', 'history', 'bot']) {
+          await goto(r, wait);
+          for (const t of themes) { await setTheme(t); results.push(...checkPage(`friend ${r} ${t}`)); }
+        }
+        app.backToMyBot(); await goto('dashboard', wait);
+      } else {
+        const list = app.app.api.adminPresets ? await app.app.api.adminPresets().catch(() => []) : [];
+        if (!list.length) return;
+        await goto(`presets/${encodeURIComponent(list[0].id)}`, wait);
+        for (const t of themes) { await setTheme(t); results.push(...checkPage(`friendpreset ${t}`)); }
+      }
+      return;
+    }
     if (name === 'nobot') {
       app.app.api.setDemoNoBots(true); await app.loadBots();
       await goto('dashboard', wait); location.hash = '#/machines'; await sleep(200); location.hash = '#/dashboard'; await sleep(wait);
@@ -284,13 +303,13 @@
 
   window.__layoutAudit = async function (opts = {}) {
     const routes = opts.routes || ['dashboard', 'bot', 'history', 'history?tab=trades', 'history?tab=journal', 'news', 'machines', 'guide', 'presets', 'calc',
-      'downloads', 'users', 'audit', 'settings', 'nobot', 'dialogs', 'login'];
+      'downloads', 'users', 'users?tab=people', 'audit', 'settings', 'friend', 'friendpreset', 'nobot', 'dialogs', 'login'];
     const themes = opts.themes || ['light', 'dark'];
     const wait = opts.wait || 1400;
     const before = document.documentElement.dataset.theme;
     const results = [];
     for (const r of routes) {
-      if (['nobot', 'dialogs', 'login'].includes(r)) { await special(r, wait, themes, results); continue; }
+      if (['nobot', 'dialogs', 'login', 'friend', 'friendpreset'].includes(r)) { await special(r, wait, themes, results); continue; }
       await goto(r, wait);
       for (const t of themes) {
         await setTheme(t);

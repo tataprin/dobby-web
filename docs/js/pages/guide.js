@@ -1,7 +1,7 @@
 // วิธีใช้: short illustrated sections, linked from the "?" button of every page (#/guide/<section>).
 import { h, icon, fmtNum, fmtSigned } from '../util.js';
-import { app, loadBots } from '../state.js';
-import { pageHead } from '../views.js';
+import { app, loadBots, isAdmin } from '../state.js';
+import { pageHead, ADMIN_SEES } from '../views.js';
 import { startTour } from '../tour.js';
 import { calculate, HORIZON30 } from '../lotcalc.js';
 import { ART_DASHBOARD, ART_SETTINGS, ART_PROGRESS, ART_LIVE, ART_NEWS, ART_LOCK, ART_SMARTSCREEN } from '../guide-art.js';
@@ -58,6 +58,7 @@ export function render(root, ctx) {
         flow('gear', '3 ตั้งค่าในแอป', 'เข้าสู่ระบบ เลือกบอท Dobby ใส่ทุนแล้วกดตั้งให้อัตโนมัติ เชื่อม MT5'),
         flow('play', '4 กดเริ่ม', 'กด "เริ่มทำงาน Dobby" ภายในหนึ่งนาทีบอทขึ้นที่หน้าภาพรวม')),
       tip('ใน MT5 ต้องเปิดปุ่ม Algo Trading ให้เป็นสีเขียว และเปิดคอมทิ้งไว้ บอทเทรดจากคอมเครื่องนั้น ไม่ใช่จากเว็บ'),
+      isAdmin() ? null : tip(ADMIN_SEES),
       h('div', { class: 'row gap wrap' }, linkBtn('#/downloads', 'ดาวน์โหลดแอป', 'download', true), linkBtn('#/machines', 'เครื่องของฉัน', 'monitor')),
       demo ? h('div', { class: 'g-demo' },
         h('p', null, h('strong', null, 'โหมดตัวอย่าง: '), 'ลองดูหน้าตาตอนที่ยังไม่มีบอท (หน้าภาพรวมจะสอน 3 ขั้นให้)'),
@@ -146,6 +147,7 @@ export function render(root, ctx) {
         ['บอทหลัก', 'มีหลายเครื่อง เลือก "ตั้งเป็นบอทหลัก" เว็บจะเปิดเครื่องนี้ก่อนทุกครั้ง สลับเครื่องได้ที่ช่องเลือกด้านบน'],
         ['เปลี่ยนชื่อ', 'ตั้งชื่อที่จำง่าย เช่น "คอมที่บ้าน" (ไม่กระทบบอท)'],
         ['ลบออกจากเว็บ', 'เอาเครื่องออกจากเว็บพร้อมประวัติ แต่ไม่ได้หยุดบอทที่คอมเครื่องนั้น ถ้าจะกลับมาใช้ ต้องเชื่อมเครื่องใหม่ในแอป']),
+      isAdmin() ? tip('ผู้ดูแล: ดูบอทของสมาชิกทุกคนได้ที่หน้า ผู้ใช้ แท็บ "บอทของสมาชิก" หรือเลือกจากช่องบอทด้านบน ดูได้อย่างเดียว สั่งงานไม่ได้') : null,
       h('div', { class: 'row gap wrap' }, linkBtn('#/machines', 'ไปหน้าเครื่องของฉัน', 'monitor'))),
 
     section('trouble',

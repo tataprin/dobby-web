@@ -145,12 +145,13 @@ Things SPEC.md section 2 did not say, added here (nothing in the other parts' co
 17. **Storage policy names** are prefixed `dobby_downloads_*` (storage.objects is shared with any other app).
 18. **Privileges:** anon has none on tables, sequences or functions; authenticated has no TRUNCATE anywhere and only
     the commands each table's policies allow; internal and trigger functions are not executable by clients.
-19. **Audit visibility narrowed** (SPEC 2.3 said "admin select all"; changed for the same privacy reason as
-    `admin_overview` having no balances). An approved user sees: rows where `actor` = themselves, rows of bots they
-    own, `preset_*` rows of presets they own (`owner` in the row's before/after), and the `bot_delete` row of their
-    own bot. The admin additionally sees **only** `admin_*` and `invite_*` rows of other users - never their
-    `control`, `preset_*` or `bot_delete` rows (those carry lots, `InpVirtualStart`, `InpKillBalance`). RLS cannot
-    hide single columns, so other users' `bot_delete` rows are hidden from the admin completely.
+19. **Admin reads everything, writes only their own** (changed 2026-11-07 at the site owner's request; it replaces
+    the earlier rule that hid friends' balances). The admin can SELECT every row of `bot_status`, `journal`,
+    `bot_control`, `presets` and `audit`, so the website can show what each friend's bot is doing. Every
+    insert / update / delete policy is still owner-only, so the admin can never change another user's bot, settings or
+    presets. An approved member sees: rows where `actor` = themselves, rows of bots they own, `preset_*` rows of presets
+    they own (`owner` in the row's before/after), and the `bot_delete` row of their own bot. Members are told on the
+    sign-up and account pages that the admin can see their bot.
 
 ---
 

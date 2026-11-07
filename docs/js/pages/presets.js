@@ -2,13 +2,14 @@
 // with validation, diff vs live, .set export, "Apply to bot" (remote keys only), and the lot calculator (#/calc).
 import { h, mount, icon, fmtNum, fmtSigned, fmtPct, fmtThai, toast, errText, confirmDialog, openModal, errorState, loadingState,
   emptyState, field, busy, downloadBlob, callout, newId, debounce } from '../util.js';
-import { app, currentBot } from '../state.js';
+import { app, myBot, isAdmin } from '../state.js';
 import { GROUPS, PARAMS, PARAM_BY_KEY, REMOTE_KEYS, TEMPLATES, templateParams, normalizeParams, validatePreset, validateRemote,
   liveValuesFromStatus, presetFromLive, remoteSubset, formatValue, sameValue, minutesToClock, defaults } from '../params.js';
 import { parseSet, buildSet, setFileName } from '../setfile.js';
 import { patchDesired, cmdBlock, normDesired } from '../botctl.js';
 import { calculate, tableForBalance, HORIZON30, DAILY_BASE, BASE_BALANCE, BASE_LOT } from '../lotcalc.js';
 import { panel, pageHead } from '../views.js';
+import { summaryRows } from '../simple.js';
 
 function tabs(active) {
   return h('div', { class: 'view-tabs' }, h('nav', { class: 'segmented', 'aria-label': 'พรีเซ็ตและเครื่องคำนวณ' },
@@ -16,8 +17,9 @@ function tabs(active) {
     h('a', { href: '#/calc', class: active === 'calc' ? 'on' : '', 'aria-current': active === 'calc' ? 'page' : null }, icon('calc'), 'คำนวณล็อต')));
 }
 
+// "ใช้กับบอท" / "ส่งไปที่บอท" always mean my own bot (also while the admin is viewing a friend's bot)
 async function botStatus(ctx) {
-  const bot = currentBot();
+  const bot = myBot();
   if (!bot) return { bot: null, st: null };
   try { const s = await ctx.api.botStatus(bot.id); return { bot, st: s ? s.status : null }; } catch { return { bot, st: null }; }
 }
@@ -35,10 +37,13 @@ async function renderList(root, ctx) {
   const createBox = h('div');
   root.append(createBox, listBox);
   listBox.append(loadingState());
-  let presets = [], bot = null, st = null;
+  let presets = [], bot = null, st = null, others = [];
   try {
-    [presets, { bot, st }] = await Promise.all([ctx.api.listPresets(), botStatus(ctx)]);
+    [presets, { bot, st }, others] = await Promise.all([ctx.api.listPresets(), botStatus(ctx),
+      isAdmin() && ctx.api.adminPresets ? ctx.api.adminPresets().catch(() => []) : []]);
   } catch (e) { listBox.replaceChildren(errorState(e, () => ctx.route())); return; }
+  const othersBox = h('div', { hidden: !others.length });
+  root.append(othersBox);
 
   // create
   const tplSel = h('select', { class: 'input select', 'aria-label': 'แม่แบบ' }, TEMPLATES.map((t) => h('option', { value: t.id }, t.name)));
@@ -98,6 +103,70 @@ async function renderList(root, ctx) {
       }))));
   };
   draw();
+
+  // admin: everyone else's presets, read only (open, .set, copy into my own presets)
+  if (others.length) {
+    const owners = [];
+    for (const p of others) { let g = owners.find((x) => x.owner === p.owner); if (!g) owners.push(g = { owner: p.owner, list: [] }); g.list.push(p); }
+    othersBox.replaceChildren(panel(`พรีเซ็ตของสมาชิก (${others.length})`, { sub: 'ดูอย่างเดียว เปิดดูค่า ดาวน์โหลด .set หรือคัดลอกมาเป็นพรีเซ็ตของคุณได้' },
+      h('ul', { class: 'preset-list' }, owners.flatMap((g) => g.list.map((p) => {
+        const v = normalizeParams(p.params);
+        const lots = [...new Set([v.InpLotsA, v.InpLotsNY, v.InpLotsC5G])];
+        return h('li', { class: 'preset' },
+          h('div', { class: 'preset-main' },
+            h('a', { class: 'preset-name', href: `#/presets/${encodeURIComponent(p.id)}` }, p.name),
+            h('div', { class: 'chips' },
+              h('span', { class: 'chip live' }, icon('user'), ownerLabel(p.owner)),
+              h('span', { class: 'chip' }, `ล็อต ${lots.map((x) => fmtNum(x)).join('/')}`),
+              h('span', { class: 'chip' }, v.InpLockEnable ? `ล็อก ${fmtNum(v.InpLockAtPct, 0)}→${fmtNum(v.InpLockToPct, 0)}` : 'ไม่ล็อกกำไร'),
+              v.InpLock1Enable ? h('span', { class: 'chip' }, `ขั้น 1 ${fmtNum(v.InpLock1AtPct, 0)}→${fmtNum(v.InpLock1ToPct, 0)}`) : null),
+            h('p', { class: 'muted small' }, `แก้ไขล่าสุด ${fmtThai(Date.parse(p.updated_at || p.created_at), 'short')}`)),
+          h('div', { class: 'preset-actions' },
+            h('a', { class: 'btn small', href: `#/presets/${encodeURIComponent(p.id)}` }, icon('eye'), 'ดูค่า'),
+            h('button', { class: 'btn small', type: 'button', onclick: () => exportSet(p.name, v, p.notes) }, icon('download'), '.set'),
+            h('button', { class: 'btn small', type: 'button', onclick: (e) => copyToMine(ctx, p, e.currentTarget) }, icon('copy'), 'คัดลอกเป็นของฉัน')));
+      })))));
+  }
+}
+
+const ownerLabel = (id) => (app.people[id] ? app.people[id].name : 'สมาชิก');
+
+// Copy a friend's preset into my own presets (writes my own row only).
+async function copyToMine(ctx, p, btn) {
+  busy(btn, true);
+  try {
+    const row = await ctx.api.createPreset({ name: `${p.name} (จาก ${ownerLabel(p.owner)})`.slice(0, 100), params: normalizeParams(p.params), notes: p.notes });
+    toast(`คัดลอก "${p.name}" มาเป็นพรีเซ็ตของคุณแล้ว`, 'good');
+    ctx.nav(`#/presets/${encodeURIComponent(row.id)}`);
+  } catch (e) { busy(btn, false); toast(errText(e), 'error'); }
+}
+
+// A friend's preset, read only: summary, every value by group, .set and copy.
+function renderFriendPreset(root, ctx, preset) {
+  const v = normalizeParams(preset.params);
+  root.append(
+    h('div', { class: 'editor-head' },
+      h('a', { class: 'back', href: '#/presets' }, icon('chevron'), 'พรีเซ็ตทั้งหมด'),
+      pageHead(preset.name, h('span', { class: 'row gap wrap' },
+        h('span', { class: 'chip live' }, icon('eye'), `ของ ${ownerLabel(preset.owner)} ดูอย่างเดียว`),
+        h('span', null, `แก้ไขล่าสุด ${fmtThai(Date.parse(preset.updated_at || preset.created_at), 'short')}`))),
+      preset.notes ? h('p', { class: 'muted' }, preset.notes) : null,
+      h('div', { class: 'toolbar' },
+        h('button', { class: 'btn', type: 'button', onclick: () => exportSet(preset.name, v, preset.notes) }, icon('download'), 'ดาวน์โหลด .set'),
+        h('button', { class: 'btn', type: 'button', onclick: (e) => copyToMine(ctx, preset, e.currentTarget) }, icon('copy'), 'คัดลอกเป็นของฉัน'))),
+    h('section', { class: 'set-sec', 'aria-label': 'สรุปค่า' },
+      h('div', { class: 'set-sec-head' }, h('h2', null, 'สรุปค่า')),
+      h('div', { class: 'group' }, h('dl', { class: 'now-grid' }, summaryRows(v, 'USD').map(([k, val]) => h('div', { class: 'now-item' }, h('dt', null, k), h('dd', null, val)))))),
+    h('div', { class: 'groups' }, GROUPS.map((g) => {
+      const ps = PARAMS.filter((p) => p.group === g.id);
+      if (!ps.length) return null;
+      return h('section', { class: 'pgroup', 'aria-label': g.title },
+        h('h2', null, g.title, h('span', { class: 'muted small' }, ` ${g.en}`)),
+        h('div', { class: 'pfields' }, ps.map((p) => h('div', { class: 'pfield' },
+          h('div', { class: 'pf-head' }, h('span', { class: 'pf-label' }, p.label), h('code', { class: 'pf-key' }, p.key)),
+          h('p', { class: 'pf-value num' }, p.type === 'bool' ? (v[p.key] ? 'เปิด (true)' : 'ปิด (false)') : formatValue(p, v[p.key]),
+            p.minutes ? h('span', { class: 'muted small' }, ` = ${minutesToClock(v[p.key] || 0)} เวลาเซิร์ฟเวอร์`) : null)))));
+    }).filter(Boolean)));
 }
 
 async function fromTemplate(ctx, id, btn) {
@@ -169,6 +238,10 @@ async function renderEditor(root, ctx, id) {
   try {
     const list = await ctx.api.listPresets();
     preset = list.find((p) => p.id === id);
+    if (!preset && isAdmin() && ctx.api.adminPresets) {
+      const other = (await ctx.api.adminPresets()).find((p) => p.id === id);
+      if (other) { root.replaceChildren(); renderFriendPreset(root, ctx, other); return undefined; }
+    }
     ({ bot, st } = await botStatus(ctx));
     if (bot) ctl = await ctx.api.botControl(bot.id).catch(() => null);
   } catch (e) { root.replaceChildren(errorState(e, () => ctx.route())); return; }

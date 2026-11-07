@@ -95,6 +95,20 @@ desktop (sidebar 240)                               phone
 Left-aligned text, numbers right-aligned in lists. Settings (bot and account): grouped rows (label left, control right),
 section anchors (sticky chips on narrow screens, a side list from 1200 px), sticky save bar. Lists over card grids.
 
+## View-only mode (admin looking at a member's bot)
+The admin may read every member's bot but never control it, so the mode must be impossible to miss and impossible to
+misuse: an **inverse banner** under the header ("กำลังดูบอทของ <name> ดูอย่างเดียว สั่งงานไม่ได้" + "กลับไปบอทของฉัน"),
+an **eye chip** with the owner's name in every page head, the header picker labelled "ดูบอท" with a graphite border, and
+**no write controls** at all: buttons that would send are removed (not just disabled), switches become state chips
+(gold = live on, slate = paused / off, jade = running), steppers and segmented controls are shown disabled so the values
+stay readable. Colour keeps its meaning: nothing in this mode is gold except "live on".
+
+The ผู้ใช้ overview follows the layout system: four count cells, then one block per member (avatar, name, email, chips)
+with one panel per bot; a single bot spans the column with its facts in two columns, two or more bots sit two per row at
+equal height. Each bot panel has the same order: name + online line + trading-state chip, alerts, three figures
+(balance / today / since start), facts (strategies + lots, lock, daily cap, versions, open trade, last trade), the
+settings sentence, presets, actions pinned to the bottom.
+
 ## Principles
 1. **The market is always visible** — a live XAUUSD ticker in the header (22 px price on desktop); the dashboard hero is
    today's price line with Dobby's own trades stamped on it (bars from `bots.agent_state.bars`, SPEC 8).

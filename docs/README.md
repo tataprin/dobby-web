@@ -49,8 +49,9 @@ ticker for the selected bot (`status.market.bid`, change since the first M15 bar
 | `#/guide`, `#/guide/<section>` | วิธีใช้ | illustrated sections: start, dashboard, settings, live, news, lock, risk, history, machines, trouble (FAQ ids offline, pending, unchanged, windows, password) |
 
 "เพิ่มเติม": `#/presets` (+ `#/presets/<id>`, `#/calc?balance=&lot=`) พรีเซ็ตที่บันทึกไว้, `#/downloads` ดาวน์โหลดแอป,
-`#/users` ผู้ใช้ (admin), `#/audit` บันทึกการเปลี่ยนแปลง, `#/settings` ตั้งค่าบัญชี (grouped rows like ตั้งค่าบอท: display name,
-password change in a dialog, 2FA, theme, account facts, sign out).
+`#/users` ผู้ใช้ (admin; see "Admin: friends' bots, view only"), `#/audit` บันทึกการเปลี่ยนแปลง (the admin sees every
+user's rows, with who did it, which bot and its owner, and a filter by user), `#/settings` ตั้งค่าบัญชี (grouped rows like
+ตั้งค่าบอท: display name, password change in a dialog, 2FA, theme, the members' privacy notice, account facts, sign out).
 Old / alternative addresses redirect: `control`, `botsettings`, `params` -> `bot`; `bots`, `devices` -> `machines`;
 `help`, `howto` -> `guide`; `account` -> `settings`; `download`, `setup` -> `downloads`; `home` -> `dashboard`.
 Gate pages: `#/login`, `#/invite`, `#/mfa`, `#/reset`, `#/disabled`.
@@ -59,6 +60,34 @@ Every page head has a "? วิธีใช้" button to the matching guide sec
 mode included: "seen" is written when it opens (so a reload half-way does not bring it back) to `localStorage`
 `dobby-tour-done` (through `prefs`, try/catch), `sessionStorage` and a `dobby_tour` cookie scoped to the site path; any
 one of them keeps it closed. "ดูทัวร์แนะนำอีกครั้ง" on วิธีใช้ replays it.
+
+## Admin: friends' bots, view only (2026-11-07)
+
+The database lets the admin SELECT every row of bots, bot_status, journal, bot_control, presets and audit; every insert,
+update and delete stays owner-only. The site mirrors that:
+- `api.listBots()` stays owner-filtered. `api.adminBots()` / `api.adminPresets()` return everyone else's rows (admin only),
+  `api.journalTail(botId, n)` the newest journal rows. `state.loadBots()` keeps them apart: `app.bots` (mine) and
+  `app.friendBots` (others, each with `owner_name` from `admin_overview`); `app.people` maps user ids to names.
+- Ownership decides writes, never the role: `ownsBot(bot)` = `bot.owner === uid`. `patchDesired()` refuses a bot that is
+  not in `app.bots`, and `SupabaseApi.updateDesired / renameBot / deleteBot` check ownership again before sending
+  (`ApiError('read_only')`: "บอทนี้เป็นของสมาชิกคนอื่น ผู้ดูแลดูได้อย่างเดียว สั่งงานไม่ได้"). `DemoApi` refuses the same way.
+- ผู้ใช้ → "บอทของสมาชิก": four counts (members, bots online, trading live, today's P&L of all members), then each
+  member (name, email, role, approval) with each bot as one panel: online / last seen, trading state (เทรดจริง /
+  หยุดชั่วคราว / ปิดเทรดจริง), alerts (daily cap, MT5 not answering, active or next blackout, agent rejections, command not
+  received), balance / today / since start, strategies with lots, lock stages, daily cap, EA and app version, open trades,
+  the last trade (`journalTail`), the "ค่าที่ใช้อยู่" sentence, saved presets, and "ดูบอทนี้" / ประวัติ / ค่าทั้งหมด. One bot =
+  a full-width card (facts in two columns), more = two equal-height cards per row. Members without a bot, waiting for
+  approval or disabled get one state line. "ผู้ใช้และรหัสเชิญ" is the earlier invites / users page.
+- The header bot picker lists friends' bots under "ของ <name> (ดูอย่างเดียว)". Choosing one opens ภาพรวม, ประวัติ and
+  ตั้งค่าบอท for it in view-only mode: an inverse banner "กำลังดูบอทของ <name> ดูอย่างเดียว สั่งงานไม่ได้" with
+  "กลับไปบอทของฉัน", an owner chip in the page head, no pause / blackout buttons, the live and pause rows as state chips,
+  the editor disabled with no save bar, no preset load / save / apply (only ".set ของค่านี้"), sides disabled, blackouts
+  listed without delete. A friend's bot is never remembered as the selected or default bot (the next visit opens my own).
+  ข่าว and พรีเซ็ต always send to my own bot (`state.myBot()`).
+- พรีเซ็ต: "พรีเซ็ตของสมาชิก" lists friends' presets (owner chip): open read only (`#/presets/<id>`: summary + every
+  value by group), download the .set, or "คัดลอกเป็นของฉัน" (creates my own row).
+- Members see one plain notice (not shown to the admin) on the invite step, on ตั้งค่าบัญชี and in วิธีใช้:
+  "ผู้ดูแลเว็บเห็นสถานะบอท ยอดเงิน ประวัติเทรด และการตั้งค่าของคุณได้ ดูอย่างเดียว สั่งงานบอทของคุณไม่ได้" (`views.ADMIN_SEES`).
 
 ## Structure
 
@@ -71,8 +100,8 @@ js/hallmark.js        the hallmark stamp (rounded octagon, double engraved outli
 js/pricechart.js      readBars (agent_state.bars) + the hero's SVG price line with trade marks, tooltip, first-load motion
 js/ticker.js          header XAUUSD ticker (bid + change since the broker day's first bar)
 js/api.js             the API interface + SupabaseApi + DemoApi, Thai error mapping (DB error codes)
-js/demo.js            synthetic deterministic demo data (2 bots, ~3 weeks of journal, live status, invites, news...)
-js/state.js           app state + event bus (bots, selected bot, default bot, profile)
+js/demo.js            synthetic deterministic demo data (my 2 bots + friends' bots, ~3 weeks of journal, invites, news...)
+js/state.js           app state + event bus (my bots, friends' bots for the admin, selected bot, default bot, ownership)
 js/botctl.js          desired-state JSON, patchDesired (optimistic version check), online/pending, rejections, heroState,
                       applyProgress (SPEC 7.4 three steps)
 js/simple.js          SPEC 7 simple settings: strategy catalog, lock modes, auto-from-balance (7.3), plain-Thai summary,
@@ -95,8 +124,8 @@ dev/layout-audit.js   dev only (never loaded by the app): layout audit run in th
 
 `DESIGN.md` "Layout system" is checked by `dev/layout-audit.js`. In demo mode open DevTools (or any tool that runs JS in
 the page) and run `await import('./dev/layout-audit.js'); (await window.__layoutAudit()).summary` at each width (1440,
-1280, 1024, 768, 390, 360). It visits every route (plus the no-bot state, dialogs, a toast and the sign-in page) in
-light and dark and reports unequal heights in a row, edges off the content column / 12-column grid, text below 13 px,
+1280, 1024, 768, 390, 360). It visits every route (plus the ผู้ใช้ overview, a friend's bot in view-only mode, a friend's
+preset, the no-bot state, dialogs, a toast and the sign-in page) in light and dark and reports unequal heights in a row, edges off the content column / 12-column grid, text below 13 px,
 non-standard control heights, horizontal overflow, contrast below 4.5:1 and clipped text. Last results:
 `dev/audit-report.md`.
 
@@ -105,7 +134,12 @@ non-standard control heights, horizontal overflow, contrast below 4.5:1 and clip
 `DemoApi` implements the same interface as `SupabaseApi` in memory (lost on reload):
 - Signed in as the admin "เจ้าของบอท" with a verified TOTP factor; the last password sign-in is 2 h old, so turning live
   ON goes through the full re-auth + 2FA flow (any password; any 6 digits except `000000`). Sign out and sign in with
-  `ploy@example.com` to see an unapproved account (invite `DEMKH7K3QP` works), any other email = the admin.
+  `ploy@example.com` to see an unapproved account (invite `DEMKH7K3QP` works), `nok@example.com` or `beam@example.com` to
+  see a member (their own bot, the privacy notice), any other email = the admin.
+- Friends (synthetic): นก ("คอมนก", EA v3.04, 500 balance, live with an open C5G trade, 2 presets), บีม ("โน้ตบุ๊กบีม",
+  paused from the web, the PC offline for 3 h with its status frozen, a news blackout, a `lots_clamped` rejection, one
+  preset), มิ้นท์ (approved, no bot), พลอย (waiting for approval) and a disabled old account; audit rows for all of them.
+  The admin reads everything (`DemoApi.readBot`), writes to a friend's bot throw `read_only` like the real API.
 - Bot "คอมหลัก" (EA v3.04, remote on, SPEC 7.3 values for a 300 balance: 0.03 lots, locks 85->83 / 95->93, local max lots
   0.06, open C5G position, live ON) ticks every 4 s through the realtime handlers. Lots above 0.06 show the "เกินเพดานของ
   เครื่อง" error; "ตั้งให้อัตโนมัติจากทุน" with 1000 gives 0.10 and shows it too.

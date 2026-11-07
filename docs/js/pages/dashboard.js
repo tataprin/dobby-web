@@ -3,7 +3,7 @@
 // details. Realtime + 30 s fallback poll (SPEC 5 page 2).
 import { h, mount, icon, fmtNum, fmtSigned, fmtPct, pnl, fmtThai, timeEl, serverToUtc, parseWall, toast, errText, confirmDialog,
   errorState, loadingState, isoUtc, toneOf, utcToServer, ago, debounce, thaiDayKey, money, duration } from '../util.js';
-import { app, currentBot, updateBotRow, on } from '../state.js';
+import { app, currentBot, updateBotRow, on, ownsBot } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, rejectionsBlock, isPending, heroState } from '../botctl.js';
 import { modChip, sideEl, kv, panel, noBotState, onOff, pageHead } from '../views.js';
 import { minutesToClock } from '../params.js';
@@ -37,10 +37,11 @@ export async function render(root, ctx) {
   const bot0 = currentBot();
   if (!bot0) { root.append(pageHead('ภาพรวม', null, null, 'dashboard'), noBotState()); return; }
   let bot = bot0, st = null, ctl = null, rtState = '', rows = [], journalReady = false;
+  const ro = !ownsBot(bot0); // the admin viewing someone else's bot: no pause, no blackout, nothing is sent
   root.append(loadingState('กำลังโหลดสถานะบอท…'));
   const off = () => bot.server_utc_offset_min ?? 0;
   try {
-    const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), ctx.api.listBots().catch(() => [])]);
+    const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), (ro ? ctx.api.adminBots() : ctx.api.listBots()).catch(() => [])]);
     st = s ? s.status : null; ctl = c;
     const fresh = bots.find((b) => b.id === bot.id); // last_seen in app.bots may be minutes old
     if (fresh) { bot = { ...bot, ...fresh }; updateBotRow(bot); }
@@ -91,6 +92,7 @@ export async function render(root, ctx) {
       h('span', { class: 'chip', title: rtState === 'SUBSCRIBED' ? 'รับข้อมูลแบบสด' : 'ดึงข้อมูลใหม่ทุก 30 วินาที' },
         rtState === 'SUBSCRIBED' ? [h('span', { class: 'live-dot', 'aria-hidden': 'true' }), 'ข้อมูลสด'] : 'อัปเดตทุก 30 วินาที'),
     ];
+    if (ro) chips.unshift(h('span', { class: 'chip live' }, icon('eye'), `ของ ${bot.owner_name || 'สมาชิก'}`));
     mount(headBox, pageHead('ภาพรวม', h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name), chips), null, 'dashboard'));
   }
 
@@ -121,14 +123,14 @@ export async function render(root, ctx) {
         h('span', { class: 'hero-today-val' }, money(v.day_pnl, { signed: true, unit: cur() })),
       ] : h('span', { class: 'hero-today-label' }, 'ยังไม่มีตัวเลขจากบอท'));
       mount(footBox,
-        summary ? h('a', { class: 'hero-summary', href: '#/bot', title: 'ดูหรือเปลี่ยนค่าในหน้าตั้งค่าบอท' }, h('strong', null, 'ค่าที่ใช้อยู่ '), summary) : h('span'),
-        h('div', { class: 'hero-actions' },
+        summary ? h('a', { class: 'hero-summary', href: '#/bot', title: ro ? 'ดูค่าทั้งหมดในหน้าตั้งค่าบอท' : 'ดูหรือเปลี่ยนค่าในหน้าตั้งค่าบอท' }, h('strong', null, 'ค่าที่ใช้อยู่ '), summary) : h('span'),
+        ro ? null : h('div', { class: 'hero-actions' },
           h('button', {
             class: `btn small ${paused ? 'primary' : ''}`, type: 'button', disabled: !ctl,
             onclick: (e) => togglePause(e.currentTarget, !paused),
           }, icon(paused ? 'play' : 'pause'), paused ? 'ทำงานต่อ' : 'หยุดชั่วคราว'),
           h('button', { class: 'btn small', type: 'button', disabled: !ctl, onclick: (e) => blackout2h(e.currentTarget) }, icon('clock'), 'งดเข้าไม้ 2 ชม.')),
-        paused && pending ? h('p', { class: 'muted small hero-note' }, 'สั่งหยุดแล้ว รอเครื่องรับคำสั่ง') : null);
+        paused && pending && !ro ? h('p', { class: 'muted small hero-note' }, 'สั่งหยุดแล้ว รอเครื่องรับคำสั่ง') : null);
     }
   }
 
@@ -382,7 +384,7 @@ export async function render(root, ctx) {
   const poll = setInterval(async () => {
     if (rtState === 'SUBSCRIBED') return;
     try {
-      const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), ctx.api.listBots()]);
+      const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), ro ? ctx.api.adminBots() : ctx.api.listBots()]);
       const b = bots.find((x) => x.id === bot.id);
       if (b) onBot(b);
       if (c) onControl(c);

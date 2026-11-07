@@ -87,22 +87,46 @@ test('user A cannot write user B: updates hit 0 rows, inserts are refused, delet
   assert.equal((await ctx.sql(`select name from public.presets where id = $1`, [presetE]))[0].name, 'erin preset');
 });
 
-test('admin sees every bot row but not status, journal, control or presets of other users', async () => {
+test('admin reads every friend bot (status, journal, control, presets, audit) but cannot change any of it', async () => {
   assert.equal(await count(admin, 'public.bots'), 2);
-  assert.equal(await count(admin, 'public.bot_status'), 0);
-  assert.equal(await count(admin, 'public.journal'), 0);
-  assert.equal(await count(admin, 'public.bot_control'), 0);
-  assert.equal(await count(admin, 'public.presets'), 0);
-  // and cannot change them
+  assert.equal(await count(admin, 'public.bot_status'), 2);
+  assert.equal(await count(admin, 'public.journal'), 2);
+  assert.equal(await count(admin, 'public.bot_control'), 2);
+  assert.equal(await count(admin, 'public.presets'), 2);
+  const [st] = await ctx.as(admin, `select status from public.bot_status where bot_id = $1`, [botB]);
+  assert.equal(st.status.account.balance, 280);
+  // audit: bob + erin rows (2 control + 2 preset_insert at least) are all readable by the admin
+  const all = (await ctx.sql(`select count(*)::int as n from public.audit where actor = any($1::uuid[])`, [[bob, erin]]))[0].n;
+  assert.ok(all >= 4);
+  assert.equal(await count(admin, 'public.audit', 'actor = $1 or actor = $2', [bob, erin]), all);
+
+  // writes stay owner-only: updates and deletes touch 0 rows, inserts are refused
   assert.equal((await ctx.as(admin, `update public.bots set name = 'x' where id = $1 returning 1`, [botB])).length, 0);
   assert.equal((await ctx.as(admin, `update public.bot_control set desired = '{"live":false}' where bot_id = $1 returning 1`, [botB])).length, 0);
-  // audit: the rows exist (bob + erin: 2 control + 2 preset_insert) but the admin cannot read them
-  assert.ok((await ctx.sql(`select count(*)::int as n from public.audit where actor = any($1::uuid[])`, [[bob, erin]]))[0].n >= 4);
-  assert.equal(await count(admin, 'public.audit', 'actor = $1 or actor = $2', [bob, erin]), 0);
-  assert.equal(await count(admin, 'public.audit', `bot_id = $1 or bot_id = $2 or action = 'control' or action like 'preset%'`, [botB, botE]), 0);
+  assert.equal((await ctx.as(admin, `update public.bot_status set status = '{}' where bot_id = $1 returning 1`, [botB])).length, 0);
+  assert.equal((await ctx.as(admin, `update public.journal set detail = 'x' where bot_id = $1 returning 1`, [botB])).length, 0);
+  assert.equal((await ctx.as(admin, `update public.presets set name = 'x' where id = $1 returning 1`, [presetB])).length, 0);
+  assert.equal((await ctx.as(admin, `delete from public.presets where id = $1 returning 1`, [presetB])).length, 0);
+  assert.equal((await ctx.as(admin, `delete from public.bots where id = $1 returning 1`, [botB])).length, 0);
+  await assert.rejects(ctx.as(admin, `insert into public.journal (bot_id, ts_server, event, line_hash) values ($1, now(), 'X', 'adm')`, [botB]), /row-level security/);
+  await assert.rejects(ctx.as(admin, `insert into public.presets (owner, name, params) values ($1, 'planted', '{}')`, [bob]), /row-level security/);
+  const [b] = await ctx.sql(`select name from public.bots where id = $1`, [botB]);
+  assert.equal(b.name, 'Bob PC');
+  const [c] = await ctx.sql(`select desired from public.bot_control where bot_id = $1`, [botB]);
+  assert.notDeepEqual(c.desired, { live: false });
+  const [s] = await ctx.sql(`select status from public.bot_status where bot_id = $1`, [botB]);
+  assert.equal(s.status.account.balance, 280);
+  assert.equal((await ctx.sql(`select count(*)::int as n from public.presets where id = $1`, [presetB]))[0].n, 1);
 });
 
-test('audit privacy: the admin reads admin_* / invite_* rows of others, never their control / preset / bot_delete rows', async () => {
+test('members still see only their own bots while the admin can read everything', async () => {
+  for (const tb of ['public.bot_status', 'public.journal', 'public.bot_control'])
+    assert.equal(await count(bob, tb, 'bot_id = $1', [botE]), 0, `bob cannot read erin's ${tb}`);
+  assert.equal(await count(bob, 'public.presets', 'id = $1', [presetE]), 0);
+  assert.equal(await count(bob, 'public.audit', 'actor = $1', [erin]), 0);
+});
+
+test('audit: the admin reads every row of a friend (invite, control, preset, bot_delete); members never see admin rows', async () => {
   // a friend joins through an invite -> invite_redeem row with actor = the friend
   const code = (await ctx.as(admin, `select public.create_invite() as c`))[0].c;
   const frank = await ctx.createUser('frank@example.test');
@@ -115,13 +139,11 @@ test('audit privacy: the admin reads admin_* / invite_* rows of others, never th
 
   const seen = (await ctx.as(admin, `select action, actor from public.audit order by id`));
   const adminSeesOfFrank = seen.filter(r => r.actor === frank).map(r => r.action);
-  assert.deepEqual(adminSeesOfFrank, ['invite_redeem']);
+  for (const a of ['invite_redeem', 'control', 'preset_insert', 'bot_delete']) assert.ok(adminSeesOfFrank.includes(a), `admin sees frank's ${a}`);
   assert.ok(seen.some(r => r.action === 'admin_bootstrap_invite' && r.actor === null), 'admin sees the bootstrap row');
   assert.ok(seen.some(r => r.action === 'admin_create_invite' && r.actor === admin));
-  assert.ok(!seen.some(r => r.action === 'bot_delete' && r.actor !== admin), 'no bot_delete rows of others');
-  assert.doesNotMatch(JSON.stringify(seen), /InpVirtualStart/);
   const payloads = await ctx.as(admin, `select before, after from public.audit where actor = $1`, [frank]);
-  assert.doesNotMatch(JSON.stringify(payloads), /InpVirtualStart|InpKillBalance|"lots"/);
+  assert.match(JSON.stringify(payloads), /InpVirtualStart/, 'admin sees what frank saved');
 
   // frank sees all of his own rows; members never see admin_* rows of others
   const own = (await ctx.as(frank, `select action from public.audit order by id`)).map(r => r.action);
@@ -139,7 +161,7 @@ test('audit: owners see rows about their bots and presets even when someone else
   const visible = async who => (await ctx.as(who, `select id from public.audit where id = any($1::bigint[])`, [ids])).length;
   assert.equal(await visible(bob), 2, 'bob sees both rows about his bot / preset');
   assert.equal(await visible(erin), 0);
-  assert.equal(await visible(admin), 0);
+  assert.equal(await visible(admin), 2, 'the admin reads every audit row');
 });
 
 test('a disabled user loses access to everything, including own bots', async () => {
@@ -160,7 +182,7 @@ test('approved owner: direct bot insert works with owner defaulting to auth.uid(
   assert.equal((await ctx.sql(`select count(*)::int as n from public.journal where bot_id = $1`, [b.id]))[0].n, 0);
   const a = await ctx.as(bob, `select action, actor from public.audit where bot_id = $1 and action = 'bot_delete'`, [b.id]);
   assert.deepEqual(a, [{ action: 'bot_delete', actor: bob }]);
-  assert.equal(await count(admin, 'public.audit', `bot_id = $1`, [b.id]), 0, 'admin does not see it');
+  assert.equal(await count(admin, 'public.audit', `bot_id = $1`, [b.id]), 1, 'the admin sees the delete row');
 });
 
 test('journal and bot_status cannot be deleted by clients (cascade only)', async () => {

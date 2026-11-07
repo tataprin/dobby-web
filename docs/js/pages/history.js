@@ -1,7 +1,7 @@
 // History: journal table, paired trades, equity curve, daily calendar heatmap, per-module stats, CSV export.
 import { h, mount, icon, fmtNum, fmtSigned, fmtPct, pnl, fmtThai, timeEl, utcToServer, thaiDayKey, thaiDateInputToUtc,
   duration, downloadCsv, errorState, loadingState, emptyState, debounce, toneOf, field } from '../util.js';
-import { app, currentBot, on } from '../state.js';
+import { app, currentBot, on, ownsBot } from '../state.js';
 import { prepareRows, pairTrades, moduleStats, dailyPnl, equitySeries, journalCsvRows, JOURNAL_HEADER, MODULES,
   EVENT_LABELS, REASON_LABELS } from '../journal.js';
 import { modChip, sideEl, panel, pageHead, noBotState } from '../views.js';
@@ -30,7 +30,9 @@ export async function render(root, ctx) {
   let chart = null;
   let journalShown = 100;
 
-  root.append(pageHead('ประวัติ', h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name), h('span', null, 'ทุกไม้ กราฟพอร์ต และปฏิทินกำไรรายวัน')), null, 'history'));
+  root.append(pageHead('ประวัติ', h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name),
+    ownsBot(bot) ? null : h('span', { class: 'chip live' }, icon('eye'), `ของ ${bot.owner_name || 'สมาชิก'}`),
+    h('span', null, 'ทุกไม้ กราฟพอร์ต และปฏิทินกำไรรายวัน')), null, 'history'));
   // view tabs, then one filter bar (labelled 44 px controls on the 12-column grid), then the view
   const filterBox = h('div', { class: 'filters', role: 'group', 'aria-label': 'ตัวกรอง' });
   const tabsBox = h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'มุมมอง' });

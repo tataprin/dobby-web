@@ -18,6 +18,10 @@
 //   listAudit({limit}), listNews({fromIso}), saveNews(row), deleteNews(id)
 //   adminOverview(), listInvites(), createInvite(role, days, note) -> code, revokeInvite(code),
 //   adminSetUser(userId, role, approved, disabled)
+//   adminBots() -> other users' bots, adminPresets() -> other users' presets   (admin, read only; RLS SELECT only)
+//   journalTail(botId, n) -> the newest n journal rows (desc)
+//   Writes to a bot are for its owner only: renameBot / deleteBot / updateDesired on someone else's bot throw
+//   ApiError('read_only') before anything is sent (RLS would refuse them anyway: 0 rows).
 //   listDownloads() -> [{name,size,updated_at}], downloadUrl(name) -> url|null, uploadDownload(file), deleteDownload(name)
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { createDemoDb, DEMO_OFFSET_MIN } from './demo.js';
@@ -68,6 +72,7 @@ const THAI = {
   session_expired: 'เซสชันหมดอายุ เข้าสู่ระบบใหม่',
   same_password: 'รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสเดิม',
   storage: 'จัดการไฟล์ไม่สำเร็จ',
+  read_only: 'บอทนี้เป็นของสมาชิกคนอื่น ผู้ดูแลดูได้อย่างเดียว สั่งงานไม่ได้',
 };
 
 export const THAI_ERRORS = THAI;
@@ -221,13 +226,34 @@ export class SupabaseApi {
   async setDisplayName(name) { unwrap(await this.sb.rpc('set_display_name', { p_name: name })); }
   async liveGateStatus() { return unwrap(await this.sb.rpc('live_gate_status')); }
   // bot_control is UPDATE only (rows come from register_bot); bots may be renamed or deleted by the owner.
-  async renameBot(botId, name) {
-    return unwrap(await this.sb.from('bots').update({ name }).eq('id', botId).select().single());
+  // The admin can read other users' bots (RLS), never write them: every write checks ownership first.
+  async assertOwn(botId) {
+    if (!this.ownIds || !this.ownIds.has(botId)) await this.listBots();
+    if (!this.ownIds.has(botId)) throw new ApiError('read_only');
   }
-  async deleteBot(botId) { unwrap(await this.sb.from('bots').delete().eq('id', botId)); }
+  async renameBot(botId, name) {
+    await this.assertOwn(botId);
+    return unwrap(await this.sb.from('bots').update({ name }).eq('id', botId).eq('owner', this.uid()).select().single());
+  }
+  async deleteBot(botId) {
+    await this.assertOwn(botId);
+    unwrap(await this.sb.from('bots').delete().eq('id', botId).eq('owner', this.uid()));
+  }
 
   async listBots() {
-    return unwrap(await this.sb.from('bots').select('*').eq('owner', this.uid()).order('created_at'));
+    const rows = unwrap(await this.sb.from('bots').select('*').eq('owner', this.uid()).order('created_at'));
+    this.ownIds = new Set(rows.map((b) => b.id));
+    return rows;
+  }
+  // admin: everyone else's bots and presets (read only)
+  async adminBots() {
+    return unwrap(await this.sb.from('bots').select('*').neq('owner', this.uid()).order('created_at'));
+  }
+  async adminPresets() {
+    return unwrap(await this.sb.from('presets').select('*').neq('owner', this.uid()).order('updated_at', { ascending: false }));
+  }
+  async journalTail(botId, n = 30) {
+    return unwrap(await this.sb.from('journal').select('*').eq('bot_id', botId).order('ts_server', { ascending: false }).order('id', { ascending: false }).limit(n));
   }
   async botStatus(botId) {
     return unwrap(await this.sb.from('bot_status').select('*').eq('bot_id', botId).maybeSingle());
@@ -236,6 +262,7 @@ export class SupabaseApi {
     return unwrap(await this.sb.from('bot_control').select('*').eq('bot_id', botId).maybeSingle());
   }
   async updateDesired(botId, desired, expectedVersion) {
+    await this.assertOwn(botId);
     let q = this.sb.from('bot_control').update({ desired }).eq('bot_id', botId);
     if (expectedVersion !== undefined && expectedVersion !== null) q = q.eq('version', expectedVersion);
     const data = unwrap(await q.select().maybeSingle());
@@ -443,7 +470,7 @@ export class DemoApi {
   }
   async renameBot(botId, name) {
     await this.wait();
-    const b = this.ownBot(botId);
+    const b = this.ownBot(botId, true);
     const n = String(name || '').trim();
     if (n.length < 1 || n.length > 100) throw new ApiError('name_invalid');
     b.name = n;
@@ -451,7 +478,7 @@ export class DemoApi {
   }
   async deleteBot(botId) {
     await this.wait();
-    const b = this.ownBot(botId);
+    const b = this.ownBot(botId, true);
     this.db.bots = this.db.bots.filter((x) => x.id !== botId);
     this.db.control = this.db.control.filter((c) => c.bot_id !== botId);
     this.audit(botId, 'bot_delete', { id: b.id, owner: b.owner, name: b.name, created_at: b.created_at }, null);
@@ -463,22 +490,33 @@ export class DemoApi {
   async listBots() { await this.wait(); this.approvedOrThrow(); if (this.noBots) return []; return clone(this.db.bots.filter((b) => b.owner === this.uidCur)); }
   // Demo only: show the "no bot yet" state (reachable from the guide); the demo bots come back with on = false.
   setDemoNoBots(on) { this.noBots = !!on; }
+  // the admin reads every bot (like the RLS SELECT policies); everyone else reads their own
+  async adminBots() { await this.wait(); if (!this.isAdmin()) throw new ApiError('admin_only'); return clone(this.db.bots.filter((b) => b.owner !== this.uidCur)); }
   statusRow(botId) {
     const sim = this.db.sims[botId];
-    return sim ? { bot_id: botId, updated_at: new Date().toISOString(), status: sim.status(Date.now()) } : null;
+    // an offline PC stopped sending: its status is frozen at the moment it went quiet
+    return sim ? { bot_id: botId, updated_at: new Date(sim.cfg.offlineAt || Date.now()).toISOString(), status: sim.status(sim.cfg.offlineAt || Date.now()) } : null;
   }
-  ownBot(botId) {
+  readBot(botId) {
     this.approvedOrThrow();
-    const b = this.db.bots.find((x) => x.id === botId && x.owner === this.uidCur);
+    const b = this.db.bots.find((x) => x.id === botId && (x.owner === this.uidCur || this.isAdmin()));
     if (!b) throw new ApiError('not_found');
     return b;
   }
-  async botStatus(botId) { await this.wait(80); this.ownBot(botId); return clone(this.statusRow(botId)); }
-  async botControl(botId) { await this.wait(80); this.ownBot(botId); return clone(this.db.control.find((c) => c.bot_id === botId) || null); }
+  // writes: the owner only. Someone else's bot is refused (RLS: 0 rows updated); `write` gives the clearer error.
+  ownBot(botId, write = false) {
+    this.approvedOrThrow();
+    const b = this.db.bots.find((x) => x.id === botId);
+    if (b && b.owner !== this.uidCur && write && this.isAdmin()) throw new ApiError('read_only');
+    if (!b || b.owner !== this.uidCur) throw new ApiError('not_found');
+    return b;
+  }
+  async botStatus(botId) { await this.wait(80); this.readBot(botId); return clone(this.statusRow(botId)); }
+  async botControl(botId) { await this.wait(80); this.readBot(botId); return clone(this.db.control.find((c) => c.bot_id === botId) || null); }
 
   async updateDesired(botId, desired, expectedVersion) {
     await this.wait(250);
-    this.ownBot(botId);
+    this.ownBot(botId, true);
     const row = this.db.control.find((c) => c.bot_id === botId);
     if (!row) throw new ApiError('not_found');
     if (expectedVersion !== undefined && expectedVersion !== null && row.version !== expectedVersion) throw new ApiError('version_conflict');
@@ -501,13 +539,19 @@ export class DemoApi {
 
   async journal(botId, { fromServer, toServer } = {}) {
     await this.wait(200);
-    this.ownBot(botId);
+    this.readBot(botId);
     const rows = this.db.sims[botId].rows.filter((r) => (!fromServer || r.ts_server >= fromServer) && (!toServer || r.ts_server <= toServer));
     return clone(rows).reverse();
+  }
+  async journalTail(botId, n = 30) {
+    await this.wait(80);
+    this.readBot(botId);
+    return clone(this.db.sims[botId].rows.slice(-n)).reverse();
   }
 
   subscribeBot(botId, handlers = {}) {
     if (!this.signedIn) return () => {};
+    try { this.readBot(botId); } catch { return () => {}; } // realtime follows RLS
     const sub = { botId, h: handlers };
     this.subs.add(sub);
     setTimeout(() => handlers.state && handlers.state('SUBSCRIBED'), 50);
@@ -521,6 +565,7 @@ export class DemoApi {
     const now = Date.now();
     for (const bot of this.db.bots) {
       const sim = this.db.sims[bot.id];
+      if (!sim || bot.offline) continue; // an offline PC sends nothing
       sim.tick(now);
       bot.last_seen = new Date(now - 1000).toISOString();
       bot.agent_state.ea_heartbeat_age_s = 1 + Math.floor(Math.random() * 4);
@@ -622,12 +667,13 @@ export class DemoApi {
   }
 
   async listPresets() { await this.wait(); this.approvedOrThrow(); return clone(this.db.presets.filter((p) => p.owner === this.uidCur).sort((a, b) => b.updated_at.localeCompare(a.updated_at))); }
+  async adminPresets() { await this.wait(); if (!this.isAdmin()) throw new ApiError('admin_only'); return clone(this.db.presets.filter((p) => p.owner !== this.uidCur).sort((a, b) => b.updated_at.localeCompare(a.updated_at))); }
   async createPreset({ name, params, notes }) {
     await this.wait(); this.approvedOrThrow();
     const now = new Date().toISOString();
     const row = { id: 'demo-preset-' + Math.random().toString(36).slice(2, 8), owner: this.uidCur, name, params: clone(params), notes: notes || null, created_at: now, updated_at: now };
     this.db.presets.push(row);
-    this.audit(null, 'preset_insert', null, { name });
+    this.audit(null, 'preset_insert', null, { name, owner: this.uidCur });
     return clone(row);
   }
   async updatePreset(id, patch) {
@@ -670,12 +716,9 @@ export class DemoApi {
     await this.wait(); if (!this.isAdmin()) throw new ApiError('admin_only');
     return this.db.profiles.map((p) => {
       const own = this.db.bots.filter((b) => b.owner === p.id);
-      const other = this.db.otherBots[p.id];
       return {
         user_id: p.id, display_name: p.display_name, role: p.role, approved: p.approved, disabled: p.disabled, created_at: p.created_at,
-        bots: own.length || (other ? other.bots : 0),
-        last_seen: own.length ? own.map((b) => b.last_seen).sort().pop() : other ? other.last_seen : null,
-        email: p.email,
+        bots: own.length, last_seen: own.length ? own.map((b) => b.last_seen).sort().pop() : null, email: p.email,
       };
     });
   }

@@ -2,7 +2,7 @@
 // with QR, unenroll), theme, account facts and sign out.
 import { h, icon, fmtThai, toast, errText, confirmDialog, openModal, field, busy, copyText, newId, mount } from '../util.js';
 import { app, isAdmin } from '../state.js';
-import { pageHead } from '../views.js';
+import { pageHead, ADMIN_SEES } from '../views.js';
 import { themeSegment } from '../app.js';
 
 // one settings row: label (+ hint) left, control right
@@ -45,6 +45,8 @@ export async function render(root, ctx) {
         h('button', { class: 'btn', type: 'button', onclick: () => passwordDialog() }, icon('key'), 'เปลี่ยนรหัสผ่าน')),
       mfaRow),
     section('acct-display', 'การแสดงผล', null, row('ธีม', 'สว่าง มืด หรือตามการตั้งค่าของเครื่อง', themeSegment())),
+    isAdmin() ? null : section('acct-privacy', 'ความเป็นส่วนตัว', null,
+      row('ผู้ดูแลเว็บ', ADMIN_SEES, h('span', { class: 'chip' }, icon('eye'), 'ดูอย่างเดียว'))),
     section('acct-account', 'บัญชี', null,
       h('dl', { class: 'kv' },
         h('dt', null, 'อีเมล'), h('dd', null, app.user ? app.user.email : '—'),

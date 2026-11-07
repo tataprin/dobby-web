@@ -3,7 +3,7 @@
 // (patchDesired: read-modify-write with the version check). EA v3.03 bots: read-only + .set download.
 import { h, mount, icon, fmtNum, fmtThai, toast, errText, confirmDialog, openModal, errorState, loadingState, field, busy, isoUtc,
   utcToThaiInput, thaiInputToUtc, utcToServer, until, callout, newId, downloadBlob } from '../util.js';
-import { app, currentBot, updateBotRow, on } from '../state.js';
+import { app, currentBot, updateBotRow, on, ownsBot } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, onlineBadge, pendingChip, rejectionsBlock, appliedVersion, isPending, applyProgress } from '../botctl.js';
 import { liveSwitch, appliedLive } from '../liveswitch.js';
 import { panel, pageHead, noBotState, stepper, bigToggle, segmented, progressSteps, helpBtn } from '../views.js';
@@ -26,10 +26,13 @@ export async function render(root, ctx) {
   const bot0 = currentBot();
   if (!bot0) { root.append(pageHead('ตั้งค่าบอท', null, null, 'settings'), noBotState()); return; }
   let bot = bot0, st = null, ctl = null, news = [];
+  // The admin viewing someone else's bot: every value shown, every control hidden or disabled, nothing is sent.
+  const friend = !ownsBot(bot0);
+  const ownerName = bot0.owner_name || 'สมาชิก';
   root.append(loadingState('กำลังโหลดค่าของบอท…'));
   try {
     const [s, c, n, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id),
-      ctx.api.listNews({ fromIso: new Date(Date.now() - 3 * 3600e3).toISOString() }).catch(() => []), ctx.api.listBots().catch(() => [])]);
+      ctx.api.listNews({ fromIso: new Date(Date.now() - 3 * 3600e3).toISOString() }).catch(() => []), (friend ? ctx.api.adminBots() : ctx.api.listBots()).catch(() => [])]);
     st = s ? s.status : null; ctl = c; news = n || [];
     const fresh = bots.find((b) => b.id === bot.id); // last_seen in app.bots may be minutes old
     if (fresh) { bot = { ...bot, ...fresh }; updateBotRow(bot); }
@@ -61,7 +64,7 @@ export async function render(root, ctx) {
     const matches = !!(d.params && eff && matchesEffective(d.params, eff));
     const pending = !!(d.params && canSend() && !matches);
     const editBase = pending ? normalizeParams({ ...cv.values, ...d.params }) : cv.values;
-    return { now: cv.values, editBase, matches, pending, readOnly: !canSend(), hasStatus: !!st };
+    return { now: cv.values, editBase, matches, pending, readOnly: friend || !canSend(), hasStatus: !!st };
   }
   let B = computeBase();
   let baseVals = clone(B.editBase);
@@ -69,14 +72,14 @@ export async function render(root, ctx) {
   let lotMode = lotsSame(v) ? 'same' : 'per';
   let unlocked = false; // v3.03: edit only to download a .set
   let justSent = false;
-  const draft = readDraft(bot.id);
+  const draft = friend ? null : readDraft(bot.id);
   if (draft && draft.v && JSON.stringify(draft.base) === JSON.stringify(baseVals) && describeChanges(baseVals, normalizeParams(draft.v)).length) {
     v = normalizeParams(draft.v);
     lotMode = lotsSame(v) ? 'same' : 'per';
     if (B.readOnly) unlocked = true;
     setTimeout(() => toast('กู้ค่าที่คุณแก้ค้างไว้ให้แล้ว (กด "ยกเลิก" ที่แถบด้านล่างถ้าไม่ต้องการ)', 'info', 5000), 300);
   }
-  const editable = () => !B.readOnly || unlocked;
+  const editable = () => !friend && (!B.readOnly || unlocked);
   const locked = () => !editable();
   const changes = () => describeChanges(baseVals, v, cur());
   const errors = () => validateSimple(v, ceilings());
@@ -119,7 +122,8 @@ export async function render(root, ctx) {
 
   function drawHead() {
     mount(headBox, pageHead('ตั้งค่าบอท',
-      h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name), onlineBadge(onlineInfo(bot, st)),
+      h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name),
+        friend ? h('span', { class: 'chip live' }, icon('eye'), `ของ ${ownerName}`) : null, onlineBadge(onlineInfo(bot, st)),
         eaVer() ? h('span', { class: 'chip hide-sm' }, `EA ${eaVer()}`) : null),
       null, 'settings'));
   }
@@ -134,8 +138,9 @@ export async function render(root, ctx) {
     const showProg = prog && (!prog.done || justSent);
     mount(nowBox,
       h('div', { class: 'set-sec-head' }, h('h2', null, 'ค่าที่บอทใช้อยู่ตอนนี้'),
-        B.readOnly ? h('span', { class: 'chip warn' }, icon('lock'), `อ่านอย่างเดียว (บอทรุ่น ${eaVer() || '3.03'})`)
-          : h('span', { class: 'chip good' }, icon('check'), 'เปลี่ยนจากเว็บได้')),
+        friend ? h('span', { class: 'chip live' }, icon('eye'), 'ดูอย่างเดียว')
+          : B.readOnly ? h('span', { class: 'chip warn' }, icon('lock'), `อ่านอย่างเดียว (บอทรุ่น ${eaVer() || '3.03'})`)
+            : h('span', { class: 'chip good' }, icon('check'), 'เปลี่ยนจากเว็บได้')),
       h('div', { class: 'group', 'aria-live': 'polite' },
         B.hasStatus ? h('dl', { class: 'now-grid' }, summaryRows(B.now, cur()).map(([k, val]) => h('div', { class: 'now-item' }, h('dt', null, k), h('dd', null, val))))
           : h('p', { class: 'muted group-note' }, 'ยังไม่ได้รับค่าจากบอท เมื่อเครื่องออนไลน์ ค่าจะขึ้นที่นี่'),
@@ -154,7 +159,19 @@ export async function render(root, ctx) {
   function drawLive(force) {
     const d = normDesired(ctl.desired);
     if (!changed('live', [d.live, d.control.mode, ctl.version, appliedVersion(bot), appliedLive(st), onlineInfo(bot, st).agentOnline]) && force !== true) return;
-    mount(liveBox, liveSwitch({ bot, ctl, st }));
+    mount(liveBox, friend ? liveReadOnly(d) : liveSwitch({ bot, ctl, st }));
+  }
+  // live state as a row without the switch (friend's bot)
+  function liveReadOnly(d) {
+    const eff = appliedLive(st);
+    return h('section', { class: `live-panel${d.live ? ' on' : ''}`, 'aria-label': 'เทรดจริง' },
+      h('div', { class: 'live-row' },
+        h('div', { class: 'live-copy' },
+          h('p', { class: 'live-title' }, 'เทรดจริง'),
+          h('p', { class: 'live-desc' }, d.live ? 'เจ้าของเปิดเทรดจริงไว้ บอทส่งคำสั่งซื้อขายในบัญชีจริงได้' : 'เจ้าของปิดเทรดจริงไว้ บอทไม่เปิดไม้ใหม่')),
+        h('span', { class: `chip ${d.live ? 'live' : ''}` }, icon(d.live ? 'zap' : 'power'), d.live ? 'เปิดอยู่' : 'ปิดอยู่')),
+      h('div', { class: 'live-meta' }, pendingChip(bot, ctl, onlineInfo(bot, st)),
+        h('span', { class: `chip ${eff ? 'live' : ''}` }, eff === null ? 'ยังไม่มีสถานะจากเครื่อง' : eff ? 'ที่เครื่อง: บอทเปิดไม้ได้' : 'ที่เครื่อง: บอทไม่เปิดไม้ใหม่')));
   }
   function drawPause(force) {
     const d = normDesired(ctl.desired);
@@ -164,10 +181,12 @@ export async function render(root, ctx) {
     mount(pauseBox, h('section', { class: `quick-card${paused ? ' is-paused' : ''}`, 'aria-label': 'หยุดชั่วคราว' },
       h('div', { class: 'quick-head' },
         h('div', null, h('h2', null, paused ? 'หยุดชั่วคราวอยู่' : 'หยุดชั่วคราว'),
-          h('p', { class: 'muted' }, paused ? 'บอทไม่เปิดไม้ใหม่ จนกว่าจะกด "ทำงานต่อ"' : 'หยุดเปิดไม้ใหม่ชั่วคราว ไม้ที่เปิดอยู่ยังมี SL/TP ตามเดิม'),
+          h('p', { class: 'muted' }, friend ? (paused ? `${ownerName} สั่งหยุดไว้ บอทไม่เปิดไม้ใหม่` : 'ไม่ได้หยุด บอทเปิดไม้ใหม่ได้ตามสัญญาณ')
+            : paused ? 'บอทไม่เปิดไม้ใหม่ จนกว่าจะกด "ทำงานต่อ"' : 'หยุดเปิดไม้ใหม่ชั่วคราว ไม้ที่เปิดอยู่ยังมี SL/TP ตามเดิม'),
           pend ? h('p', { class: 'muted small' }, 'รอเครื่องรับคำสั่ง…') : null),
-        h('button', { class: `btn ${paused ? 'primary' : ''}`, type: 'button', onclick: (e) => togglePause(e.currentTarget, !paused) },
-          icon(paused ? 'play' : 'pause'), paused ? 'ทำงานต่อ' : 'หยุดชั่วคราว'))));
+        friend ? h('span', { class: `chip ${paused ? 'pending' : 'good'}` }, icon(paused ? 'pause' : 'play'), paused ? 'หยุดอยู่' : 'ทำงานอยู่')
+          : h('button', { class: `btn ${paused ? 'primary' : ''}`, type: 'button', onclick: (e) => togglePause(e.currentTarget, !paused) },
+            icon(paused ? 'play' : 'pause'), paused ? 'ทำงานต่อ' : 'หยุดชั่วคราว'))));
   }
   async function togglePause(btn, pause) {
     if (!pause) {
@@ -202,7 +221,7 @@ export async function render(root, ctx) {
   function buildEditor() {
     updaters.length = 0;
     const ro = B.readOnly;
-    const roBox = ro ? h('div', { class: 'upgrade-box' }) : null;
+    const roBox = ro && !friend ? h('div', { class: 'upgrade-box' }) : null;
     if (roBox) {
       roBox.update = () => {
         mount(roBox, 
@@ -396,17 +415,18 @@ export async function render(root, ctx) {
         adv('หยุดถาวรเมื่อพอร์ตจำลองเหลือ', 'InpKillBalance', reg(stepper({ label: 'หยุดถาวรเมื่อเหลือ', get: getKey('InpKillBalance'), set: setKey('InpKillBalance'), step: 10, min: 0, max: 10000000, decimals: 0, unit: cur(), disabled: locked })), '0 = หยุดเมื่อเหลือ 0 เท่านั้น')));
 
     // --- presets + .set
-    const tools = h('div', { class: 'ed-tools' },
-      h('button', { class: 'btn', type: 'button', onclick: () => loadPresetDialog() }, icon('folder'), 'โหลดจากพรีเซ็ตที่บันทึกไว้'),
-      h('button', { class: 'btn', type: 'button', onclick: () => savePresetDialog() }, icon('save'), 'บันทึกเป็นพรีเซ็ต'),
-      h('button', { class: 'btn ghost', type: 'button', onclick: () => downloadSet() }, icon('download'), 'ดาวน์โหลด .set'));
-    tools.querySelectorAll('button')[0].update = function () { this.disabled = locked(); };
-    reg(tools.querySelectorAll('button')[0]);
+    const tools = friend
+      ? h('div', { class: 'ed-tools' }, h('button', { class: 'btn ghost', type: 'button', onclick: () => downloadSet() }, icon('download'), 'ดาวน์โหลด .set ของค่านี้'))
+      : h('div', { class: 'ed-tools' },
+        h('button', { class: 'btn', type: 'button', onclick: () => loadPresetDialog() }, icon('folder'), 'โหลดจากพรีเซ็ตที่บันทึกไว้'),
+        h('button', { class: 'btn', type: 'button', onclick: () => savePresetDialog() }, icon('save'), 'บันทึกเป็นพรีเซ็ต'),
+        h('button', { class: 'btn ghost', type: 'button', onclick: () => downloadSet() }, icon('download'), 'ดาวน์โหลด .set'));
+    if (!friend) { tools.querySelectorAll('button')[0].update = function () { this.disabled = locked(); }; reg(tools.querySelectorAll('button')[0]); }
 
     mount(editorBox, 
       h('div', { class: 'ed-head' },
         h('div', { class: 'section-label' }, h('h2', null, B.readOnly ? 'ค่าทั้งหมดของบอท' : 'ปรับการตั้งค่า'),
-          h('p', { class: 'muted small' }, B.readOnly ? 'ค่าที่บอทรุ่นนี้รายงานมา' : 'แก้ได้หลายอย่าง แล้วกด "บันทึกและส่งให้บอท" ที่แถบด้านล่างครั้งเดียว')),
+          h('p', { class: 'muted small' }, friend ? `ค่าที่บอทของ ${ownerName} ใช้อยู่ ดูอย่างเดียว แก้ไม่ได้` : B.readOnly ? 'ค่าที่บอทรุ่นนี้รายงานมา' : 'แก้ได้หลายอย่าง แล้วกด "บันทึกและส่งให้บอท" ที่แถบด้านล่างครั้งเดียว')),
         helpBtn('settings')),
       roBox,
       h('div', { class: `editor-body${ro ? ' readonly' : ''}` }, secMoney, secStrat, secLock, secCap, advBox),
@@ -597,7 +617,7 @@ export async function render(root, ctx) {
     const sideVal = d.control.allow_long && d.control.allow_short ? 'both' : d.control.allow_long ? 'long' : d.control.allow_short ? 'short' : 'none';
     let sending = false;
     const seg = segmented({
-      label: 'ฝั่งที่เข้าได้', wide: true, get: () => sideVal, disabled: () => sending,
+      label: 'ฝั่งที่เข้าได้', wide: true, get: () => sideVal, disabled: () => sending || friend,
       options: [{ value: 'both', label: 'ซื้อและขาย' }, { value: 'long', label: 'ซื้ออย่างเดียว' }, { value: 'short', label: 'ขายอย่างเดียว' }],
       set: async (val) => {
         if (val === sideVal || sending) return;
@@ -611,11 +631,21 @@ export async function render(root, ctx) {
       },
     });
     mount(sidesBox,
-      h('div', { class: 'set-sec-head' }, h('h2', null, 'ฝั่งที่เข้าได้'), h('p', null, 'เลือกแล้วส่งทันที ไม้ที่เปิดอยู่ไม่ถูกปิด')),
+      h('div', { class: 'set-sec-head' }, h('h2', null, 'ฝั่งที่เข้าได้'), h('p', null, friend ? 'ฝั่งที่บอทนี้เปิดไม้ได้' : 'เลือกแล้วส่งทันที ไม้ที่เปิดอยู่ไม่ถูกปิด')),
       h('div', { class: 'group' },
         h('div', { class: 'set-row' }, seg),
-        sideVal === 'none' ? callout('warn', 'ปิดทั้งสองฝั่งอยู่', h('p', null, 'บอทจะไม่เปิดไม้ใหม่ เลือก "ซื้อและขาย" เพื่อกลับมาปกติ')) : null,
-        advancedControl(d)));
+        sideVal === 'none' ? callout('warn', 'ปิดทั้งสองฝั่งอยู่', h('p', null, friend ? 'บอทไม่เปิดไม้ใหม่' : 'บอทจะไม่เปิดไม้ใหม่ เลือก "ซื้อและขาย" เพื่อกลับมาปกติ')) : null,
+        friend ? controlReadOnly(d) : advancedControl(d)));
+  }
+  // control-file overrides as plain rows (friend's bot)
+  function controlReadOnly(d) {
+    const c = d.control;
+    const rows = [
+      c.lots !== null ? ['ลดล็อตชั่วคราว', `${fmtNum(c.lots)} ล็อต`] : null,
+      c.max_spread !== null ? ['สเปรดสูงสุด', `${fmtNum(c.max_spread)} $`] : null,
+      c.note ? ['หมายเหตุ', c.note] : null,
+    ].filter(Boolean);
+    return rows.length ? h('dl', { class: 'kv' }, rows.map(([k, val]) => [h('dt', null, k), h('dd', null, val)])) : null;
   }
   function advancedControl(d) {
     const lim = limits();
@@ -666,7 +696,7 @@ export async function render(root, ctx) {
           h('p', { class: 'bo-time' }, `${fmtThai(b.from, 'short')} ถึง ${fmtThai(b.to, sameDay ? 'time' : 'short')} น.`),
           h('p', { class: 'muted small', title: `เวลาเซิร์ฟเวอร์ ${utcToServer(b.from, off())} ถึง ${utcToServer(b.to, off())}` }, b.label || 'ไม่มีชื่อ')),
         h('span', { class: `chip ${b.from <= now && b.to > now ? 'warn' : ''}` }, state),
-        h('button', { class: 'icon-btn', type: 'button', 'aria-label': `ลบช่วง ${fmtThai(b.from, 'short')}`, onclick: () => removeBo(b) }, icon('trash')));
+        friend ? null : h('button', { class: 'icon-btn', type: 'button', 'aria-label': `ลบช่วง ${fmtThai(b.from, 'short')}`, onclick: () => removeBo(b) }, icon('trash')));
     };
     const upcoming = news.filter((n) => NEWS_RE.test(n.name) && Date.parse(n.ts_utc) > now - 90 * MIN).slice(0, 12);
     const covered = (n) => { const t = Date.parse(n.ts_utc); return d.blackouts.some((x) => Date.parse(x.from_utc) <= t - 30 * MIN && Date.parse(x.to_utc) >= t + 90 * MIN); };
@@ -683,6 +713,12 @@ export async function render(root, ctx) {
       serverHint.textContent = Number.isFinite(a) && Number.isFinite(b) ? `เวลาเซิร์ฟเวอร์ของโบรก: ${utcToServer(a, off())} ถึง ${utcToServer(b, off())}` : '';
     };
     fromIn.addEventListener('input', updHint); toIn.addEventListener('input', updHint); updHint();
+    if (friend) {
+      mount(boBox,
+        h('div', { class: 'set-sec-head' }, h('h2', null, 'งดเข้าไม้ช่วงข่าว'), h('p', null, 'ช่วงที่บอทนี้ไม่เปิดไม้ใหม่')),
+        h('div', { class: 'group' }, list.length ? h('ul', { class: 'bo-list' }, list.map(item)) : h('p', { class: 'muted group-note' }, 'ไม่มีช่วงงดเข้าไม้')));
+      return;
+    }
     mount(boBox,
       h('div', { class: 'set-sec-head' }, h('h2', null, 'งดเข้าไม้ช่วงข่าว'), helpBtn('news', 'วิธีใช้'), h('p', null, 'ช่วงนี้บอทไม่เปิดไม้ใหม่ ไม้ที่เปิดอยู่ยังวิ่งต่อ')),
       h('div', { class: 'group' },
@@ -762,7 +798,7 @@ export async function render(root, ctx) {
   function refreshAll() { resync(); drawHead(); drawNow(); drawLive(); drawPause(); drawSides(); drawBlackouts(); drawBar(); }
 
   drawHead(); drawNow(true); drawLive(true); drawPause(true); buildEditor(); drawSides(true); drawBlackouts(true); drawBar();
-  const presetId = ctx.query.get('preset');
+  const presetId = friend ? null : ctx.query.get('preset');
   if (presetId && editable()) {
     ctx.api.listPresets().then((list) => { const p = list.find((x) => x.id === presetId); if (p) applyPreset(p); }).catch(() => {});
   }
@@ -776,7 +812,7 @@ export async function render(root, ctx) {
   const tick = setInterval(() => { drawHead(); drawBlackouts(); }, 15000);
   const poll = setInterval(async () => {
     try {
-      const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), ctx.api.listBots()]);
+      const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), friend ? ctx.api.adminBots() : ctx.api.listBots()]);
       const b = bots.find((x) => x.id === bot.id);
       if (b) { bot = { ...bot, ...b }; updateBotRow(bot); }
       if (s) st = s.status;

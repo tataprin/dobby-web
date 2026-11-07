@@ -1,12 +1,12 @@
 # Layout audit report
 
-Generated 2026-11-07 13:34 UTC by `dev/layout-audit.js` (demo mode, served locally).
+Generated 2026-11-07 14:52 UTC by `dev/layout-audit.js` (demo mode, served locally).
 Every width ran all routes in light and dark: ภาพรวม, ตั้งค่าบอท, ประวัติ (3 tabs), ข่าว, เครื่องของฉัน, วิธีใช้, พรีเซ็ต,
-คำนวณล็อต, ดาวน์โหลดแอป, ผู้ใช้, บันทึก, ตั้งค่าบัญชี, the no-bot state, the welcome tour, a confirm dialog, a toast and the
-sign-in page (3 tabs); each page again with every `<details>` opened.
+คำนวณล็อต, ดาวน์โหลดแอป, ผู้ใช้ (บอทของสมาชิก and ผู้ใช้และรหัสเชิญ), บันทึก, ตั้งค่าบัญชี, a member's bot in the admin's
+view-only mode (ภาพรวม, ประวัติ, ตั้งค่าบอท), a member's preset (read only), the no-bot state, the welcome tour, a confirm
+dialog, a toast and the sign-in page (3 tabs); each page again with every `<details>` opened.
 
-Two independent runs agree: headless Chrome over CDP (the table below) and the built-in browser via its JavaScript tool at the
-same six widths (all routes in three chunks per width: 0 failures at 1440, 1280, 1024, 768, 390 and 360).
+Run in headless Chrome over CDP (Runtime.evaluate in the page) at all six widths; cross-checked in the built-in browser via its JavaScript tool for the admin views (ผู้ใช้ both tabs, บันทึก, พรีเซ็ต, a member's bot view-only, a member's preset) at 1280 and 390: 0 failures, no console errors.
 
 | width | rowHeights | gaps | overlap | edges | fontSize | controls | icons | overflow | contrast | clipped | failures | illustration (info) |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -46,6 +46,8 @@ same six widths (all routes in three chunks per width: 0 failures at 1440, 1280,
 - **Scroll containers** (`.table-wrap`, the anchor chip row) may be wider than the viewport inside their own scroller.
 
 ## Fixed during the audit
+- Admin overview (2026-11-07): an agent-rejection chip was clipped at 390 (341 > 322 px); the chip now shows a short
+  label ("ล็อตถูกลดตามเพดานเครื่อง") with the full reason in its title and on the bot's ตั้งค่าบอท page.
 - Inactive rows (unused strategies, revoked invites, past blackouts) were faded with opacity and fell to 2.5–4.2:1; they
   are slate text now.
 - Segmented controls: inactive segments were 4.3:1 on the 13 % well; the track is the 7 % well now (4.7:1).
@@ -60,6 +62,7 @@ same six widths (all routes in three chunks per width: 0 failures at 1440, 1280,
 - Colours are compared after every finite CSS transition / animation is jumped to its end (`finishAnimations()`), and the
   theme switch waits for a full style recalc. Without that, a hidden or throttled browser tab (which produces no frames)
   measured buttons mid colour-fade (1.04:1) and the tour mid fade-in (opacity 0); those were measurement artefacts.
-- The built-in browser run used 1 s per route and the CDP run 1.4–2 s; the CDP run also emulates `prefers-reduced-motion`.
+- The admin views run in demo mode as the admin: 'friend' selects the first other user's bot (view only) and audits
+  ภาพรวม, ประวัติ and ตั้งค่าบอท, then returns to the admin's own bot; 'friendpreset' opens the first other user's preset.
 - The script never changes app data: the demo "no bots" switch is restored, the confirm dialog is cancelled, and the
   sign-in check signs the demo out last (reload the page afterwards).
