@@ -608,3 +608,93 @@ def test_demo_mode_fake_launcher_starts_a_fake_dobby(tmp_path):
     terms = core.detect_terminals(ctx.appdata)
     assert len(terms) == 2 and all(t["install_dir"].startswith(str(tmp_path)) for t in terms)
     assert core.dobby_charts(terms[1]["data_dir"]) and not core.dobby_charts(terms[0]["data_dir"])
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# "Hallmark" look (docs/DESIGN.md): bundled OFL fonts, the stamp, the price line from the EA's bar file, sentences
+# ---------------------------------------------------------------------------------------------------------------------
+def test_fonts_are_bundled_with_their_licences():
+    import dobby_app_ui as ui
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    assert ui.font_dir() == os.path.join(here, "fonts")
+    for sub, name in ui.FONT_FILES:
+        path = os.path.join(here, "fonts", sub, name)
+        assert open(path, "rb").read(4) == b"\x00\x01\x00\x00", name           # TrueType
+    for sub in ("anuphan", "chakrapetch"):
+        assert "SIL Open Font License" in open(os.path.join(here, "fonts", sub, "OFL.txt"), encoding="utf-8").read()
+
+
+def test_hallmark_and_price_line_images():
+    for tone, ink in (("gold", None), ("slate", "#5E676D"), ("cinnabar", "#B83A2A")):
+        png = gfx.stamp_png(60, tone, ink)
+        assert png.startswith(b"\x89PNG") and png[16:24] == (60).to_bytes(4, "big") * 2
+    oc = gfx.sd_octagon(50, 50, 100, 10)
+    assert oc(50, 50) < 0 and oc(50, 1) < 0 and oc(50, -2) > 0 and oc(2, 2) > 0          # flat sides, cut corners
+    assert gfx.brand_png(26).startswith(b"\x89PNG") and gfx.tick_png(12, "#1E7656").startswith(b"\x89PNG")
+    line = gfx.polyline_png(40, 20, [(2, 18), (20, 2), (38, 10)], 1.7, "#20262A")
+    assert line.startswith(b"\x89PNG") and line[16:24] == (40).to_bytes(4, "big") + (20).to_bytes(4, "big")
+    for which in ("tl", "tr", "bl", "br"):
+        assert gfx.shadow_corner_png(10, 12, 5.0, 0.15, which, "#28241A", "#F1F2EE").startswith(b"\x89PNG")
+    assert gfx.mix("#000000", "#FFFFFF", 0.5) == "#808080"
+    assert gfx.tri_png(12, True, "#1E7656").startswith(b"\x89PNG") and gfx.diamond_png(12, "#85621A").startswith(
+        b"\x89PNG")
+
+
+def test_settings_as_a_sentence_and_chips():
+    s = core.auto_settings(300)
+    t = core.settings_sentence(s)
+    assert t == ("เปิด 3 สูตร (A_new, NY, C5G) ล็อต 0.03 ทุกสูตร จากทุน 300 USD ล็อกกำไร 2 ชั้น (85→83 และ 95→93) "
+                 "ปิดสูตรเอเชีย และหยุดเปิดไม้เมื่อขาดทุนถึง 10% ต่อวัน")
+    assert "·" not in t and [c for c, _ in core.settings_chips(s)] == ["3 สูตร", "ล็อต 0.03", "ล็อก 2 ชั้น", "เอเชียปิด",
+                                                                     "หยุดที่ 10%/วัน"]
+    s.update(lock_stages=0, use_asia=True, lot_mode="each", lot_a=0.05, lot_ny=0.02, lot_c5g=0.04)
+    t = core.settings_sentence(s)
+    assert "ไม่ล็อกกำไร" in t and "เปิดสูตรเอเชีย" in t and "A 0.05, NY 0.02, C5G 0.04" in t
+
+
+def test_hero_stamp_follows_the_state():
+    now = 1794002099.0
+    st = _st(now)
+    snap = {"last_error": "", "rejected": [], "last_ok_at": now - 4}
+    h = core.hero_state
+    assert h(CFG, st, snap, now, True)["stamp"] == ("gold", "เทรดจริง")
+    assert h(CFG, st, None, now, False)["stamp"] == ("slate", "หยุดอยู่")
+    old = _st(now)
+    old["heartbeat_gmt_unix"] = int(now) - 900
+    assert h(CFG, old, snap, now, True)["stamp"] == ("cinnabar", "รอ MT5")
+    assert h(CFG, st, dict(snap, last_error="network: down"), now, True)["stamp"][0] == "cinnabar"
+    assert h(CFG, _st(now, control=dict(st["control"], mode="pause")), snap, now, True)["stamp"][0] == "slate"
+    assert "·" not in h(CFG, st, snap, now, True, started_at=now - 60)["text"]
+
+
+def test_price_line_bars_from_the_ea_file_read_only(tmp_path):
+    ea = core.DemoEA(str(tmp_path))                     # the fake EA writes its bar file into the TEMP common folder
+    ea.write()
+    path = str(tmp_path / da.BARS_NAME)
+    text = core.read_bars_tail(path)
+    bars, off = core.bars_for_chart(text, 120)
+    assert off == 120 and len(bars["c"]) == 96 and bars["c"][-1] == 4015.98 and bars["vwap"][-1]
+    assert bars["t"][-1] - bars["t"][0] == 95 * 900
+    plain, off = core.bars_for_chart(text, None)        # no server offset: same line, no time axis
+    assert off is None and plain["c"] == bars["c"] and plain["t"][0] - bars["t"][0] == 120 * 60
+    tail = core.read_bars_tail(path, max_bytes=2000)    # a tail that starts mid-row still parses
+    assert core.bars_for_chart(tail, 120)[0]["c"][-1] == 4015.98
+    assert core.read_bars_tail(str(tmp_path / "missing.csv")) is None and core.bars_for_chart(None, 120) == (None,
+                                                                                                          None)
+
+
+def test_status_watcher_posts_the_bars_when_they_change(tmp_path):
+    common = str(tmp_path)
+    core.DemoEA(common).write()
+    got = []
+    w = core.StatusWatcher(lambda: common, got.append, every=0.05)
+    w.start()
+    try:
+        deadline = core.time.time() + 5
+        while core.time.time() < deadline and not any(g[0] == "bars" for g in got):
+            core.time.sleep(0.02)
+        core.time.sleep(0.3)
+    finally:
+        w.stop()
+    b = [g for g in got if g[0] == "bars"]
+    assert len(b) == 1 and "bar_time" in b[0][1]

@@ -28,16 +28,19 @@ import time
 import traceback
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, ttk
 
 import dobby_agent as da
 import dobby_app_core as core
 import dobby_app_ui as ui_kit
 from dobby_app_core import APP_NAME, APP_VERSION, WEB_URL, LOG
-from dobby_app_ui import (C, F, GLYPH, ICON_FONT, MAX_RUN_BYTES, THAI_MARKS, TONE_INK, TONE_LINE, TONE_SOFT, Banner,  # noqa: F401
-                          Bar, Box, Btn, Centered, ChoiceDialog, Expander, Field, IconBadge, L, Link, Mark,
+from dobby_app_ui import (C, F, FONTS, GLYPH, ICON_FONT, MAX_RUN_BYTES, THAI_MARKS, TONE_DOT, TONE_INK,  # noqa: F401
+                          TONE_LINE, TONE_SOFT, Banner, Bar, Box, BrandMark, Btn, Centered, Chip, ChoiceDialog,
+                          Expander, Field, Hallmark, IconBadge, L, Ladder, Link, Mark, NumBadge, PriceLine, Row,
                           ScrollFrame, Segmented, StepBar, Stepper, Toggle, _bg, badge, bind_tree, bullet_list, col,
-                          frame, glyph, hline, log_wrap, manual_steps, px, round_box, section, setup_theme, wrap_text)
+                          frame, glyph, group, hair_for, hline, load_private_fonts, log_wrap, manual_steps, num_text,
+                          px, round_box, section, setup_theme, shadow_margins, wrap_text)
 
 WIZ_STEPS = ["ยินดีต้อนรับ", "เข้าสู่ระบบ", "เลือกบอท", "ตั้งค่าบอท", "เชื่อม MT5", "ความปลอดภัย", "เสร็จแล้ว"]
 STEP_WELCOME, STEP_SIGNIN, STEP_BOT, STEP_SETTINGS, STEP_MT5, STEP_SAFETY, STEP_FINISH = range(7)
@@ -64,260 +67,188 @@ class Screen(tk.Frame):
 
 
 def app_header(screen, title=None, back=None):
-    """White top bar: [‹ กลับ] logo Dobby | title ............ right side (returned frame)."""
-    bar = frame(screen, bg="surface")
+    """The top bar on porcelain: [กลับ] brand mark Dobby | title ............ right side (returned frame)."""
+    bar = frame(screen, bg="bg")
     bar.pack(fill="x")
     inner = frame(bar)
-    inner.pack(fill="x", padx=px(20), pady=px(11))
+    inner.pack(fill="x", padx=px(20), pady=px(10))
     if back:
-        Btn(inner, "กลับ", back, style="ghost", size="sm", icon="back").pack(side="left", padx=(0, px(10)))
-    tk.Label(inner, image=screen.ui.icon28, bg=C["surface"], bd=0).pack(side="left")
-    L(inner, "Dobby", font="h2").pack(side="left", padx=(px(9), 0))
+        Btn(inner, "กลับ", back, style="quiet", size="sm", icon="chev_l").pack(side="left", padx=(0, px(16)))
+    BrandMark(inner, 26).pack(side="left")
+    L(inner, "Dobby", font="brand").pack(side="left", padx=(px(10), 0))
     if title:
-        L(inner, "   " + title, font="base", fg="muted").pack(side="left")
+        frame(inner, bg="hair2", width=1, height=px(18)).pack(side="left", padx=px(14))
+        L(inner, title, font="base", fg="slate").pack(side="left")
     right = frame(inner)
     right.pack(side="right")
-    frame(screen, bg="line", height=1).pack(fill="x")
+    frame(screen, bg="hair", height=1).pack(fill="x")
     return inner, right
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Bot settings editor (wizard step 4): balance + "ตั้งให้อัตโนมัติ", result cards, "ปรับเอง"
+# Bot settings editor (wizard step 4): balance + "ตั้งให้อัตโนมัติ", the result as a sentence and a few chips, "ปรับเอง"
 # ---------------------------------------------------------------------------------------------------------------------
-class LockBar(tk.Canvas):
-    """Tiny diagram of the lock stages: entry ... TP with "ถึง X%" above and "SL Y%" below."""
-
-    def __init__(self, parent, height=96):
-        tk.Canvas.__init__(self, parent, height=px(height), bg=_bg(parent), highlightthickness=0, bd=0)
-        self.v = (2, 95.0, 93.0, 85.0, 83.0)
-        self.bind("<Configure>", lambda e: self.redraw())
-
-    def set(self, stages, at, to, a1, t1):
-        self.v = (stages, at, to, a1, t1)
-        self.redraw()
-
-    def redraw(self):
-        self.delete("all")
-        w = self.winfo_width()
-        if w < 80:
-            return
-        stages, at, to, a1, t1 = self.v
-        x0, x1 = px(58), w - px(30)
-        y, th = px(46), px(10)
-
-        def X(p):
-            return x0 + (x1 - x0) * max(0.0, min(100.0, float(p))) / 100.0
-        round_box(self, x0, y - th // 2, x1, y + th // 2, th // 2, "sunken")
-        self.create_text(x0 - px(8), y, text="จุดเข้า", anchor="e", font=F["tiny"], fill=C["muted"])
-        self.create_text(x1 + px(8), y, text="TP", anchor="w", font=F["tbold"], fill=C["ink2"])
-        pts = []
-        if stages >= 1 and at is not None and to is not None:
-            pts.append((at, to))
-        if stages >= 2 and a1 is not None and t1 is not None:
-            pts.append((a1, t1))
-        if not pts:
-            self.create_text((x0 + x1) / 2.0, y + px(22), text="ไม่ล็อก: ปล่อยให้ถึง TP หรือ SL", font=F["tiny"],
-                             fill=C["muted"])
-            return
-        top = max(t for _, t in pts)
-        round_box(self, x0, y - th // 2, max(x0 + th, X(top)), y + th // 2, th // 2, "good_line")
-        gap = px(46)
-        last_a = last_t = None
-        for a, t in sorted(pts):
-            xa, xt = X(a), X(t)
-            self.create_polygon(xa - px(5), y - th // 2 - px(9), xa + px(5), y - th // 2 - px(9), xa, y - th // 2 - px(1),
-                                fill=C["accent"], outline="")
-            dy = px(12) if last_a is not None and abs(xa - last_a) < gap else 0
-            self.create_text(xa, y - th // 2 - px(17) - dy, text="ถึง %s%%" % core.pct_text(a), font=F["tbold"],
-                             fill=C["accent_hi"])
-            self.create_polygon(xt - px(5), y + th // 2 + px(9), xt + px(5), y + th // 2 + px(9), xt, y + th // 2 + px(1),
-                                fill=C["good_dot"], outline="")
-            dy = px(12) if last_t is not None and abs(xt - last_t) < gap else 0
-            self.create_text(xt, y + th // 2 + px(18) + dy, text="SL %s%%" % core.pct_text(t), font=F["tbold"],
-                             fill=C["good"])
-            last_a, last_t = xa, xt
-
-
 class SettingsEditor(tk.Frame):
-    TILE_ICON = {"strategies": "list", "lot": "chart", "lock": "lock", "asia": "clock", "cap": "shield"}
-
     def __init__(self, parent, ui, on_change=None):
         tk.Frame.__init__(self, parent, bg=_bg(parent), bd=0, highlightthickness=0)
         self.ui, self.on_change = ui, on_change
         self.s = core.auto_settings(None)
         self.applied = False
         self._loading = False
-        self.steppers, self.err_l = {}, {}
+        self.steppers, self.err_l, self.stage_notes = {}, {}, {}
         # 1. the balance
-        c1 = self.c1 = Box(self, pad=20)
+        c1 = self.c1 = frame(self)
         c1.pack(fill="x")
-        section(c1.body, "เงินในบัญชีเทรด (USD)",
-                "ทำไม: แอปเลือกล็อตให้พอดีกับเงิน (ทุก 100 USD = 0.01 ล็อต) และใช้เป็นทุนตั้งต้นของ Dobby", icon="card")
-        row = frame(c1.body)
+        section(c1, "เงินในบัญชีเทรด", "แอปเลือกล็อตให้พอดีกับเงิน (ทุก 100 USD = 0.01 ล็อต) และใช้ยอดนี้เป็นทุนตั้งต้นของ Dobby")
+        row = frame(c1)
         row.pack(fill="x", pady=(px(14), 0))
-        self.bal = Field(row, width=9, font="entryL", suffix="USD", pady=8, padx=14)
+        self.bal = Field(row, width=8, font="numM", suffix="USD", pady=4, padx=14)
         self.bal.pack(side="left")
-        self.auto_btn = Btn(row, "ตั้งให้อัตโนมัติ", self.do_auto, size="lg", icon="bolt")
-        self.auto_btn.pack(side="left", padx=(px(12), 0))
-        self.bal_err = L(c1.body, "", font="sbold", fg="bad")
-        self.bal_hint = L(c1.body, "", font="small", fg="muted", wrap=True)
+        self.auto_btn = Btn(row, "ตั้งให้อัตโนมัติ", self.do_auto, size="lg")
+        self.auto_btn.pack(side="left", padx=(px(12), 0), anchor="center")
+        self.bal_err = L(c1, "", font="sbold", fg="cinnabar")
+        self.bal_hint = L(c1, "", font="small", fg="slate", wrap=True)
         self.bal_hint.pack(fill="x", pady=(px(8), 0))
         self.bal.entry.bind("<Return>", lambda e: self.do_auto())
         self.bal.var.trace_add("write", lambda *a: self._balance_typed())
-        # 2. the result
-        self.result = Box(self, pad=20)
-        rb = self.result.body
-        section(rb, "Dobby จะใช้ค่านี้", "ทำไม: เป็นค่าที่เจ้าของ Dobby ใช้จริง ปรับเองได้ด้านล่าง หรือแก้ภายหลังบนเว็บ",
-                icon="check")
+        # 2. the result: one sentence, a few chips, the risk note
+        self.result = frame(self)
+        rb = self.result
+        frame(rb, bg="hair", height=1).pack(fill="x", pady=(0, px(18)))
+        L(rb, "Dobby จะใช้ค่านี้", font="h3").pack(fill="x")
+        self.res_text = L(rb, "", font="lead", fg="ink", wrap=True)
+        self.res_text.pack(fill="x", pady=(px(6), 0))
         self.tiles = frame(rb)
-        self.tiles.pack(fill="x", pady=(px(14), 0))
-        for c in range(3):
-            self.tiles.columnconfigure(c, weight=1, uniform="tiles")
-        self.risk = Box(rb, fill="accent_soft", border="accent_line", radius=12, pad=14)
-        self.risk.pack(fill="x", pady=(px(4), 0))
+        self.tiles.pack(fill="x", pady=(px(12), 0))
+        self.risk = Box(rb, fill="well", border=None, radius=14, padx=16, pady=14)
+        self.risk.pack(fill="x", pady=(px(18), 0))
         top = frame(self.risk.body)
         top.pack(fill="x")
-        glyph(top, "pulse", "icon", fg="accent_hi").pack(side="left", anchor="n", padx=(0, px(10)), pady=(px(1), 0))
-        self.risk_txt = L(top, "", font="sbold", fg="ink", wrap=True)
+        glyph(top, "pulse", "icon", fg="gold_ink").pack(side="left", anchor="n", padx=(0, px(10)), pady=(px(3), 0))
+        self.risk_txt = L(top, "", font="med", fg="ink", wrap=True)
         self.risk_txt.pack(side="left", fill="x", expand=True)
         self.risk_more = Expander(self.risk.body, "ดูรายละเอียด")
-        self.risk_more.pack(fill="x", pady=(px(8), 0))
+        self.risk_more.pack(fill="x", pady=(px(8), 0), padx=(px(26), 0))
         self.risk_lines = frame(self.risk_more.body)
         self.risk_lines.pack(fill="x")
-        L(self.risk.body, core.RISK_DISCLAIMER, font="tiny", fg="muted", wrap=True).pack(fill="x", pady=(px(6), 0))
+        L(self.risk.body, core.RISK_DISCLAIMER, font="small", fg="slate", wrap=True).pack(
+            fill="x", pady=(px(8), 0), padx=(px(26), 0))
         # 3. "ปรับเอง"
         self.custom = tk.BooleanVar(value=False)
-        self.crow = Box(self, pad=16)
-        r = self.crow.body
-        Toggle(r, self.custom, command=self._custom_changed).pack(side="left", anchor="n", pady=(px(2), 0))
-        c = frame(r)
-        c.pack(side="left", fill="x", expand=True, padx=(px(12), 0))
-        L(c, "ปรับเอง", font="bold").pack(fill="x")
-        L(c, "ไม่ต้องแก้ก็ได้ ค่าอัตโนมัติด้านบนใช้ได้ทันที เปิดเพื่อเลือกสูตร ล็อต ชั้นล็อกกำไร และจุดหยุดขาดทุนเอง",
-          font="small", fg="muted", wrap=True).pack(fill="x")
+        self.crow = Row(self, "ปรับเอง", "ไม่ต้องแก้ก็ได้ ค่าอัตโนมัติด้านบนใช้ได้ทันที เปิดเพื่อเลือกสูตร ล็อต ชั้นล็อกกำไร และจุดหยุด"
+                                       "ขาดทุนเอง", pady=16)
+        Toggle(self.crow.ctl, self.custom, command=self._custom_changed).pack()
         # 4. the custom panel
         self.cp = frame(self)
         self._build_custom(self.cp)
 
     # -- custom panel
     def _err_label(self, parent, key, after):
-        lbl = L(parent, "", font="sbold", fg="bad", wrap=True)
+        lbl = L(parent, "", font="sbold", fg="cinnabar", wrap=True)
         self.err_l[key] = (lbl, after)
 
-    def _num_row(self, parent, key, label, lo, hi, step, fmt, suffix=None, sub=None):
-        r = frame(parent)
-        r.pack(fill="x", pady=(px(12), 0))
-        c = frame(r)
-        c.pack(side="left", fill="x", expand=True)
-        L(c, label, font="bold").pack(fill="x")
-        if sub:
-            L(c, sub, font="small", fg="muted", wrap=True).pack(fill="x")
-        st = Stepper(r, None, lo, hi, step, fmt, on_change=lambda v, k=key: self._set(k, v), suffix=suffix)
-        st.pack(side="right", anchor="n", padx=(px(12), 0))
+    def _num_row(self, parent, key, label, lo, hi, step, fmt, suffix=None, sub=None, rule=True, font="bold"):
+        r = Row(parent, label, sub, rule=rule, font=font)
+        r.pack(fill="x")
+        st = Stepper(r.ctl, None, lo, hi, step, fmt, on_change=lambda v, k=key: self._set(k, v), suffix=suffix)
+        st.pack()
         self.steppers[key] = st
-        self._err_label(parent, key, r)
+        self._err_label(r.text, key, r.sub or r.title)
         return r
+
+    def _head(self, parent, title, why):
+        """A group heading with its control on the right (segmented choices)."""
+        r = Row(parent, title, why, rule=False, pady=0, font="h3")
+        r.pack(fill="x")
+        return r.ctl
 
     def _build_custom(self, p):
         # strategies
-        b = Box(p, pad=20)
-        b.pack(fill="x", pady=(px(14), 0))
-        section(b.body, "สูตรที่ใช้", "ทำไม: แต่ละสูตรหาจังหวะเข้าคนละแบบ เปิดหลายสูตร = เทรดบ่อยขึ้น", icon="list")
+        g = group(p, "สูตรที่ใช้", "แต่ละสูตรหาจังหวะเข้าคนละแบบ เปิดหลายสูตรแล้วบอทจะเทรดบ่อยขึ้น")
         self.use_vars = {}
         last = None
-        for key in ("a", "ny", "c5g", "asia"):
+        for i, key in enumerate(("a", "ny", "c5g", "asia")):
             name, desc = core.STRATEGY_TH[key]
-            r = frame(b.body)
-            r.pack(fill="x", pady=(px(12), 0))
+            r = Row(g, name, desc, rule=i > 0)
+            r.pack(fill="x", pady=(px(6) if i == 0 else 0, 0))
             v = tk.BooleanVar(value=bool(self.s["use_" + key]))
-            Toggle(r, v, command=lambda k=key, v=v: self._set("use_" + k, bool(v.get()))).pack(side="left", anchor="n")
-            c = frame(r)
-            c.pack(side="left", fill="x", expand=True, padx=(px(12), 0))
-            L(c, name, font="bold").pack(fill="x")
-            L(c, desc, font="small", fg="muted", wrap=True).pack(fill="x")
+            Toggle(r.ctl, v, command=lambda k=key, v=v: self._set("use_" + k, bool(v.get()))).pack()
             self.use_vars[key] = v
             last = r
-        self._err_label(b.body, "strategies", last)
+        self._err_label(g, "strategies", last)
         # lots
-        b = Box(p, pad=20)
-        b.pack(fill="x", pady=(px(14), 0))
-        section(b.body, "ล็อต", "ทำไม: ล็อตใหญ่ = กำไรและขาดทุนต่อไม้มากขึ้นเท่ากัน (0.01 ล็อต ≈ 1 USD ต่อทองขยับ 1 ดอลลาร์)",
-                icon="chart")
+        g = group(p)
         self.lot_mode = tk.StringVar(value="same")
-        Segmented(b.body, [("same", "เท่ากันทุกสูตร"), ("each", "แยกแต่ละสูตร")], self.lot_mode,
-                  command=self._lot_mode).pack(anchor="w", pady=(px(14), 0))
-        self.lot_rows = frame(b.body)
-        self.lot_rows.pack(fill="x")
+        Segmented(self._head(g, "ล็อต", "ล็อตใหญ่ได้และเสียต่อไม้มากขึ้นเท่ากัน 0.01 ล็อตเท่ากับราว 1 USD ต่อทองขยับ 1 ดอลลาร์"),
+                  [("same", "เท่ากันทุกสูตร"), ("each", "แยกแต่ละสูตร")], self.lot_mode, command=self._lot_mode).pack()
+        self.lot_rows = frame(g)
+        self.lot_rows.pack(fill="x", pady=(px(10), 0))
         self.same_box = frame(self.lot_rows)
-        self._num_row(self.same_box, "lot", "ล็อตทุกสูตร", core.LOT_MIN, core.LOT_MAX, 0.01, "%.2f",
-                      suffix=" ")
+        self._num_row(self.same_box, "lot", "ล็อตทุกสูตร", core.LOT_MIN, core.LOT_MAX, 0.01, "%.2f")
         self.each_box = frame(self.lot_rows)
         for key, name in (("lot_a", "A_new"), ("lot_ny", "NY"), ("lot_c5g", "C5G")):
-            self._num_row(self.each_box, key, "ล็อต " + name, core.LOT_MIN, core.LOT_MAX, 0.01, "%.2f",
-                          suffix=" ")
+            self._num_row(self.each_box, key, "ล็อต " + name, core.LOT_MIN, core.LOT_MAX, 0.01, "%.2f")
         self.asia_box = frame(self.lot_rows)
         self._num_row(self.asia_box, "lot_asia", "ล็อต ASIA16", core.LOT_MIN, core.LOT_MAX, 0.01, "%.2f",
-                      sub="สูตรเสริมใช้ล็อตของตัวเอง", suffix=" ")
-        self.lots_card = b
-        # locks
-        b = Box(p, pad=20)
-        b.pack(fill="x", pady=(px(14), 0))
-        section(b.body, "ล็อกกำไร",
-                "ทำไม: เมื่อราคาวิ่งเข้าใกล้ TP แล้ว Dobby ย้าย SL มาเก็บกำไรไว้ ถ้าราคากลับตัวก็ยังได้กำไร", icon="lock")
+                      sub="สูตรเสริมใช้ล็อตของตัวเอง")
+        self.lots_card = g
+        # locks: the price ladder, then one row of two steppers per stage
+        g = group(p)
         self.stages = tk.StringVar(value="2")
-        Segmented(b.body, [("0", "ไม่ล็อก"), ("1", "1 ชั้น"), ("2", "2 ชั้น")], self.stages, command=self._stages,
-                  seg_min=60).pack(anchor="w", pady=(px(14), 0))
-        self.stage_rows = frame(b.body)
+        Segmented(self._head(g, "ล็อกกำไร", "เมื่อราคาวิ่งเข้าใกล้ TP Dobby เลื่อน SL ขึ้นมาเก็บกำไรไว้ ถ้าราคากลับตัวก็ยังได้กำไร"),
+                  [("0", "ไม่ล็อก"), ("1", "1 ชั้น"), ("2", "2 ชั้น")], self.stages, command=self._stages,
+                  seg_min=56).pack()
+        self.lockbar = Ladder(g)
+        self.lockbar.pack(fill="x", pady=(px(16), 0))
+        self.stage_rows = frame(g)
         self.stage_rows.pack(fill="x")
         self.stage1_box = frame(self.stage_rows)
         self._stage_row(self.stage1_box, "ชั้นแรก", "lock1_at", "lock1_to")
         self.stage2_box = frame(self.stage_rows)
         self._stage_row(self.stage2_box, "ชั้นใกล้ TP", "lock_at", "lock_to")
-        self.lockbar = LockBar(b.body)
-        self.lockbar.pack(fill="x", pady=(px(10), 0))
-        self.lock_card = b
+        self.lock_card = g
         # daily loss cap
-        b = Box(p, pad=20)
-        b.pack(fill="x", pady=(px(14), 0))
-        section(b.body, "หยุดเมื่อขาดทุนต่อวัน",
-                "ทำไม: วันที่ตลาดไม่เป็นใจ Dobby หยุดเปิดไม้ใหม่เอง ไม่เสียเกินนี้ต่อวัน (สูงสุด 10%)", icon="shield")
-        r = self._num_row(b.body, "daily_cap", "หยุดเมื่อขาดทุนถึง (% ของทุนต้นวัน)", 1, core.PRESET_MAX_CAP, 1, "%g",
-                          suffix="%")
-        self.cap_sub = L(r.winfo_children()[0], "", font="small", fg="muted")
-        self.cap_sub.pack(fill="x")
+        g = group(p)
+        r = self._num_row(g, "daily_cap", "หยุดเมื่อขาดทุนต่อวัน", 1, core.PRESET_MAX_CAP, 1, "%g", suffix="%",
+                          sub="วันที่ตลาดไม่เป็นใจ Dobby หยุดเปิดไม้ใหม่เอง ไม่เสียเกินนี้ต่อวัน (สูงสุด 10% ของทุนต้นวัน)",
+                          rule=False, font="h3")
+        self.cap_sub = L(r.text, "", font="small", fg="ink")
+        self.cap_sub.pack(fill="x", pady=(px(2), 0))
         # advanced
-        b = Box(p, pad=20)
-        b.pack(fill="x", pady=(px(14), 0))
-        self.adv = Expander(b.body, "ขั้นสูง", sub="ไม่ต้องแก้ก็ได้")
+        g = group(p)
+        self.adv = Expander(g, "ขั้นสูง", sub="ไม่ต้องแก้ก็ได้")
         self.adv.pack(fill="x")
         a = self.adv.body
-        self._num_row(a, "recovery", "ไม้แก้หลังขาดทุน (เท่าของล็อต)", 1.0, 2.0, 0.1, "%.1f", suffix="×")
-        self._num_row(a, "attempts", "เข้าได้กี่ครั้งต่อสูตรต่อวัน (ครั้ง)", 1, 4, 1, "%d", suffix=" ")
+        self._num_row(a, "recovery", "ไม้แก้หลังขาดทุน (เท่าของล็อต)", 1.0, 2.0, 0.1, "%.1f", suffix="×", rule=False)
+        self._num_row(a, "attempts", "เข้าได้กี่ครั้งต่อสูตรต่อวัน", 1, 4, 1, "%d", suffix="ครั้ง")
         self._num_row(a, "conf_mult", "เพิ่มล็อตเมื่อสองสูตรเห็นตรงกัน", 1.0, 2.0, 0.1, "%.1f", suffix="×")
-        self._num_row(a, "conf_min", "นับว่าเห็นตรงกันภายใน (นาที)", 0, 240, 15, "%d", suffix=" ")
+        self._num_row(a, "conf_min", "นับว่าเห็นตรงกันภายใน", 0, 240, 15, "%d", suffix="นาที")
         self._num_row(a, "max_spread", "ไม่เปิดไม้เมื่อสเปรดเกิน", 0.05, 2.0, 0.05, "%.2f", suffix="$")
-        r = frame(a)
-        r.pack(fill="x", pady=(px(12), 0))
+        r = Row(a, "เทรด NY และ C5G เฉพาะวันที่ตลาดคึกคัก", "วัดจากช่วงราคาเฉลี่ย 20 วัน (ปกติปิด)")
+        r.pack(fill="x")
         self.vol_var = tk.BooleanVar(value=False)
-        Toggle(r, self.vol_var, command=lambda: self._set("vol_gate", bool(self.vol_var.get()))).pack(side="left",
-                                                                                                       anchor="n")
-        c = frame(r)
-        c.pack(side="left", fill="x", expand=True, padx=(px(12), 0))
-        L(c, "เทรด NY และ C5G เฉพาะวันที่ตลาดคึกคัก", font="bold").pack(fill="x")
-        L(c, "วัดจากช่วงราคาเฉลี่ย 20 วัน (ปกติปิด)", font="small", fg="muted").pack(fill="x")
+        Toggle(r.ctl, self.vol_var, command=lambda: self._set("vol_gate", bool(self.vol_var.get()))).pack()
         self.vol_box = frame(a)
         self._num_row(self.vol_box, "vol_gate_pct", "ช่วงราคาเฉลี่ยขั้นต่ำ", 0.5, 5.0, 0.25, "%.2f", suffix="%")
 
     def _stage_row(self, parent, title, k_at, k_to):
-        L(parent, title, font="bold").pack(fill="x", pady=(px(14), px(6)))
+        frame(parent, bg="hair", height=1).pack(fill="x", pady=(px(14), px(12)))
+        L(parent, title, font="bold").pack(fill="x", pady=(0, px(8)))
         r = frame(parent)
         r.pack(fill="x")
-        L(r, "กำไรถึง", font="base", fg="ink2").pack(side="left", padx=(0, px(8)))
-        s1 = Stepper(r, None, 10, 99.5, 0.5, "%g", width=5, suffix="%", on_change=lambda v: self._set(k_at, v))
-        s1.pack(side="left")
-        L(r, "ของ TP   →   เลื่อน SL ไป", font="base", fg="ink2").pack(side="left", padx=px(10))
-        s2 = Stepper(r, None, 1, 99, 0.5, "%g", width=5, suffix="%", on_change=lambda v: self._set(k_to, v))
-        s2.pack(side="left")
+        c1 = frame(r)
+        c1.pack(side="left", anchor="n")
+        L(c1, "เมื่อกำไรถึง (% ของทางไป TP)", font="small", fg="slate").pack(anchor="w", pady=(0, px(5)))
+        s1 = Stepper(c1, None, 10, 99.5, 0.5, "%g", width=5, suffix="%", on_change=lambda v: self._set(k_at, v))
+        s1.pack(anchor="w")
+        c2 = frame(r)
+        c2.pack(side="left", anchor="n", padx=(px(24), 0))
+        L(c2, "เลื่อน SL ไปที่ (% ของทางไป TP)", font="small", fg="slate").pack(anchor="w", pady=(0, px(5)))
+        s2 = Stepper(c2, None, 1, 99, 0.5, "%g", width=5, suffix="%", on_change=lambda v: self._set(k_to, v))
+        s2.pack(anchor="w")
+        note = L(parent, "", font="small", fg="ink", wrap=True)
+        note.pack(fill="x", pady=(px(8), 0))
+        self.stage_notes[(k_at, k_to)] = note
         self.steppers[k_at], self.steppers[k_to] = s1, s2
         self._err_label(parent, k_at, r)
         self._err_label(parent, k_to, r)
@@ -386,8 +317,8 @@ class SettingsEditor(tk.Frame):
             elif not on and w.winfo_manager():
                 w.pack_forget()
         applied = self.applied
-        show(self.result, applied, fill="x", pady=(px(14), 0), after=self.c1)
-        show(self.crow, applied, fill="x", pady=(px(14), 0), after=self.result)
+        show(self.result, applied, fill="x", pady=(px(24), 0), after=self.c1)
+        show(self.crow, applied, fill="x", pady=(px(22), 0), after=self.result)
         show(self.cp, applied and bool(self.custom.get()), fill="x", after=self.crow)
         each = self.s.get("lot_mode") == "each"
         st = int(self.s.get("lock_stages") or 0)
@@ -412,8 +343,14 @@ class SettingsEditor(tk.Frame):
         self._render_risk(s)
         self.lockbar.set(int(s.get("lock_stages") or 0), da.to_num(s.get("lock_at")), da.to_num(s.get("lock_to")),
                          da.to_num(s.get("lock1_at")), da.to_num(s.get("lock1_to")))
+        for (k_at, k_to), note in self.stage_notes.items():
+            a, t = da.to_num(s.get(k_at)), da.to_num(s.get(k_to))
+            note.configure(text=("เมื่อกำไรวิ่งถึง %s%% ของทางไป TP บอทจะเลื่อน SL ไปที่ %s%% ต่อให้ราคากลับ ก็ยังได้กำไร"
+                                 "ราว %s%% ของ TP" % (core.pct_text(a), core.pct_text(t), core.pct_text(t)))
+                           if a is not None and t is not None else "")
         b, cap = s.get("balance"), da.to_num(s.get("daily_cap"))
-        self.cap_sub.configure(text=("≈ %s USD ต่อวัน" % core.money(b * cap / 100.0)) if b and cap else "")
+        self.cap_sub.configure(text=("เท่ากับราว %s USD ต่อวันจากทุน %s USD" % (core.money(b * cap / 100.0),
+                                                                             format(b, ",.0f"))) if b and cap else "")
         for key, (lbl, after) in self.err_l.items():
             msg = errs.get(key)
             if msg:
@@ -428,21 +365,20 @@ class SettingsEditor(tk.Frame):
             self.on_change()
 
     def _render_tiles(self, s):
-        key = tuple((it["title"], it["sub"]) for it in core.settings_summary(s))
+        """The auto result: one plain sentence and a few chips (no grid of identical cards)."""
+        sentence = "Dobby จะ" + core.settings_sentence(s)
+        b, cap = da.to_num(s.get("balance")), da.to_num(s.get("daily_cap"))
+        if b and cap:
+            sentence += " (ราว %s USD)" % core.money(b * cap / 100.0)
+        key = (sentence, tuple(core.settings_chips(s)))
         if key == getattr(self, "_tiles_key", None):
             return
         self._tiles_key = key
+        self.res_text.configure(text=sentence)
         for w in self.tiles.winfo_children():
             w.destroy()
-        for i, it in enumerate(core.settings_summary(s)):
-            t = Box(self.tiles, fill="surface2", border="line", radius=12, pad=12)
-            t.grid(row=i // 3, column=i % 3, sticky="nsew", pady=(0, px(10)),
-                   padx=(0 if i % 3 == 0 else px(5), 0 if i % 3 == 2 else px(5)))
-            IconBadge(t.body, self.TILE_ICON[it["key"]], size=32).pack(side="left", anchor="n")
-            c = frame(t.body)
-            c.pack(side="left", fill="x", expand=True, padx=(px(10), 0))
-            L(c, it["title"], font="bold", wrap=True).pack(fill="x")
-            L(c, it["sub"], font="small", fg="muted", wrap=True).pack(fill="x")
+        for text, tone in key[1]:
+            Chip(self.tiles, text, tone).pack(side="left", padx=(0, px(6)))
 
     def _render_risk(self, s):
         lots = core.settings_lots(s)
@@ -454,12 +390,10 @@ class SettingsEditor(tk.Frame):
             self._risk_key = key
             for w in self.risk_lines.winfo_children():
                 w.destroy()
-            for line in (r["details"][:-1] if r else []):
-                rr = frame(self.risk_lines)
-                rr.pack(fill="x", pady=(0, px(3)))
-                L(rr, "•", font="small", fg="accent_hi").pack(side="left", anchor="n")
-                L(rr, line, font="small", fg="ink2", wrap=True).pack(side="left", fill="x", expand=True,
-                                                                     padx=(px(6), 0))
+            for i, line in enumerate(r["details"][:-1] if r else []):
+                if i:
+                    frame(self.risk_lines, bg="hair2", height=1).pack(fill="x")
+                L(self.risk_lines, line, font="small", fg="ink", wrap=True).pack(fill="x", pady=px(5))
 
     def do_auto(self):
         b = da.to_num(self.bal.get().replace(",", "").strip())
@@ -501,61 +435,48 @@ class SettingsEditor(tk.Frame):
 class SafetyForm(tk.Frame):
     CHECKS = [
         ("allow_remote_control", "ให้เว็บควบคุม Dobby",
-         "หยุดชั่วคราว / ทำงานต่อ ลดล็อต และตั้งช่วงงดเทรดข่าวจากเว็บ (ปิด = แอปไม่เขียนไฟล์ควบคุมให้ Dobby เลย)"),
+         "หยุดชั่วคราว ทำงานต่อ ลดล็อต และตั้งช่วงงดเทรดข่าวจากเว็บ (ปิดไว้ แอปจะไม่เขียนไฟล์ควบคุมให้ Dobby เลย)"),
         ("allow_remote_live", "ให้เว็บเปิด-ปิดเทรดจริง",
-         "เว็บขอรหัสผ่านซ้ำทุกครั้งก่อนเปิดเทรดจริง (ปิด = เว็บสั่งปิดได้อย่างเดียว)"),
+         "เว็บขอรหัสผ่านซ้ำทุกครั้งก่อนเปิดเทรดจริง (ปิดไว้ เว็บสั่งปิดได้อย่างเดียว)"),
         ("allow_remote_params", "ให้เว็บส่งการตั้งค่าให้ Dobby",
-         "ล็อต ล็อกกำไร ทุน (Dobby v3.04 ขึ้นไป) ชุดที่เกินเพดานด้านล่างจะถูกปฏิเสธทั้งชุด"),
+         "ล็อต ล็อกกำไร และทุน (Dobby v3.04 ขึ้นไป) ชุดที่เกินเพดานด้านล่างจะถูกปฏิเสธทั้งชุด"),
     ]
 
     def __init__(self, parent, ui, on_change=None):
         tk.Frame.__init__(self, parent, bg=_bg(parent), bd=0, highlightthickness=0)
         self.ui, self.on_change = ui, on_change
         self.default_max = 0.06
-        card = Box(self, pad=22)
-        card.pack(fill="x")
-        top = frame(card.body)
+        top = Row(self, "ให้เว็บควบคุมได้ทุกอย่าง (แนะนำ)", None, rule=False, pady=0, font="h3")
         top.pack(fill="x")
-        IconBadge(top, "shield", size=48, fill="good_soft", ink="good").pack(side="left", anchor="n")
-        c = frame(top)
-        c.pack(side="left", fill="x", expand=True, padx=(px(14), px(12)))
-        L(c, "ให้เว็บควบคุมได้ทุกอย่าง (แนะนำ)", font="h3").pack(fill="x")
-        self.desc = L(c, "", font="base", fg="ink2", wrap=True)
-        self.desc.pack(fill="x", pady=(px(3), 0))
+        self.desc = L(top.text, "", font="base", fg="ink", wrap=True)
+        self.desc.pack(fill="x", pady=(px(4), 0))
         self.rec = tk.BooleanVar(value=True)
-        Toggle(top, self.rec, command=self._rec_changed).pack(side="right", anchor="n", pady=(px(4), 0))
-        L(card.body, "ทำไม: เพื่อให้คุณดูและสั่ง Dobby จากมือถือได้ เพดานด้านล่างเก็บไว้ในเครื่องนี้เท่านั้น เว็บเปลี่ยนไม่ได้",
-          font="small", fg="muted", wrap=True).pack(fill="x", pady=(px(12), 0))
-        hline(card.body, 12)
-        self.exp = Expander(card.body, "ปรับเอง", sub="เลือกทีละข้อ และเพดานของเครื่องนี้")
+        Toggle(top.ctl, self.rec, command=self._rec_changed).pack()
+        L(self, "คุณจะดูและสั่ง Dobby จากมือถือได้ ส่วนเพดานด้านล่างเก็บไว้ในเครื่องนี้เท่านั้น เว็บเปลี่ยนไม่ได้",
+          font="small", fg="slate", wrap=True).pack(fill="x", pady=(px(10), 0))
+        frame(self, bg=hair_for(self), height=1).pack(fill="x", pady=(px(18), px(16)))
+        self.exp = Expander(self, "ปรับเอง", sub="เลือกทีละข้อ และตั้งเพดานของเครื่องนี้")
         self.exp.pack(fill="x")
         b = self.exp.body
         self.vars = {}
-        for key, title, text in self.CHECKS:
-            r = frame(b)
-            r.pack(fill="x", pady=(0, px(12)))
+        for i, (key, title, text) in enumerate(self.CHECKS):
+            r = Row(b, title, text, rule=i > 0)
+            r.pack(fill="x")
             v = tk.BooleanVar(value=True)
             self.vars[key] = v
-            Toggle(r, v, command=self._detail_changed).pack(side="left", anchor="n")
-            cc = frame(r)
-            cc.pack(side="left", fill="x", expand=True, padx=(px(12), 0))
-            L(cc, title, font="bold").pack(fill="x")
-            L(cc, text, font="small", fg="muted", wrap=True).pack(fill="x")
+            Toggle(r.ctl, v, command=self._detail_changed).pack()
         self.steppers = {}
-        for key, title, text, lo, hi, step, fmt in (
-                ("max_lots", "ล็อตสูงสุดที่เว็บสั่งได้", "ล็อตจากเว็บที่เกินนี้จะถูกลดลงเหลือเท่านี้", 0.01, 5.0, 0.01, "%.2f"),
-                ("max_daily_cap_pct", "ขาดทุนต่อวันสูงสุดที่เว็บตั้งได้ (%)", "การตั้งค่าจากเว็บที่เกินนี้จะถูกปฏิเสธ", 1, 10,
-                 0.5, "%g")):
-            r = frame(b)
-            r.pack(fill="x", pady=(0, px(12)))
-            cc = frame(r)
-            cc.pack(side="left", fill="x", expand=True)
-            L(cc, title, font="bold").pack(fill="x")
-            L(cc, text, font="small", fg="muted", wrap=True).pack(fill="x")
-            st = Stepper(r, None, lo, hi, step, fmt, on_change=lambda v: self._detail_changed())
-            st.pack(side="right", anchor="n")
+        for key, title, text, lo, hi, step, fmt, unit in (
+                ("max_lots", "ล็อตสูงสุดที่เว็บสั่งได้", "ล็อตจากเว็บที่เกินนี้จะถูกลดลงเหลือเท่านี้", 0.01, 5.0, 0.01, "%.2f",
+                 None),
+                ("max_daily_cap_pct", "ขาดทุนต่อวันสูงสุดที่เว็บตั้งได้", "การตั้งค่าจากเว็บที่เกินนี้จะถูกปฏิเสธ", 1, 10,
+                 0.5, "%g", "%")):
+            r = Row(b, title, text)
+            r.pack(fill="x")
+            st = Stepper(r.ctl, None, lo, hi, step, fmt, on_change=lambda v: self._detail_changed(), suffix=unit)
+            st.pack()
             self.steppers[key] = st
-        self.err = L(b, "", font="sbold", fg="bad")
+        self.err = L(b, "", font="sbold", fg="cinnabar")
         self._quiet = False
 
     def set(self, limits, default_max=None):
@@ -596,13 +517,14 @@ class SafetyForm(tk.Frame):
     def _describe(self):
         lots = self.steppers["max_lots"].value()
         cap = self.steppers["max_daily_cap_pct"].value()
-        guard = "เครื่องนี้ยังกันไว้: ล็อตไม่เกิน %s และขาดทุนต่อวันไม่เกิน %s%%" % (
+        guard = "ส่วนเครื่องนี้ยังกันไว้ว่าล็อตไม่เกิน %s และขาดทุนต่อวันไม่เกิน %s%%" % (
             "%.2f" % lots if lots else "-", core.pct_text(cap) if cap else "-")
         if self.rec.get():
-            self.desc.configure(text="เว็บเปิด-ปิดเทรดจริง หยุดชั่วคราว และส่งการตั้งค่าให้ Dobby ได้ · " + guard)
+            self.desc.configure(text="เว็บเปิด-ปิดเทรดจริง หยุดชั่วคราว และส่งการตั้งค่าให้ Dobby ได้ " + guard)
         else:
             on = [t for (k, t, _), v in zip(self.CHECKS, self.vars.values()) if v.get()]
-            self.desc.configure(text=("เปิดไว้: " + ", ".join(on) if on else "เว็บดูได้อย่างเดียว สั่งอะไรไม่ได้") + " · " + guard)
+            self.desc.configure(text=("เปิดไว้เฉพาะ " + " และ ".join(on) + " " + guard) if on else
+                                ("เว็บดูได้อย่างเดียว สั่งอะไรไม่ได้ " + guard))
 
     def get(self):
         """(limits, None) or (None, Thai error)."""
@@ -622,8 +544,8 @@ class SafetyForm(tk.Frame):
             return err
         head = "เว็บควบคุมได้ทุกอย่าง" if all(lim[k] for k, _, _ in self.CHECKS) else \
             "เว็บควบคุมได้บางส่วน" if any(lim[k] for k, _, _ in self.CHECKS) else "เว็บดูได้อย่างเดียว"
-        return "%s · ล็อตไม่เกิน %.2f · ขาดทุนต่อวันไม่เกิน %s%%" % (head, lim["max_lots"],
-                                                                core.pct_text(lim["max_daily_cap_pct"]))
+        return "%s โดยล็อตไม่เกิน %.2f และขาดทุนต่อวันไม่เกิน %s%%" % (head, lim["max_lots"],
+                                                                   core.pct_text(lim["max_daily_cap_pct"]))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -640,64 +562,60 @@ class Mt5Panel(tk.Frame):
         self.files = []
         self.launched = None
         # MT5 in this PC
-        b = Box(self, pad=20)
-        b.pack(fill="x")
-        section(b.body, "MT5 ในเครื่องนี้", "ทำไม: Dobby ทำงานใน MT5 ที่ล็อกอินบัญชีเทรดของคุณ", icon="laptop")
-        self.term_box = frame(b.body)
+        g = group(self, "MT5 ในเครื่องนี้", "Dobby ทำงานใน MT5 ที่ล็อกอินบัญชีเทรดของคุณ", rule=False)
+        self.term_box = frame(g)
         self.term_box.pack(fill="x", pady=(px(12), 0))
-        row = frame(b.body)
+        row = frame(g)
         row.pack(fill="x", pady=(px(10), 0))
         Btn(row, "ค้นหาอีกครั้ง", self.scan, style="secondary", size="sm", icon="refresh").pack(side="left")
         Btn(row, "เลือกโฟลเดอร์เอง…", self.pick, style="ghost", size="sm", icon="folder").pack(side="left",
                                                                                               padx=(px(8), 0))
         # install
-        b = Box(self, pad=20)
-        b.pack(fill="x", pady=(px(14), 0))
-        section(b.body, "ติดตั้ง Dobby ลงใน MT5",
-                "ทำไม: แอปดาวน์โหลด Dobby เวอร์ชันล่าสุดจากเว็บ และสร้างพรีเซ็ตที่ให้เว็บตั้งค่าแทนคุณได้", icon="download")
-        self.inst_rows = frame(b.body)
+        g = group(self, "ติดตั้ง Dobby ลงใน MT5",
+                  "แอปดาวน์โหลด Dobby เวอร์ชันล่าสุดจากเว็บ และสร้างพรีเซ็ตที่ให้เว็บตั้งค่าแทนคุณได้")
+        self.inst_rows = frame(g)
         self.inst_rows.pack(fill="x", pady=(px(12), 0))
-        self.inst_banner = Banner(b.body, pady=(px(10), 0))
+        self.inst_banner = Banner(g, pady=(px(10), 0))
         self.inst_banner.pack(fill="x")
-        row = frame(b.body)
+        row = frame(g)
         row.pack(fill="x", pady=(px(10), 0))
         self.reinstall_btn = Btn(row, "ติดตั้งอีกครั้ง", lambda: self.install(force=True), style="secondary", size="sm",
                                  icon="download")
         self.reinstall_btn.pack(side="left")
-        self.files_exp = Expander(b.body, "ขั้นสูง: เลือกไฟล์เอง", on_toggle=self._files_toggle)
-        self.files_exp.pack(fill="x", pady=(px(12), 0))
+        self.files_exp = Expander(g, "เลือกไฟล์เอง", sub="ขั้นสูง", on_toggle=self._files_toggle)
+        self.files_exp.pack(fill="x", pady=(px(14), 0))
         self.files_box = frame(self.files_exp.body)
         self.files_box.pack(fill="x")
         # A: open MT5 with Dobby
-        b = Box(self, pad=20, border="accent_line")
-        b.pack(fill="x", pady=(px(14), 0))
-        head = section(b.body, "เปิด MT5 พร้อม Dobby ให้อัตโนมัติ",
-                       "ทำไม: แอปเปิด MT5 พร้อมกราฟใหม่ที่มี Dobby และเปิดปุ่ม Algo Trading ให้ ไม่ต้องลากเอง", icon="bolt")
-        badge(head, "แนะนำ", "info").pack(side="right", anchor="n")
-        row = frame(b.body)
-        row.pack(fill="x", pady=(px(14), 0))
+        g = group(self)
+        head = Row(g, "เปิด MT5 พร้อม Dobby ให้อัตโนมัติ",
+                   "แอปเปิด MT5 พร้อมกราฟใหม่ที่มี Dobby และเปิดปุ่ม Algo Trading ให้ ไม่ต้องลากเอง", rule=False, pady=0,
+                   font="h3")
+        head.pack(fill="x")
+        badge(head.ctl, "แนะนำ", "gold").pack()
+        row = frame(g)
+        row.pack(fill="x", pady=(px(16), 0))
         L(row, "สัญลักษณ์ทองของโบรก", font="bold").pack(side="left")
         self.symbol = Field(row, width=12, pady=6)
-        self.symbol.pack(side="left", padx=(px(12), px(8)))
-        L(row, "กรอบเวลา M15", font="small", fg="muted").pack(side="left")
-        self.sym_chips = frame(b.body)
-        self.sym_chips.pack(fill="x", pady=(px(6), 0))
+        self.symbol.pack(side="left", padx=(px(12), px(10)))
+        L(row, "กราฟ M15", font="small", fg="slate").pack(side="left")
+        self.sym_chips = frame(g)
+        self.sym_chips.pack(fill="x", pady=(px(8), 0))
         self.symbol.var.trace_add("write", lambda *a: self._symbol_typed())
-        self.auto_rows = frame(b.body)
-        self.auto_rows.pack(fill="x", pady=(px(10), 0))
-        row = frame(b.body)
-        row.pack(fill="x", pady=(px(12), 0))
+        self.auto_rows = frame(g)
+        self.auto_rows.pack(fill="x", pady=(px(12), 0))
+        row = frame(g)
+        row.pack(fill="x", pady=(px(14), 0))
         self.start_btn = Btn(row, "เปิด MT5 พร้อม Dobby", self.do_start, size="lg", icon="play")
         self.start_btn.pack(side="left")
         Btn(row, "ตรวจอีกครั้ง", self.check_auto, style="secondary", size="md", icon="refresh").pack(
             side="left", padx=(px(10), 0))
-        self.auto_banner = Banner(b.body, pady=(px(12), 0))
+        self.auto_banner = Banner(g, pady=(px(12), 0))
         self.auto_banner.pack(fill="x")
-        self.auto_card = b
+        self.auto_card = g
         # B: manual
-        b = Box(self, pad=20)
-        b.pack(fill="x", pady=(px(14), 0))
-        self.man = Expander(b.body, "ทำเองใน MT5", sub="6 ขั้นตอน ทำครั้งเดียว")
+        g = group(self)
+        self.man = Expander(g, "ทำเองใน MT5", sub="6 ขั้นตอน ทำครั้งเดียว")
         self.man.pack(fill="x")
         self.man_box = frame(self.man.body)
         self.man_box.pack(fill="x")
@@ -756,32 +674,36 @@ class Mt5Panel(tk.Frame):
             bn.show("warn", "ยังไม่พบ MT5 ในเครื่องนี้",
                     "ติดตั้ง MT5 จากเว็บโบรกเกอร์ของคุณ เปิดและล็อกอินบัญชีหนึ่งครั้ง แล้วกด ค้นหาอีกครั้ง")
             return
-        for t in self.terminals:
+        for i, t in enumerate(self.terminals):
             sel = t["data_dir"] == self.data_dir
-            box = Box(self.term_box, fill="accent_soft" if sel else "surface2",
-                      border="accent" if sel else "line", radius=12, pad=12, bw=2 if sel else 1)
-            box.pack(fill="x", pady=(0, px(8)))
+            prev_sel = i > 0 and self.terminals[i - 1]["data_dir"] == self.data_dir
+            if i and not sel and not prev_sel:
+                frame(self.term_box, bg="hair", height=1).pack(fill="x", padx=px(12))
+            box = Box(self.term_box, fill="gold_tint" if sel else "bg", border=None, radius=14, padx=14, pady=12)
+            box.pack(fill="x")
             r = box.body
-            IconBadge(r, "laptop", size=34, fill="surface" if sel else "sunken").pack(side="left", anchor="n")
+            mark = px(18)
+            img = ui_kit.dot_image(mark, "gold") if sel else ui_kit.dot_image(mark, "bg", "hair2")
+            tk.Label(r, image=img, bg=box.fill, bd=0).pack(side="left", anchor="n", pady=(px(3), 0))
             c = frame(r)
             c.pack(side="left", fill="x", expand=True, padx=(px(12), 0))
             top = frame(c)
             top.pack(fill="x")
             L(top, t["name"], font="bold").pack(side="left")
-            if sel:
-                badge(top, "เลือกอยู่", "info").pack(side="left", padx=(px(8), 0))
             if t["ea_files"]:
-                badge(top, "มี Dobby แล้ว", "good").pack(side="left", padx=(px(6), 0))
+                badge(top, "มี Dobby แล้ว", "good").pack(side="left", padx=(px(8), 0))
             bits = []
             if t["servers"]:
                 bits.append("เซิร์ฟเวอร์ " + ", ".join(t["servers"][:3]))
             if t["last_used"]:
-                bits.append("ใช้ล่าสุด " + time.strftime("%d/%m/%Y %H:%M", time.localtime(t["last_used"])))
-            L(c, "  ·  ".join(bits) or "MetaTrader 5", font="small", fg="ink2").pack(fill="x")
-            L(c, t["install_dir"] or t["data_dir"], font="tiny", fg="muted", wrap=True).pack(fill="x")
-            if not sel:
+                bits.append("ใช้ล่าสุดเมื่อ " + time.strftime("%d/%m/%Y %H:%M", time.localtime(t["last_used"])))
+            L(c, " ".join(bits) or "MetaTrader 5", font="small", fg="ink").pack(fill="x", pady=(px(1), 0))
+            L(c, t["install_dir"] or t["data_dir"], font="small", fg="slate", wrap=True).pack(fill="x")
+            if sel:
+                L(r, "เลือกอยู่", font="smed", fg="ink").pack(side="right", anchor="n", pady=(px(2), 0))
+            else:
                 Btn(r, "ใช้ตัวนี้", lambda d=t["data_dir"]: self.choose(d), style="secondary", size="sm").pack(
-                    side="right")
+                    side="right", anchor="n")
 
     def choose(self, d):
         if self.busy:
@@ -807,12 +729,12 @@ class Mt5Panel(tk.Frame):
     def _inst_row(self, state, text, detail=""):
         r = frame(self.inst_rows)
         r.pack(fill="x", pady=(0, px(6)))
-        Mark(r, state, size=18).pack(side="left", anchor="n", pady=(px(1), 0))
+        Mark(r, state, size=18, quiet=True).pack(side="left", anchor="n", pady=(px(2), 0))
         c = frame(r)
         c.pack(side="left", fill="x", expand=True, padx=(px(10), 0))
-        L(c, text, font="bold" if state != "idle" else "base", fg="ink" if state != "idle" else "muted").pack(fill="x")
+        L(c, text, font="med" if state != "idle" else "base", fg="ink" if state != "idle" else "slate").pack(fill="x")
         if detail:
-            L(c, detail, font="tiny", fg="muted", wrap=True).pack(fill="x")
+            L(c, detail, font="small", fg="slate", wrap=True).pack(fill="x")
 
     def _render_install(self, rows=None):
         for w in self.inst_rows.winfo_children():
@@ -872,7 +794,7 @@ class Mt5Panel(tk.Frame):
         rows = []
         ea_name = ""
         if pick is None:
-            rows.append(("warn", "ไม่พบไฟล์ Dobby บนเว็บ", "ผู้ดูแลยังไม่ได้อัปโหลด: ใช้ ขั้นสูง: เลือกไฟล์เอง หรือติดตั้งเอง"))
+            rows.append(("warn", "ไม่พบไฟล์ Dobby บนเว็บ", "ผู้ดูแลยังไม่ได้อัปโหลด ใช้ เลือกไฟล์เอง ด้านล่าง หรือติดตั้งเอง"))
         else:
             target = core.ea_target(d, pick["name"])
             overwrite = False
@@ -894,7 +816,7 @@ class Mt5Panel(tk.Frame):
                 rows.append(("bad", "ติดตั้ง %s ไม่สำเร็จ" % pick["name"], str(e)))
         try:
             target, r = core.install_web_preset(d)
-            rows.append(("ok", "สร้างพรีเซ็ต %s แล้ว" % core.WEB_PRESET_NAME, "MQL5\\Presets · ให้เว็บตั้งล็อต ทุน และล็อกกำไรได้"))
+            rows.append(("ok", "สร้างพรีเซ็ต %s แล้ว" % core.WEB_PRESET_NAME, "ใน MQL5\\Presets ให้เว็บตั้งล็อต ทุน และล็อกกำไรได้"))
         except OSError as e:
             rows.append(("bad", "สร้างพรีเซ็ตไม่สำเร็จ", str(e)))
         if ea_name:
@@ -923,7 +845,7 @@ class Mt5Panel(tk.Frame):
             w.destroy()
         files = [f for f in self.files if f["kind"]]
         if not files:
-            L(self.files_box, "ยังไม่มีรายการไฟล์ (กดติดตั้งอีกครั้งเพื่อโหลด)", font="small", fg="muted").pack(fill="x")
+            L(self.files_box, "ยังไม่มีรายการไฟล์ (กดติดตั้งอีกครั้งเพื่อโหลด)", font="small", fg="slate").pack(fill="x")
             return
         self.file_vars = {}
         for f in files:
@@ -932,8 +854,8 @@ class Mt5Panel(tk.Frame):
             r = frame(self.files_box)
             r.pack(fill="x")
             ttk.Checkbutton(r, text=f["name"], variable=v, style="S.TCheckbutton").pack(side="left")
-            L(r, "  %s  %s" % ({"ea": "EA", "preset": "พรีเซ็ต"}[f["kind"]], core.fmt_size(f["size"])), font="small",
-              fg="muted").pack(side="left")
+            L(r, "%s ขนาด %s" % ({"ea": "EA", "preset": "พรีเซ็ต"}[f["kind"]], core.fmt_size(f["size"])), font="small",
+              fg="slate").pack(side="left", padx=(px(10), 0))
         Btn(self.files_box, "ติดตั้งไฟล์ที่เลือก", self._install_selected, style="secondary", size="sm").pack(
             anchor="w", pady=(px(8), 0))
 
@@ -971,7 +893,7 @@ class Mt5Panel(tk.Frame):
             w.destroy()
         syms = core.broker_symbols(self.data_dir) if self.data_dir else []
         if syms:
-            L(self.sym_chips, "พบในโบรกของคุณ:", font="small", fg="muted").pack(side="left", padx=(0, px(6)))
+            L(self.sym_chips, "พบในโบรกของคุณ", font="small", fg="slate").pack(side="left", padx=(0, px(8)))
             for s in syms[:6]:
                 Btn(self.sym_chips, s, lambda s=s: self.symbol.set(s), style="soft", size="sm").pack(
                     side="left", padx=(0, px(6)))
@@ -999,8 +921,8 @@ class Mt5Panel(tk.Frame):
         if self.launched is not None and not self.busy:
             r = frame(self.auto_rows)
             r.pack(fill="x")
-            Mark(r, "ok", size=18).pack(side="left", anchor="n", pady=(px(1), 0))
-            L(r, "เปิด MT5 พร้อม Dobby แล้ว", font="bold", fg="good").pack(side="left", padx=(px(10), 0))
+            Mark(r, "ok", size=18, quiet=True).pack(side="left", anchor="n", pady=(px(2), 0))
+            L(r, "เปิด MT5 พร้อม Dobby แล้ว", font="med", fg="ink").pack(side="left", padx=(px(10), 0))
             self.start_btn.set(enabled=False)
             if self.on_change:
                 self.on_change()
@@ -1008,20 +930,20 @@ class Mt5Panel(tk.Frame):
         if self.check["ok"] and not self.busy:
             r = frame(self.auto_rows)
             r.pack(fill="x")
-            Mark(r, "ok", size=18).pack(side="left", anchor="n", pady=(px(1), 0))
-            L(r, "พร้อมแล้ว: MT5 ปิดอยู่ และยังไม่มี Dobby ติดกราฟ", font="bold", fg="good").pack(
+            Mark(r, "ok", size=18, quiet=True).pack(side="left", anchor="n", pady=(px(2), 0))
+            L(r, "พร้อมแล้ว MT5 ปิดอยู่และยังไม่มี Dobby ติดกราฟ", font="med", fg="ink").pack(
                 side="left", padx=(px(10), 0))
         for p in probs[:3]:
             r = frame(self.auto_rows)
             r.pack(fill="x", pady=(0, px(6)))
             tone = "ok" if p["code"] in ("dobby_attached", "dobby_running") else \
                 "idle" if p["code"] in ("busy", "no_ea", "no_preset") else "warn"
-            Mark(r, tone, size=18).pack(side="left", anchor="n", pady=(px(1), 0))
+            Mark(r, tone, size=18, quiet=True).pack(side="left", anchor="n", pady=(px(2), 0))
             c = frame(r)
             c.pack(side="left", fill="x", expand=True, padx=(px(10), 0))
-            L(c, p["title"], font="bold").pack(fill="x")
+            L(c, p["title"], font="med").pack(fill="x")
             if p["text"]:
-                L(c, p["text"], font="small", fg="muted", wrap=True).pack(fill="x")
+                L(c, p["text"], font="small", fg="slate", wrap=True).pack(fill="x")
         self.start_btn.set(enabled=self.check["ok"] and not self.busy)
         if "dobby_attached" in codes or "dobby_running" in codes:
             if self.launched is None:
@@ -1045,7 +967,7 @@ class Mt5Panel(tk.Frame):
 
         def extra(parent):
             bullet_list(parent, items, icon="check", tone="info")
-            L(parent, note, font="small", fg="muted", wrap=True).pack(fill="x", pady=(px(8), 0))
+            L(parent, note, font="small", fg="slate", wrap=True).pack(fill="x", pady=(px(8), 0))
         ans = self.ui.choose("เปิด MT5 พร้อม Dobby?", "แอปจะทำ 3 อย่างนี้:",
                              [("go", "เปิด MT5", "primary"), (None, "ยกเลิก", "secondary")], kind="info", extra=extra)
         if ans != "go":
@@ -1079,12 +1001,12 @@ class Mt5Panel(tk.Frame):
         if not self.data_dir:
             return "ยังไม่ได้เลือก MT5 (ทำภายหลังได้ที่ ตั้งค่า > บอท)"
         if res == "launched":
-            return "%s · เปิดพร้อม Dobby แล้ว" % name
+            return "%s เปิดพร้อม Dobby แล้ว" % name
         if res == "attached":
-            return "%s · Dobby ติดกราฟอยู่แล้ว" % name
+            return "%s มี Dobby ติดกราฟอยู่แล้ว" % name
         if self.ea_name:
-            return "%s · ติดตั้ง Dobby แล้ว ต้องติด Dobby บนกราฟเอง (ทำเองใน MT5)" % name
-        return "%s · ยังไม่ได้ติดตั้ง Dobby" % name
+            return "%s ติดตั้ง Dobby แล้ว แต่ต้องติด Dobby บนกราฟเอง (ดู ทำเองใน MT5)" % name
+        return "%s ยังไม่ได้ติดตั้ง Dobby" % name
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1094,25 +1016,26 @@ class Page(tk.Frame):
     title = ""
     subtitle = ""
     next_label = "ถัดไป"
-    next_icon = "chev_r"
+    next_icon = None
     show_next = True
 
-    head_logo = False
+    head_stamp = None          # (tone, state): the large hallmark beside the page title (welcome, sign-in)
 
     def __init__(self, wiz):
         tk.Frame.__init__(self, wiz.column, bg=C["bg"], bd=0, highlightthickness=0)
         self.wiz, self.ui = wiz, wiz.ui
         self.busy = False
+        self.inset = shadow_margins()[0] if self.head_stamp else 0
         head = frame(self)
-        head.pack(fill="x", pady=(0, px(18)))
-        if self.head_logo:
-            self._logo = tk.PhotoImage(data=base64.b64encode(core.icon_png(px(58))).decode("ascii"))
-            tk.Label(head, image=self._logo, bg=C["bg"], bd=0).pack(side="left", anchor="n", padx=(0, px(16)))
+        head.pack(fill="x", pady=(0, px(22)), padx=(self.inset, 0))
+        if self.head_stamp:
+            self.stamp = Hallmark(head, 108, *self.head_stamp)
+            self.stamp.pack(side="left", anchor="n", padx=(0, px(22)))
         hc = frame(head)
-        hc.pack(side="left", fill="x", expand=True)
+        hc.pack(side="left", fill="x", expand=True, anchor="n" if not self.head_stamp else "center")
         self.t1 = L(hc, self.title, font="h1")
         self.t1.pack(fill="x")
-        self.t2 = L(hc, self.subtitle, font="base", fg="muted", wrap=True)
+        self.t2 = L(hc, self.subtitle, font="base", fg="slate", wrap=True)
         self.t2.pack(fill="x", pady=(px(4), 0))
         self.build()
 
@@ -1143,98 +1066,102 @@ class Page(tk.Frame):
 
 class WelcomePage(Page):
     title = "ยินดีต้อนรับสู่ Dobby"
-    subtitle = "แอปนี้เชื่อม MT5 ในเครื่องของคุณกับเว็บ Dobby ให้บอทเทรดทองให้อัตโนมัติ ตั้งค่าครั้งเดียวประมาณ 5 นาที"
+    subtitle = "แอปนี้เชื่อม MT5 ในเครื่องของคุณกับเว็บ Dobby ให้บอทเทรดทองให้อัตโนมัติ ตั้งค่าครั้งเดียวใช้เวลาราว 5 นาที"
     next_label = "เริ่มตั้งค่า"
 
-    head_logo = True
+    head_stamp = ("gold", "XAUUSD")
 
     def build(self):
-        b = Box(self, pad=22)
-        b.pack(fill="x")
-        L(b.body, "แอปนี้ทำอะไรให้คุณ", font="h3").pack(fill="x", pady=(0, px(6)))
-        for icon, title, text in (
-                ("robot", "ติดตั้ง Dobby ลงใน MT5 ให้เอง", "ดาวน์โหลดบอทเวอร์ชันล่าสุด เปิดกราฟและเปิด Algo Trading ให้"),
-                ("bolt", "ตั้งค่าบอทจากยอดเงินในคลิกเดียว", "ใส่ยอดเงิน แอปเลือกล็อต ล็อกกำไร และจุดหยุดขาดทุนให้"),
-                ("globe", "ดูและสั่งบอทจากเว็บได้ทุกที่", "ส่งสถานะขึ้นเว็บ Dobby ดูกำไร หยุด/เริ่มบอท ได้จากมือถือ")):
-            r = frame(b.body)
-            r.pack(fill="x", pady=(px(10), 0))
-            IconBadge(r, icon, size=42).pack(side="left", anchor="n")
+        body = frame(self)
+        body.pack(fill="x", padx=(self.inset, 0))
+        g = group(body, "แอปนี้ทำอะไรให้คุณ", rule=False)
+        for i, (title, text) in enumerate((
+                ("ติดตั้ง Dobby ลงใน MT5 ให้เอง", "ดาวน์โหลดบอทเวอร์ชันล่าสุด เปิดกราฟ และเปิด Algo Trading ให้"),
+                ("ตั้งค่าบอทจากยอดเงินในคลิกเดียว", "ใส่ยอดเงินแล้วแอปเลือกล็อต ล็อกกำไร และจุดหยุดขาดทุนให้"),
+                ("ดูและสั่งบอทจากเว็บได้ทุกที่", "ส่งสถานะขึ้นเว็บ Dobby ให้ดูกำไรและหยุดหรือเริ่มบอทได้จากมือถือ"))):
+            if i:
+                frame(g, bg="hair", height=1).pack(fill="x", padx=(px(44), 0))
+            r = frame(g)
+            r.pack(fill="x", pady=(px(12) if i else px(10), px(12)))
+            NumBadge(r, i + 1, 28).pack(side="left", anchor="n")
             c = frame(r)
-            c.pack(side="left", fill="x", expand=True, padx=(px(14), 0))
-            L(c, title, font="bold").pack(fill="x", pady=(px(2), 0))
-            L(c, text, font="small", fg="muted", wrap=True).pack(fill="x")
-        b = Box(self, pad=22)
-        b.pack(fill="x", pady=(px(14), 0))
-        L(b.body, "ก่อนเริ่ม ต้องมี", font="h3").pack(fill="x", pady=(0, px(4)))
-        self.need_mt5 = frame(b.body)
-        self.need_mt5.pack(fill="x", pady=(px(8), 0))
-        r = frame(b.body)
-        r.pack(fill="x", pady=(px(10), 0))
-        Mark(r, "ok", size=20).pack(side="left", anchor="n")
+            c.pack(side="left", fill="x", expand=True, padx=(px(16), 0))
+            L(c, title, font="bold").pack(fill="x")
+            L(c, text, font="small", fg="slate", wrap=True).pack(fill="x")
+        g = group(body, "ก่อนเริ่ม ต้องมี", top=14)
+        self.need_mt5 = frame(g)
+        self.need_mt5.pack(fill="x", pady=(px(10), 0))
+        frame(g, bg="hair", height=1).pack(fill="x", pady=(px(12), 0), padx=(px(32), 0))
+        r = frame(g)
+        r.pack(fill="x", pady=(px(12), 0))
+        Mark(r, "ok", size=20, quiet=True).pack(side="left", anchor="n", pady=(px(1), 0))
         c = frame(r)
         c.pack(side="left", fill="x", expand=True, padx=(px(12), 0))
         L(c, "บัญชีเว็บ Dobby", font="bold").pack(fill="x")
         rr = frame(c)
         rr.pack(fill="x")
-        L(rr, "อีเมลและรหัสผ่านที่สมัครไว้บนเว็บ", font="small", fg="muted").pack(side="left")
-        Link(rr, "ยังไม่มี? สมัครบนเว็บ", lambda: self.ui.ctx.open_url(WEB_URL), font="slink").pack(
+        L(rr, "อีเมลและรหัสผ่านที่สมัครไว้บนเว็บ", font="small", fg="slate").pack(side="left")
+        Link(rr, "ยังไม่มีบัญชี สมัครบนเว็บ", lambda: self.ui.ctx.open_url(WEB_URL), font="slink").pack(
             side="left", padx=(px(12), 0))
 
     def on_enter(self):
         for w in self.need_mt5.winfo_children():
             w.destroy()
         found = core.detect_terminals(self.ui.ctx.appdata)
-        Mark(self.need_mt5, "ok" if found else "warn", size=20).pack(side="left", anchor="n")
+        Mark(self.need_mt5, "ok" if found else "warn", size=20, quiet=True).pack(side="left", anchor="n",
+                                                                                pady=(px(1), 0))
         c = frame(self.need_mt5)
         c.pack(side="left", fill="x", expand=True, padx=(px(12), 0))
         L(c, "MT5 ติดตั้งและล็อกอินบัญชีโบรกเกอร์แล้ว", font="bold").pack(fill="x")
         L(c, ("พบ MT5 ในเครื่องนี้ %d ตัว" % len(found)) if found else
-          "ยังไม่พบ MT5 ในเครื่องนี้: ติดตั้งจากเว็บโบรกเกอร์ของคุณ แล้วล็อกอินหนึ่งครั้ง (ทำต่อได้ ค่อยติดตั้งทีหลัง)",
-          font="small", fg="good" if found else "warn", wrap=True).pack(fill="x")
+          "ยังไม่พบ MT5 ในเครื่องนี้ ติดตั้งจากเว็บโบรกเกอร์ของคุณแล้วล็อกอินหนึ่งครั้ง (ทำต่อไปก่อนได้ ค่อยติดตั้งทีหลัง)",
+          font="small", fg="slate", wrap=True).pack(fill="x")
 
 
 class SignInPage(Page):
     title = "เข้าสู่ระบบ"
     subtitle = "ใช้อีเมลและรหัสผ่านเดียวกับบนเว็บ Dobby แอปไม่เก็บรหัสผ่าน เก็บไว้แค่กุญแจเข้าระบบในเครื่องนี้"
+    head_stamp = ("gold", "XAUUSD")
 
     def build(self):
-        self.card = Box(self, pad=24)
-        self.card.pack(fill="x")
+        self.card = Box(self, fill="sheet", radius=22, padx=26, pady=24, shadow=True)
+        self.card.pack(anchor="w")
+        frame(self.card.body, width=px(380), height=1).pack()       # the sheet keeps its width when signed in
+        self.banner = Banner(self.card.body, pady=(0, px(16)))
+        self.banner.pack(fill="x")
         self.done_box = frame(self.card.body)
         self.form = frame(self.card.body)
         f = self.form
-        L(f, "อีเมล", font="sbold", fg="ink2").pack(fill="x", pady=(0, px(5)))
-        self.email_f = Field(f, width=40, icon="person", pady=8)
+        L(f, "อีเมล", font="med").pack(fill="x", pady=(0, px(6)))
+        self.email_f = Field(f, width=40, pady=9)
         self.email_f.pack(fill="x")
         self.email = self.email_f.entry
-        L(f, "รหัสผ่าน", font="sbold", fg="ink2").pack(fill="x", pady=(px(14), px(5)))
-        self.password_f = Field(f, width=40, show="•", icon="lock", pady=8)
+        L(f, "รหัสผ่าน", font="med").pack(fill="x", pady=(px(16), px(6)))
+        self.password_f = Field(f, width=40, show="•", pady=9)
         self.password_f.pack(fill="x")
         self.password = self.password_f.entry
         self.password.bind("<Return>", lambda e: self.do_sign_in())
         self.email.bind("<Return>", lambda e: self.password.focus_set())
-        row = frame(f)
-        row.pack(fill="x", pady=(px(18), 0))
-        self.btn = Btn(row, "เข้าสู่ระบบ", self.do_sign_in, size="lg", width=200)
-        self.btn.pack(side="left")
-        c = frame(row)
-        c.pack(side="left", padx=(px(18), 0))
-        Link(c, "ยังไม่มีบัญชี? สมัครบนเว็บ", lambda: self.ui.ctx.open_url(WEB_URL), font="slink").pack(anchor="w")
-        Link(c, "ลืมรหัสผ่าน?", lambda: self.ui.ctx.open_url(WEB_URL), font="slink", fg="muted").pack(anchor="w")
         if self.ui.ctx.demo:
-            L(f, "โหมดตัวอย่าง: ใช้อีเมลใดก็ได้ · อีเมลที่มีคำว่า new = ผู้ใช้ใหม่ยังไม่มีบอท · รหัส wrong = รหัสผิด",
-              font="tiny", fg="muted", wrap=True).pack(fill="x", pady=(px(12), 0))
-        self.banner = Banner(self.card.body, pady=(px(16), 0))
-        self.banner.pack(fill="x")
-        self.adv = Expander(self, "ขั้นสูง: ที่อยู่เซิร์ฟเวอร์", fg="muted", on_toggle=self._adv_toggle)
-        self.adv.pack(fill="x", pady=(px(14), 0))
-        L(self.adv.body, "Supabase URL", font="sbold", fg="ink2").pack(fill="x")
+            note = Box(f, fill="gold_tint_s", border=None, radius=10, padx=12, pady=8)
+            note.pack(fill="x", pady=(px(16), 0))
+            L(note.body, "โหมดตัวอย่าง ใช้อีเมลอะไรก็ได้ อีเมลที่มีคำว่า new คือผู้ใช้ใหม่ที่ยังไม่มีบอท และรหัส wrong "
+                         "คือรหัสผิด", font="small", fg="ink", wrap=True).pack(fill="x")
+        self.btn = Btn(f, "เข้าสู่ระบบ", self.do_sign_in, size="lg")
+        self.btn.pack(fill="x", pady=(px(18), 0))
+        row = frame(f)
+        row.pack(fill="x", pady=(px(14), 0))
+        Link(row, "ยังไม่มีบัญชี สมัครบนเว็บ", lambda: self.ui.ctx.open_url(WEB_URL), font="slink").pack(side="left")
+        Link(row, "ลืมรหัสผ่าน", lambda: self.ui.ctx.open_url(WEB_URL), font="slink", fg="slate").pack(side="right")
+        self.adv = Expander(self, "ที่อยู่เซิร์ฟเวอร์", sub="ขั้นสูง ปกติไม่ต้องแก้", on_toggle=self._adv_toggle)
+        self.adv.pack(fill="x", pady=(px(18), 0), padx=(self.inset, 0))
+        L(self.adv.body, "Supabase URL", font="med").pack(fill="x")
         self.url = Field(self.adv.body, width=52, pady=6)
         self.url.pack(fill="x", pady=(px(4), px(10)))
-        L(self.adv.body, "Publishable key (คีย์สาธารณะ)", font="sbold", fg="ink2").pack(fill="x")
+        L(self.adv.body, "Publishable key (คีย์สาธารณะ)", font="med").pack(fill="x")
         self.key = Field(self.adv.body, width=52, pady=6)
         self.key.pack(fill="x", pady=(px(4), 0))
-        L(self.adv.body, "ปกติไม่ต้องแก้ ค่าเริ่มต้นคือเว็บ Dobby ของผู้ดูแล", font="small", fg="muted").pack(fill="x")
+        L(self.adv.body, "ค่าเริ่มต้นคือเว็บ Dobby ของผู้ดูแล", font="small", fg="slate").pack(fill="x", pady=(px(4), 0))
 
     def _adv_toggle(self, opened):
         if opened:
@@ -1263,7 +1190,7 @@ class SignInPage(Page):
             self.ui.approved = None
             self.banner.show("warn", core.AUTH_TH["session"])
         else:
-            self.banner.show("bad", "ตรวจบัญชีไม่ได้: เชื่อมต่อเว็บไม่ได้", "ตรวจอินเทอร์เน็ตแล้วลองใหม่",
+            self.banner.show("bad", "ตรวจบัญชีไม่ได้ เพราะเชื่อมต่อเว็บไม่ได้", "ตรวจอินเทอร์เน็ตแล้วลองใหม่",
                              [("ลองใหม่", self.on_enter)])
         self.show_state()
 
@@ -1273,22 +1200,20 @@ class SignInPage(Page):
             w.destroy()
         if cfg.get("refresh_token") and self.ui.approved is not False:
             self.form.pack_forget()
-            self.done_box.pack(fill="x", before=self.banner)
+            self.done_box.pack(fill="x")
             row = frame(self.done_box)
             row.pack(fill="x")
-            IconBadge(row, "person", size=48, fill="good_soft" if self.ui.approved else "sunken",
-                      ink="good" if self.ui.approved else "muted").pack(side="left")
+            Mark(row, "ok" if self.ui.approved else "idle", size=36).pack(side="left", anchor="n")
             c = frame(row)
-            c.pack(side="left", fill="x", expand=True, padx=(px(14), 0))
-            L(c, "เข้าสู่ระบบแล้ว" if self.ui.approved else "กำลังตรวจบัญชี…", font="h3",
-              fg="good" if self.ui.approved else "muted").pack(fill="x")
-            L(c, cfg.get("email") or "", font="base", fg="ink2").pack(fill="x")
-            Btn(row, "ใช้บัญชีอื่น", self.use_other, style="secondary", size="sm").pack(side="right")
+            c.pack(side="left", fill="x", expand=True, padx=(px(14), px(24)))
+            L(c, "เข้าสู่ระบบแล้ว" if self.ui.approved else "กำลังตรวจบัญชี…", font="h3").pack(fill="x")
+            L(c, cfg.get("email") or "", font="base", fg="slate").pack(fill="x")
+            Btn(row, "ใช้บัญชีอื่น", self.use_other, style="secondary", size="sm").pack(side="right", anchor="center")
             if self.ui.approved:
                 self.banner.hide()
         else:
             self.done_box.pack_forget()
-            self.form.pack(fill="x", before=self.banner)
+            self.form.pack(fill="x")
             if not self.email.get():
                 self.email.insert(0, cfg.get("email") or "")
         self.wiz.update_nav()
@@ -1413,9 +1338,7 @@ class ChooseBotPage(Page):
     def _loading(self):
         self._clear()
         self.set_head("เลือกบอท", "กำลังโหลดบอทในบัญชีของคุณ…")
-        b = Box(self.body, pad=22)
-        b.pack(fill="x")
-        L(b.body, "กำลังโหลด…", font="base", fg="muted").pack(fill="x")
+        L(self.body, "กำลังโหลด…", font="base", fg="slate").pack(fill="x")
 
     def _loaded(self, bots):
         self.set_busy(False)
@@ -1434,60 +1357,59 @@ class ChooseBotPage(Page):
         self._clear()
         bots = self.ui.wiz.get("bots") or []
         if view == "list" and bots:
-            self.set_head("เลือกบอทสำหรับเครื่องนี้", "1 บอทบนเว็บ = MT5 1 เครื่อง (1 บัญชีเทรด) · มีบอทในบัญชีนี้ %d ตัว"
-                          % len(bots))
+            self.set_head("เลือกบอทสำหรับเครื่องนี้", "บอทบนเว็บหนึ่งตัวใช้กับ MT5 หนึ่งเครื่อง (บัญชีเทรดเดียว) "
+                          "บัญชีนี้มีบอทอยู่ %d ตัว" % len(bots))
             self._list(bots)
         else:
-            self.set_head("เลือกบอทที่จะใช้", "เลือกบอทจากรายการด้านล่าง ตอนนี้มี 1 แบบ (จะมีเพิ่มในอนาคต)")
+            self.set_head("เลือกบอทที่จะใช้", "ตอนนี้มีให้เลือกหนึ่งแบบ และจะมีเพิ่มในอนาคต")
             self._catalog(bool(bots))
         self.wiz.update_nav()
 
     def _list(self, bots):
         now = time.time()
-        L(self.body, "ใช้บอทที่มีอยู่", font="h3").pack(fill="x")
-        L(self.body, "ทำไม: เลือกถ้าเคยตั้ง Dobby ไว้แล้ว เครื่องนี้จะใช้บอทเดิมบนเว็บ ไม่สร้างใหม่", font="small",
-          fg="muted", wrap=True).pack(fill="x", pady=(px(1), px(10)))
+        section(self.body, "ใช้บอทที่มีอยู่", "เลือกถ้าเคยตั้ง Dobby ไว้แล้ว เครื่องนี้จะใช้บอทเดิมบนเว็บ ไม่สร้างใหม่")
+        lst = frame(self.body)
+        lst.pack(fill="x", pady=(px(12), 0))
         mine = self.ui.cfg.get("bot_id")
         chosen = (self.ui.wiz.get("bot") or {}).get("id") if self.ui.wiz.get("choice") == "existing" else None
-        for b in bots:
+        for i, b in enumerate(bots):
             sel = b["id"] == chosen
-            card = Box(self.body, pad=16, border="accent" if sel else "line", bw=2 if sel else 1)
-            card.pack(fill="x", pady=(0, px(10)))
+            if i and not sel and bots[i - 1]["id"] != chosen:
+                frame(lst, bg="hair", height=1).pack(fill="x", padx=px(14))
+            card = Box(lst, fill="gold_tint" if sel else "bg", border=None, radius=14, padx=14, pady=14)
+            card.pack(fill="x")
             r = card.body
-            IconBadge(r, "robot", size=44).pack(side="left", anchor="n")
             c = frame(r)
-            c.pack(side="left", fill="x", expand=True, padx=(px(14), px(10)))
+            c.pack(side="left", fill="x", expand=True, padx=(0, px(14)))
             top = frame(c)
             top.pack(fill="x")
             L(top, b.get("name") or "-", font="h3").pack(side="left")
             online = core.bot_online(b, now)
             if b["id"] == mine:
-                badge(top, "ใช้อยู่ในเครื่องนี้", "info").pack(side="left", padx=(px(8), 0))
+                badge(top, "ใช้อยู่ในเครื่องนี้", "gold").pack(side="left", padx=(px(10), 0))
             elif online:
-                badge(top, "ออนไลน์อยู่ที่เครื่องอื่น", "warn").pack(side="left", padx=(px(8), 0))
+                badge(top, "ออนไลน์อยู่ที่เครื่องอื่น", "warn").pack(side="left", padx=(px(10), 0))
             age = core.bot_seen_age(b, now)
             seen = ("ออนไลน์ " + core.ago_th(age)) if age is not None and online else \
                 ("ออนไลน์ล่าสุด " + core.ago_th(age)) if age is not None else "ยังไม่เคยออนไลน์"
             ea = "Dobby v%s" % b["ea_version"] if b.get("ea_version") else "Dobby"
-            L(c, "%s  ·  %s" % (ea, seen), font="small", fg="ink2").pack(fill="x", pady=(px(2), 0))
+            L(c, "%s %s" % (ea, seen), font="small", fg="ink").pack(fill="x", pady=(px(2), 0))
             desc = self._settings_text(b)
             if desc:
-                L(c, desc, font="small", fg="muted", wrap=True).pack(fill="x")
+                L(c, desc, font="small", fg="slate", wrap=True).pack(fill="x")
             Btn(r, "ใช้บอทนี้", lambda b=b: self.use_existing(b), style="primary" if sel else "secondary",
                 size="md").pack(side="right", anchor="center")
         sep = frame(self.body)
-        sep.pack(fill="x", pady=(px(6), px(14)))
-        frame(sep, bg="line", height=1).pack(side="left", fill="x", expand=True, pady=px(10))
-        L(sep, "  หรือ  ", font="small", fg="muted").pack(side="left")
-        frame(sep, bg="line", height=1).pack(side="left", fill="x", expand=True, pady=px(10))
-        card = Box(self.body, pad=16)
-        card.pack(fill="x")
-        r = card.body
-        IconBadge(r, "add", size=44, fill="sunken", ink="ink2").pack(side="left", anchor="n")
+        sep.pack(fill="x", pady=(px(14), px(12)))
+        frame(sep, bg="hair", height=1).pack(side="left", fill="x", expand=True, pady=px(11))
+        L(sep, "หรือ", font="small", fg="slate").pack(side="left", padx=px(12))
+        frame(sep, bg="hair", height=1).pack(side="left", fill="x", expand=True, pady=px(11))
+        r = frame(self.body)
+        r.pack(fill="x", padx=px(14))
         c = frame(r)
-        c.pack(side="left", fill="x", expand=True, padx=(px(14), px(10)))
+        c.pack(side="left", fill="x", expand=True, padx=(0, px(14)))
         L(c, "เพิ่มบอทใหม่", font="h3").pack(fill="x")
-        L(c, "ทำไม: เลือกเมื่อเครื่องนี้จะเทรดบัญชีอื่น ที่ยังไม่มีบอทบนเว็บ", font="small", fg="muted",
+        L(c, "เลือกเมื่อเครื่องนี้จะเทรดบัญชีอื่นที่ยังไม่มีบอทบนเว็บ", font="small", fg="slate",
           wrap=True).pack(fill="x", pady=(px(2), 0))
         Btn(r, "เพิ่มบอทใหม่", lambda: self.show("catalog"), style="secondary", icon="add").pack(side="right")
 
@@ -1497,35 +1419,34 @@ class ChooseBotPage(Page):
         if not isinstance(d, dict):
             return ""
         if isinstance(d.get("params"), dict) and d["params"]:
-            return core.settings_line(core.params_to_settings(d["params"]))
+            return core.settings_sentence(core.params_to_settings(d["params"]))
         lots = da.to_num((d.get("control") or {}).get("lots")) if isinstance(d.get("control"), dict) else None
-        return ("ล็อตจากเว็บ %.2f · การตั้งค่าอื่นอยู่ใน MT5" % lots) if lots else "การตั้งค่าอยู่ใน MT5 ของเครื่องนั้น"
+        return ("ล็อตจากเว็บ %.2f ส่วนการตั้งค่าอื่นอยู่ใน MT5" % lots) if lots else "การตั้งค่าอยู่ใน MT5 ของเครื่องนั้น"
 
     def _catalog(self, has_bots):
         for entry in core.BOT_CATALOG:
-            card = Box(self.body, pad=24, border="accent_line")
-            card.pack(fill="x")
-            r = card.body
-            top = frame(r)
+            g = frame(self.body)
+            g.pack(fill="x")
+            top = frame(g)
             top.pack(fill="x")
-            IconBadge(top, "robot", size=64).pack(side="left", anchor="n")
+            Hallmark(top, 92, "gold", "XAUUSD").pack(side="left", anchor="n")
             c = frame(top)
-            c.pack(side="left", fill="x", expand=True, padx=(px(18), 0))
+            c.pack(side="left", fill="x", expand=True, padx=(px(22), 0))
             L(c, entry["name"], font="h1").pack(fill="x")
-            L(c, entry["desc"], font="base", fg="ink2", wrap=True).pack(fill="x", pady=(px(2), 0))
+            L(c, entry["desc"], font="base", fg="ink", wrap=True).pack(fill="x", pady=(px(2), 0))
             chips = frame(c)
-            chips.pack(fill="x", pady=(px(10), 0))
+            chips.pack(fill="x", pady=(px(12), 0))
             for fct in entry["facts"]:
-                badge(chips, fct, "info").pack(side="left", padx=(0, px(6)))
-            L(c, entry["why"], font="small", fg="muted", wrap=True).pack(fill="x", pady=(px(10), 0))
-            row = frame(r)
-            row.pack(fill="x", pady=(px(18), 0))
-            Btn(row, "ใช้ Dobby", lambda k=entry["kind"]: self.use_new(k), size="lg", icon="chev_r",
-                width=200).pack(side="right")
-            L(row, "ตั้งค่าในขั้นถัดไป ใช้เวลาไม่ถึงนาที", font="small", fg="muted").pack(side="right", padx=px(14))
+                Chip(chips, fct).pack(side="left", padx=(0, px(6)))
+            L(c, entry["why"], font="small", fg="slate", wrap=True).pack(fill="x", pady=(px(12), 0))
+            frame(g, bg="hair", height=1).pack(fill="x", pady=(px(22), px(16)))
+            row = frame(g)
+            row.pack(fill="x")
+            Btn(row, "ใช้ Dobby", lambda k=entry["kind"]: self.use_new(k), size="lg", width=200).pack(side="right")
+            L(row, "ตั้งค่าในขั้นถัดไป ใช้เวลาไม่ถึงนาที", font="small", fg="slate").pack(side="right", padx=px(16))
         if has_bots:
-            Link(self.body, "‹  กลับไปใช้บอทที่มีอยู่", lambda: self.show("list"), font="slink").pack(
-                anchor="w", pady=(px(14), 0))
+            Link(self.body, "กลับไปใช้บอทที่มีอยู่", lambda: self.show("list"), font="slink").pack(
+                anchor="w", pady=(px(16), 0))
 
     def use_existing(self, b):
         now = time.time()
@@ -1554,7 +1475,7 @@ class ChooseBotPage(Page):
 
 class BotSettingsPage(Page):
     title = "ตั้งค่าบอท"
-    subtitle = "ใส่เงินในบัญชีเทรด แล้วกด ตั้งให้อัตโนมัติ แอปเลือกทุกอย่างให้ หรือเปิด ปรับเอง เพื่อเลือกเอง"
+    subtitle = "ใส่เงินในบัญชีเทรด แล้วกด ตั้งให้อัตโนมัติ แอปจะเลือกทุกอย่างให้ หรือเปิด ปรับเอง เพื่อเลือกเอง"
 
     def build(self):
         self.editor = SettingsEditor(self, self.ui, on_change=self.wiz.update_nav)
@@ -1575,11 +1496,11 @@ class BotSettingsPage(Page):
             bal = da.to_num((st.get("account") or {}).get("balance")) if isinstance(st.get("account"), dict) else None
             if bal and bal > 0:
                 self.editor.bal.set("%g" % round(bal, 2))
-                self.editor.bal_hint.configure(text="ยอดเงินจาก MT5: %s %s (แก้ได้)" % (
+                self.editor.bal_hint.configure(text="ยอดเงินจาก MT5 คือ %s %s (แก้ได้)" % (
                     core.money(bal), (st.get("account") or {}).get("currency") or "USD"))
             else:
-                self.editor.bal_hint.configure(text="ตัวอย่าง: 300 → ล็อต 0.03 · 1,000 → ล็อต 0.10 · ดูยอดเงินได้ใน MT5 "
-                                                    "แท็บ Trade (Balance)")
+                self.editor.bal_hint.configure(text="เช่น 300 USD ได้ล็อต 0.03 และ 1,000 USD ได้ล็อต 0.10 ดูยอดเงินได้ใน MT5 "
+                                                    "แท็บ Trade ช่อง Balance")
             self.editor.bal.entry.focus_set()
 
     def can_next(self):
@@ -1613,7 +1534,7 @@ class Mt5Page(Page):
 
 class SafetyPage(Page):
     title = "ความปลอดภัย"
-    subtitle = "เลือกว่าเว็บสั่ง Dobby ในเครื่องนี้ได้แค่ไหน ค่าแนะนำเหมาะกับเกือบทุกคน เปลี่ยนภายหลังได้ที่ ตั้งค่า"
+    subtitle = "เลือกว่าเว็บสั่ง Dobby ในเครื่องนี้ได้แค่ไหน ค่าแนะนำเหมาะกับเกือบทุกคน และเปลี่ยนภายหลังได้ที่หน้าตั้งค่า"
 
     def build(self):
         self.form = SafetyForm(self, self.ui, on_change=self._changed)
@@ -1657,7 +1578,24 @@ class SafetyPage(Page):
 class FinishPage(Page):
     title = "เกือบเสร็จแล้ว"
     subtitle = "ตรวจสรุปด้านล่าง แล้วกดปุ่มเพื่อบันทึก"
-    show_next = False
+
+    @property
+    def show_next(self):
+        return not self.ui.wiz.get("done")
+
+    @property
+    def next_label(self):
+        if self.busy:
+            return "กำลังสร้างบอท…" if self.ui.wiz.get("choice") == "new" else "กำลังบันทึก…"
+        return "สร้างบอทและบันทึก" if self.ui.wiz.get("choice") == "new" else "ใช้บอทนี้และบันทึก"
+
+    @property
+    def btn(self):
+        return self.wiz.next_btn
+
+    def on_next(self):
+        self.do_save()
+        return False
 
     def build(self):
         self.body = frame(self)
@@ -1672,17 +1610,17 @@ class FinishPage(Page):
         else:
             self._summary_view()
 
-    def _row(self, parent, icon, label, value, step=None):
+    def _row(self, parent, icon, label, value, step=None, first=False):
+        if not first:
+            frame(parent, bg="hair", height=1).pack(fill="x")
         r = frame(parent)
-        r.pack(fill="x", pady=(0, px(16)))
-        IconBadge(r, icon, size=38).pack(side="left", anchor="n")
+        r.pack(fill="x", pady=px(14))
         c = frame(r)
-        c.pack(side="left", fill="x", expand=True, padx=(px(14), px(10)))
-        L(c, label, font="small", fg="muted").pack(fill="x")
-        L(c, value, font="bold", wrap=True).pack(fill="x")
+        c.pack(side="left", fill="x", expand=True, padx=(0, px(16)))
+        L(c, label, font="small", fg="slate").pack(fill="x")
+        L(c, value, font="base", fg="ink", wrap=True).pack(fill="x", pady=(px(1), 0))
         if step is not None:
-            Btn(r, "แก้ไข", lambda: self.wiz.go(step), style="ghost", size="sm", icon="edit").pack(side="right",
-                                                                                                anchor="n")
+            Btn(r, "แก้ไข", lambda: self.wiz.go(step), style="ghost", size="sm").pack(side="right", anchor="n")
         return c
 
     def _summary_view(self):
@@ -1690,34 +1628,29 @@ class FinishPage(Page):
             w.destroy()
         w = self.ui.wiz
         self.set_head("เกือบเสร็จแล้ว", "ตรวจสรุปด้านล่าง แล้วกดปุ่มเพื่อบันทึก")
-        card = Box(self.body, pad=22)
-        card.pack(fill="x")
-        b = card.body
+        b = frame(self.body)
+        b.pack(fill="x")
         new = w.get("choice") == "new"
         if new:
-            c = self._row(b, "robot", "บอท", "Dobby (บอทใหม่)", STEP_BOT)
-            L(c, "ชื่อบอทบนเว็บ", font="small", fg="muted").pack(fill="x", pady=(px(8), px(4)))
-            self.name = Field(c, width=30, pady=6)
+            c = self._row(b, "robot", "บอท", "Dobby (บอทใหม่)", STEP_BOT, first=True)
+            L(c, "ชื่อบอทบนเว็บ", font="med").pack(fill="x", pady=(px(12), px(6)))
+            self.name = Field(c, width=30, pady=7)
             self.name.pack(anchor="w")
             self.name.set(w.get("name") or core.default_bot_name(w.get("bots") or []))
             self.name.var.trace_add("write", lambda *a: w.__setitem__("name", self.name.get()))
-            self._row(b, "list", "การตั้งค่า", core.settings_line(w["settings"]) if w.get("settings") else "-",
+            self._row(b, "list", "การตั้งค่า", core.settings_sentence(w["settings"]) if w.get("settings") else "-",
                       STEP_SETTINGS)
         else:
             bot = w.get("bot") or {}
             self.name = None
-            self._row(b, "robot", "บอท", "%s (มีอยู่แล้วบนเว็บ)" % (bot.get("name") or "-"), STEP_BOT)
-            self._row(b, "list", "การตั้งค่า", "ใช้ค่าเดิมของบอทบนเว็บ (ไม่เปลี่ยน) แก้ได้บนเว็บ")
+            self._row(b, "robot", "บอท", "%s (มีอยู่แล้วบนเว็บ)" % (bot.get("name") or "-"), STEP_BOT, first=True)
+            self._row(b, "list", "การตั้งค่า", "ใช้ค่าเดิมของบอทบนเว็บโดยไม่เปลี่ยน แก้ได้บนเว็บ")
         mt5 = self.wiz.pages[STEP_MT5].panel.mt5_summary()
         self._row(b, "laptop", "MT5", mt5, STEP_MT5)
         self._row(b, "shield", "ความปลอดภัย", self.wiz.pages[STEP_SAFETY].form.summary(), STEP_SAFETY)
-        row = frame(self.body)
-        row.pack(fill="x", pady=(px(18), 0))
-        self.btn = Btn(row, "สร้างบอทและบันทึก" if new else "ใช้บอทนี้และบันทึก", self.do_save, size="lg", icon="check",
-                       width=260)
-        self.btn.pack(side="right")
-        L(row, "บันทึกในเครื่องนี้และบนเว็บ ยังไม่เริ่มเทรดจนกว่าจะกด เริ่มทำงาน Dobby", font="small",
-          fg="muted", wrap=True).pack(side="right", fill="x", expand=True, padx=(0, px(14)))
+        frame(b, bg="hair", height=1).pack(fill="x")
+        L(self.body, "การบันทึกจะเก็บค่าไว้ในเครื่องนี้และบนเว็บ Dobby ยังไม่เริ่มเทรดจนกว่าจะกด เริ่มทำงาน Dobby",
+          font="small", fg="slate", wrap=True).pack(fill="x", pady=(px(14), 0))
 
     def do_save(self):
         ui, w = self.ui, self.ui.wiz
@@ -1745,7 +1678,6 @@ class FinishPage(Page):
             return
         params = core.settings_to_params(w["settings"])
         self.set_busy(True)
-        self.btn.set(text="กำลังสร้างบอท…", enabled=False)
         self.banner.hide()
         client, data_dir = ui.client, ui.ctx.data_dir
         ui.bg(lambda: core.create_bot(client, data_dir, common, name, params, limits),
@@ -1753,7 +1685,6 @@ class FinishPage(Page):
 
     def _failed(self, exc):
         self.set_busy(False)
-        self.btn.set(text="สร้างบอทและบันทึก", enabled=True)
         if "not_approved" in str(exc):
             self.banner.show("bad", "บัญชียังไม่ได้รับอนุมัติ", "ใส่รหัสเชิญบนเว็บ Dobby ก่อน")
         elif isinstance(exc, da.NetworkError):
@@ -1775,23 +1706,21 @@ class FinishPage(Page):
         for w in self.body.winfo_children():
             w.destroy()
         info = self.ui.wiz.get("done") or {}
-        self.set_head("เสร็จแล้ว!", "ตั้งค่าเรียบร้อย เหลือขั้นเดียว")
-        card = Box(self.body, fill="good_soft", border="good_line", pad=26, radius=18)
-        card.pack(fill="x")
-        b = card.body
-        top = frame(b)
+        self.set_head("เสร็จแล้ว", "ตั้งค่าเรียบร้อย เหลืออีกขั้นเดียว")
+        top = frame(self.body)
         top.pack(fill="x")
-        Mark(top, "ok", size=56).pack(side="left", anchor="n")
+        Mark(top, "ok", size=40).pack(side="left", anchor="n", pady=(px(2), 0))
         c = frame(top)
-        c.pack(side="left", fill="x", expand=True, padx=(px(18), 0))
+        c.pack(side="left", fill="x", expand=True, padx=(px(16), 0))
         L(c, ("สร้างบอท \"%s\" บนเว็บแล้ว" if info.get("kind") == "new" else "เครื่องนี้ใช้บอท \"%s\" แล้ว")
-          % (info.get("name") or "Dobby"), font="h2", fg="good").pack(fill="x")
-        L(c, "บันทึกการตั้งค่าในเครื่องนี้แล้ว กด เริ่มทำงาน Dobby แล้วไม่ต้องทำอะไรอีก Dobby ทำงานเอง "
-             "(เปิดแอปค้างไว้ หรือเปิด ตั้งค่า > เปิดพร้อม Windows)", font="base", fg="ink2", wrap=True).pack(
+          % (info.get("name") or "Dobby"), font="h2").pack(fill="x")
+        L(c, "บันทึกการตั้งค่าในเครื่องนี้แล้ว กด เริ่มทำงาน Dobby แล้วไม่ต้องทำอะไรอีก Dobby จะทำงานเอง "
+             "(เปิดแอปค้างไว้ หรือเปิด ตั้งค่า > เปิดพร้อม Windows)", font="base", fg="slate", wrap=True).pack(
             fill="x", pady=(px(4), 0))
-        row = frame(b)
-        row.pack(fill="x", pady=(px(22), 0))
-        self.start_btn = Btn(row, "เริ่มทำงาน Dobby", self.start, size="lg", icon="play", width=260)
+        frame(self.body, bg="hair", height=1).pack(fill="x", pady=(px(22), px(18)))
+        row = frame(self.body)
+        row.pack(fill="x")
+        self.start_btn = Btn(row, "เริ่มทำงาน Dobby", self.start, size="lg", icon="play", width=240)
         self.start_btn.pack(side="left")
         Btn(row, "เปิดเว็บดูบอท", lambda: self.ui.ctx.open_url(WEB_URL), style="secondary", size="lg",
             icon="globe").pack(side="left", padx=(px(12), 0))
@@ -1807,25 +1736,25 @@ class WizardScreen(Screen):
     def __init__(self, ui):
         Screen.__init__(self, ui)
         inner, right = app_header(self, "ตั้งค่า Dobby")
-        Btn(right, "วิธีใช้", ui.open_help, style="ghost", size="sm", icon="help").pack(side="left")
-        self.home_btn = Btn(right, "กลับหน้าหลัก", lambda: ui.show("main"), style="secondary", size="sm", icon="home")
+        Btn(right, "วิธีใช้", ui.open_help, style="quiet", size="sm", icon="help").pack(side="left")
+        self.home_btn = Btn(right, "กลับหน้าหลัก", lambda: ui.show("main"), style="secondary", size="sm")
         self.bar = StepBar(self, WIZ_STEPS)
-        self.bar.pack(fill="x", padx=px(24), pady=(px(14), px(2)))
-        navbar = frame(self, bg="surface")
+        self.bar.pack(fill="x", padx=px(24), pady=(px(14), px(4)))
+        navbar = frame(self, bg="bg")
         navbar.pack(side="bottom", fill="x")
-        frame(navbar, bg="line", height=1).pack(fill="x")
+        frame(navbar, bg="hair", height=1).pack(fill="x")
         nav = frame(navbar)
         nav.pack(fill="x", padx=px(24), pady=px(12))
-        self.back_btn = Btn(nav, "ย้อนกลับ", self.back, style="secondary", icon="chev_l")
+        self.back_btn = Btn(nav, "ย้อนกลับ", self.back, style="secondary")
         self.back_btn.pack(side="left")
-        self.next_btn = Btn(nav, "ถัดไป", self.next, size="md", icon="chev_r", width=170)
+        self.next_btn = Btn(nav, "ถัดไป", self.next, size="md", minw=150)
         self.next_btn.pack(side="right")
-        self.step_lbl = L(nav, "", font="small", fg="muted")
-        self.step_lbl.pack(side="right", padx=px(14))
+        self.step_lbl = L(nav, "", font="small", fg="slate")
+        self.step_lbl.pack(side="right", padx=px(16))
         self.scroll = ScrollFrame(self, bg="bg")
         self.scroll.pack(fill="both", expand=True)
-        self.center = Centered(self.scroll.inner, maxw=760)
-        self.center.pack(fill="both", expand=True, pady=(px(14), px(24)))
+        self.center = Centered(self.scroll.inner, maxw=720)
+        self.center.pack(fill="both", expand=True, pady=(px(18), px(28)))
         self.column = self.center.col
         self.index = -1
         self.pages = [cls(self) for cls in self.PAGES]
@@ -1888,126 +1817,205 @@ class WizardScreen(Screen):
 # ---------------------------------------------------------------------------------------------------------------------
 # Main screen
 # ---------------------------------------------------------------------------------------------------------------------
-class StatCard(Box):
-    def __init__(self, parent, title, icon):
-        Box.__init__(self, parent, pad=16)
-        b = self.body
-        head = frame(b)
-        head.pack(fill="x")
-        glyph(head, icon, "iconS", fg="muted").pack(side="left", padx=(0, px(6)))
-        L(head, title, font="sbold", fg="muted").pack(side="left")
-        self.value = L(b, "-", font="num")
-        self.value.pack(fill="x", pady=(px(6), 0))
-        self.bar = Bar(b, height=7)
-        self.sub = L(b, "", font="small", fg="ink2", wrap=True)
-        self.sub.pack(fill="x", pady=(px(2), 0))
+class Figure(tk.Frame):
+    """One number of the engraved row: a slate label, the value in Chakra Petch with its unit, one sentence."""
+
+    def __init__(self, parent, label, padx=(0, 0)):
+        tk.Frame.__init__(self, parent, bg=_bg(parent), bd=0, highlightthickness=0)
+        inner = frame(self)
+        inner.pack(fill="both", expand=True, padx=padx, pady=(px(14), px(12)))
+        L(inner, label, font="small", fg="slate").pack(fill="x")
+        vr = frame(inner)
+        vr.pack(fill="x")
+        self.value = L(vr, "-", font="num", fg="faint")
+        self.value.pack(side="left")
+        drop = tkfont.Font(font=F["num"]).metrics("ascent") - tkfont.Font(font=F["small"]).metrics("ascent")
+        self.unit = L(vr, "", font="small", fg="slate")
+        self.unit.pack(side="left", anchor="n", pady=(max(0, drop), 0), padx=(px(5), 0))
+        self.bar = Bar(inner, height=4)
+        self.sub = L(inner, "", font="small", fg="slate", wrap=True)
+        self.sub.pack(fill="x")
         self._key = None
 
-    def set(self, value, sub="", tone="", font="num", bar=None):
-        key = (value, sub, tone, font, bar)
+    def set(self, value, unit="", sub="", tone=None, bar=None):
+        key = (value, unit, sub, tone, bar)
         if key == self._key:
             return
         self._key = key
-        self.value.configure(text=value, fg=TONE_INK.get(tone, "ink") if tone else "ink", font=font)
+        self.value.configure(text=value, fg=TONE_INK.get(tone, "ink") if tone else ("faint" if value == "-" else "ink"))
+        self.unit.configure(text=unit)
         self.sub.configure(text=sub)
         if bar is None:
             if self.bar.winfo_manager():
                 self.bar.pack_forget()
         else:
             if not self.bar.winfo_manager():
-                self.bar.pack(fill="x", pady=(px(8), px(4)), before=self.sub)
+                self.bar.pack(fill="x", pady=(px(4), px(6)), before=self.sub)
             self.bar.set(bar[0], bar[1])
 
 
-class MainScreen(Screen):
-    HERO_ICON = {"good": "check", "warn": "warning", "bad": "error", "idle": "pause", "info": "info"}
+class TradeMeter(tk.Canvas):
+    """SL ──●────|─── TP: where the price is between the stop loss and the take profit (| = entry)."""
 
+    def __init__(self, parent, width=190):
+        tk.Canvas.__init__(self, parent, width=px(width), height=px(26), bg=_bg(parent), highlightthickness=0, bd=0)
+        self.v = None
+        self.bind("<Configure>", lambda e: self.redraw())
+
+    def set(self, side, entry, sl, tp, price, tone):
+        self.v = (side, entry, sl, tp, price, tone)
+        self.redraw()
+
+    def redraw(self):
+        self.delete("all")
+        w, h = self.winfo_width(), self.winfo_height()
+        if w < 40 or not self.v:
+            return
+        side, entry, sl, tp, price, tone = self.v
+        if None in (entry, sl, tp) or sl == tp:
+            return
+        x0, x1, cy = px(22), w - px(22), h / 2.0
+
+        def X(p):
+            f = (p - sl) / float(tp - sl)
+            return x0 + (x1 - x0) * max(0.0, min(1.0, f))
+        self.create_text(px(2), cy, text="SL", anchor="w", font=F["numT"], fill=C["slate"])
+        self.create_text(w - px(2), cy, text="TP", anchor="e", font=F["numT"], fill=C["slate"])
+        self.create_line(x0, cy, x1, cy, fill=C["hair2"], width=2)
+        self.create_rectangle(X(entry) - 1, cy - px(5), X(entry) + 1, cy + px(5), fill=C["ink"], outline="")
+        if price is not None:
+            d = px(10)
+            self.create_image(X(price) - d / 2.0, cy - d / 2.0, anchor="nw", image=ui_kit.dot_image(
+                d, TONE_DOT.get(tone, "ink") if tone else "ink", _bg(self), 1.5))
+
+
+class MainScreen(Screen):
     def __init__(self, ui):
         Screen.__init__(self, ui)
         inner, right = app_header(self)
-        self.bot_btn = Btn(inner, "", lambda: ui.show("settings", tab="bot"), style="ghost", size="sm", icon="robot")
+        self.bot_btn = Btn(inner, "", lambda: ui.show("settings", tab="bot"), style="ghost", size="sm")
         self.bot_btn.pack(side="left", padx=(px(14), 0))
-        Btn(right, "วิธีใช้", ui.open_help, style="ghost", size="sm", icon="help").pack(side="left")
-        Btn(right, "เปิดเว็บ", lambda: ui.ctx.open_url(WEB_URL), style="ghost", size="sm", icon="globe").pack(
-            side="left", padx=(px(4), 0))
         Btn(right, "ตั้งค่า", lambda: ui.show("settings"), style="secondary", size="sm", icon="settings").pack(
-            side="left", padx=(px(8), 0))
+            side="right")
+        Btn(right, "เปิดเว็บ", lambda: ui.ctx.open_url(WEB_URL), style="quiet", size="sm", icon="globe").pack(
+            side="right", padx=(0, px(6)))
+        Btn(right, "วิธีใช้", ui.open_help, style="quiet", size="sm", icon="help").pack(side="right")
+        self.ticker = frame(right)          # XAUUSD 4,015.98 +27.44 ใน 24 ชม. (shown when the bars are known)
+        L(self.ticker, "XAUUSD", font="smed", fg="slate").pack(side="left")
+        self.tk_price = L(self.ticker, "", font="numB")
+        self.tk_price.pack(side="left", padx=(px(8), 0))
+        self.tk_chg = L(self.ticker, "", font="numXS")
+        self.tk_chg.pack(side="left", padx=(px(8), 0))
+        self.tk_note = L(self.ticker, "", font="small", fg="slate")
+        self.tk_note.pack(side="left", padx=(px(4), 0))
         self.scroll = ScrollFrame(self, bg="bg")
         self.scroll.pack(fill="both", expand=True)
+        side, mtop, mbot = shadow_margins()
+        self.side = side
         body = frame(self.scroll.inner)
-        body.pack(fill="both", expand=True, padx=px(20), pady=(px(16), px(18)))
-        # hero
-        self.hero = Box(body, radius=18, pad=20)
+        body.pack(fill="both", expand=True, padx=max(0, px(24) - side), pady=(max(0, px(18) - mtop), px(22)))
+        # the hero: stamp, one sentence, today's P&L, the 24 h price line, the settings in use and Start / Stop
+        self.hero = Box(body, fill="sheet", radius=22, padx=24, pady=20, shadow=True)
         self.hero.pack(fill="x")
         h = self.hero.body
-        self.hero_icon = IconBadge(h, "pause", size=60)
-        self.hero_icon.pack(side="left", anchor="n")
-        self.big = Btn(h, "เริ่มทำงาน Dobby", self.toggle, size="lg", icon="play", width=230)
-        self.big.pack(side="right", anchor="center", padx=(px(14), 0))
-        hc = frame(h)
-        hc.pack(side="left", fill="x", expand=True, padx=(px(16), 0))
-        self.hero_title = L(hc, "", font="hero")
-        self.hero_title.pack(fill="x")
-        self.hero_text = L(hc, "", font="base", fg="ink2", wrap=True)
-        self.hero_text.pack(fill="x", pady=(px(3), 0))
+        toprow = frame(h)
+        toprow.pack(fill="x")
+        self.stamp = Hallmark(toprow, 88, "slate", "หยุดอยู่")
+        self.stamp.pack(side="left", anchor="n")
+        self.hc = hc = frame(toprow)
+        hc.pack(side="left", fill="x", expand=True, padx=(px(20), px(12)), anchor="n")
+        self.hero_title = L(hc, "", font="hero", wrap=True)
+        self.hero_title.pack(fill="x", pady=(px(2), 0))
+        self.hero_text = L(hc, "", font="base", fg="slate", wrap=True)
+        self.hero_text.pack(fill="x", pady=(px(2), 0))
+        self.hero_meta = L(hc, "", font="small", fg="slate", wrap=True)
         self.hero_act_row = frame(hc)
         self.hero_act = Btn(self.hero_act_row, "", self._hero_action, style="secondary", size="sm")
         self.hero_act.pack(side="left")
+        self.today = frame(toprow)
+        L(self.today, "กำไรขาดทุนวันนี้", font="small", fg="slate", anchor="e").pack(fill="x")
+        tv = frame(self.today)
+        tv.pack(anchor="e")
+        self.today_val = L(tv, "", font="numL")
+        self.today_val.pack(side="left")
+        drop = tkfont.Font(font=F["numL"]).metrics("ascent") - tkfont.Font(font=F["small"]).metrics("ascent")
+        self.today_unit = L(tv, "USD", font="small", fg="slate")
+        self.today_unit.pack(side="left", anchor="n", pady=(max(0, drop - px(2)), 0), padx=(px(6), 0))
+        self.chart = PriceLine(h, height=150)
+        self.chart.pack(fill="x", pady=(px(14), 0))
+        frame(h, bg="hair_s", height=1).pack(fill="x", pady=(px(10), px(14)))
+        foot = frame(h)
+        foot.pack(fill="x")
+        self.big = Btn(foot, "เริ่มทำงาน Dobby", self.toggle, size="md", icon="play")
+        self.big.pack(side="right", anchor="center")
+        self.web_btn = Btn(foot, "แก้ไขบนเว็บ", lambda: ui.ctx.open_url(WEB_URL), style="secondary", size="md",
+                           icon="open")
+        self.web_btn.pack(side="right", anchor="center", padx=(0, px(8)))
+        sc = frame(foot)
+        sc.pack(side="left", fill="x", expand=True, padx=(0, px(18)))
+        self.set_src = L(sc, "", font="sbold", fg="ink", wrap=True)
+        self.set_src.pack(fill="x")
+        self.set_lines = L(sc, "", font="small", fg="slate", wrap=True)
+        self.set_lines.pack(fill="x")
         self.hero_key = None
         self.hero_action = None
-        # cards
-        grid = frame(body)
-        grid.pack(fill="x", pady=(px(14), 0))
-        for c in range(4):
-            grid.columnconfigure(c, weight=1, uniform="cards")
-        self.c_balance = StatCard(grid, "ยอดเงิน", "card")
-        self.c_today = StatCard(grid, "กำไรวันนี้", "chart")
-        self.c_pos = StatCard(grid, "ไม้ที่เปิดอยู่", "pulse")
-        self.c_set = Box(grid, pad=16)
-        for i, card in enumerate((self.c_balance, self.c_today, self.c_pos, self.c_set)):
-            card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else px(6), 0 if i == 3 else px(6)))
-        sb = self.c_set.body
-        head = frame(sb)
-        head.pack(fill="x")
-        glyph(head, "list", "iconS", fg="muted").pack(side="left", padx=(0, px(6)))
-        L(head, "การตั้งค่าที่ใช้อยู่", font="sbold", fg="muted").pack(side="left")
-        self.set_lines = frame(sb)
-        self.set_lines.pack(fill="x", pady=(px(6), 0))
-        self.set_src = L(sb, "", font="tiny", fg="muted", wrap=True)
-        self.set_src.pack(fill="x", pady=(px(4), 0))
-        Btn(sb, "แก้ไขบนเว็บ", lambda: ui.ctx.open_url(WEB_URL), style="soft", size="sm", icon="open").pack(
-            anchor="w", pady=(px(8), 0))
         self.set_key = None
-        # checklist + activity
-        low = frame(body)
-        low.pack(fill="both", expand=True, pady=(px(14), 0))
+        # the engraved numbers row
+        figs = frame(body)
+        figs.pack(fill="x", padx=side, pady=(px(14), 0))
+        frame(figs, bg="hair", height=1).grid(row=0, column=0, columnspan=7, sticky="ew")
+        self.f_balance = Figure(figs, "ยอดเงินในบัญชี", padx=(0, px(18)))
+        self.f_equity = Figure(figs, "มูลค่ารวมไม้ที่เปิด", padx=(px(18), px(18)))
+        self.f_today = Figure(figs, "วันนี้", padx=(px(18), px(18)))
+        self.f_start = Figure(figs, "ตั้งแต่เริ่ม", padx=(px(18), 0))
+        for i, f in enumerate((self.f_balance, self.f_equity, self.f_today, self.f_start)):
+            f.grid(row=1, column=2 * i, sticky="nsew")
+            figs.columnconfigure(2 * i, weight=1, uniform="figs")
+            if i < 3:
+                frame(figs, bg="hair", width=1).grid(row=1, column=2 * i + 1, sticky="ns")
+        frame(figs, bg="hair", height=1).grid(row=2, column=0, columnspan=7, sticky="ew")
+        self.figs = figs
+        # open trades
+        self.pos_g = frame(body)
+        L(self.pos_g, "ไม้ที่เปิดอยู่", font="h3").pack(fill="x", pady=(0, px(4)))
+        self.pos_rows = frame(self.pos_g)
+        self.pos_rows.pack(fill="x")
+        self.pos_key = None
+        # readiness (a quiet list) and recent activity (a clean list)
+        low = self.low = frame(body)
+        low.pack(fill="both", expand=True, padx=side, pady=(px(26), 0))
         low.columnconfigure(0, weight=5, uniform="low")
-        low.columnconfigure(1, weight=7, uniform="low")
-        chk = Box(low, pad=16)
-        chk.grid(row=0, column=0, sticky="nsew", padx=(0, px(7)))
-        L(chk.body, "ความพร้อม", font="h3").pack(fill="x", pady=(0, px(6)))
+        low.columnconfigure(1, minsize=px(40))
+        low.columnconfigure(2, weight=7, uniform="low")
+        chk = frame(low)
+        chk.grid(row=0, column=0, sticky="nsew")
+        L(chk, "ความพร้อม", font="h3").pack(fill="x", pady=(0, px(4)))
         self.rows = {}
-        for key in ("signin", "linked", "ea", "algo", "live", "web"):
-            r = frame(chk.body)
-            r.pack(fill="x", pady=(px(4), px(4)))
-            ic = Mark(r, "idle", size=18)
-            ic.pack(side="left", anchor="n", pady=(px(1), 0))
+        for i, key in enumerate(("signin", "linked", "ea", "algo", "live", "web")):
+            if i:
+                frame(chk, bg="hair", height=1).pack(fill="x", padx=(px(28), 0))
+            r = frame(chk)
+            r.pack(fill="x", pady=px(7))
+            ic = Mark(r, "idle", size=18, quiet=True)
+            ic.pack(side="left", anchor="n", pady=(px(2), 0))
             c = frame(r)
             c.pack(side="left", fill="x", expand=True, padx=(px(10), 0))
-            t = L(c, "", font="sbold")
+            t = L(c, "", font="med")
             t.pack(fill="x")
-            d = L(c, "", font="tiny", fg="muted", wrap=True)
+            d = L(c, "", font="small", fg="slate", wrap=True)
             d.pack(fill="x")
             self.rows[key] = (r, ic, t, d)
-        act = Box(low, pad=16)
-        act.grid(row=0, column=1, sticky="nsew", padx=(px(7), 0))
-        ah = frame(act.body)
-        ah.pack(fill="x", pady=(0, px(6)))
+        act = frame(low)
+        act.grid(row=0, column=2, sticky="nsew")
+        ah = frame(act)
+        ah.pack(fill="x", pady=(0, px(4)))
         L(ah, "ล่าสุด", font="h3").pack(side="left")
-        Link(ah, "ดูบันทึกละเอียด", lambda: ui.show("log"), font="slink").pack(side="right")
-        self.act_box = frame(act.body)
+        Link(ah, "ดูบันทึกละเอียด", lambda: ui.show("log"), font="slink").pack(side="right", anchor="s",
+                                                                              pady=(0, px(3)))
+        self.act_box = frame(act)
         self.act_box.pack(fill="x")
         self.act_key = None
+        self._bars_cache = (object(), None, (None, None))
 
     def on_show(self, **kw):
         self.refresh()
@@ -2042,6 +2050,19 @@ class MainScreen(Screen):
             ui.show("settings", tab="safety")
         self.refresh()
 
+    def _offset(self, running, snap):
+        """The agent's effective server offset (config, or confirmed by fresh ticks) for the price line's times."""
+        off = (snap or {}).get("offset") if running else None
+        if isinstance(off, (list, tuple)) and len(off) == 2 and off[0] is not None and off[1] in ("confirmed",
+                                                                                                    "config"):
+            return int(off[0])
+        return da.config_offset(self.ui.cfg)
+
+    def _bars(self, text, offset):
+        if self._bars_cache[:2] != (text, offset):
+            self._bars_cache = (text, offset, core.bars_for_chart(text, offset))
+        return self._bars_cache[2]
+
     def refresh(self):
         ui = self.ui
         cfg = ui.cfg
@@ -2050,21 +2071,17 @@ class MainScreen(Screen):
         snap = ui.snap if running else None
         status = ui.status
         complete = core.config_complete(cfg)
-        self.bot_btn.set(text=("บอท: " + cfg.get("bot_name")) if cfg.get("bot_name") else "ยังไม่ได้เลือกบอท")
+        self.bot_btn.set(text=("บอท " + cfg.get("bot_name")) if cfg.get("bot_name") else "ยังไม่ได้เลือกบอท")
         hs = core.hero_state(cfg, status, snap, now, running, stopping, ui.phase, ui.lock_problem, ui.agent_error,
                              ui.runner.started_at if running else None)
-        key = (hs["tone"], hs["title"], hs["action"], hs["action_label"])
+        key = (hs["tone"], hs["title"], hs["action"], hs["action_label"], hs.get("stamp"))
         if key != self.hero_key:
             self.hero_key = key
-            tone = hs["tone"]
-            self.hero.set_fill(TONE_SOFT[tone] if tone != "idle" else "surface", TONE_LINE[tone])
-            self.hero_icon.set(icon=self.HERO_ICON.get(tone, "info"),
-                               fill=ui_kit.TONE_DOT[tone] if tone != "idle" else "sunken",
-                               ink="white" if tone != "idle" else "ink2")
-            self.hero_title.configure(text=hs["title"], fg=TONE_INK[tone] if tone not in ("idle", "info") else "ink")
+            self.stamp.set(*(hs.get("stamp") or ("slate", "")))
+            self.hero_title.configure(text=hs["title"])
             self.hero_action = hs["action"] if hs["action"] != "start" else None
             if self.hero_action:
-                self.hero_act.set(text=hs["action_label"] or "", icon="chev_r")
+                self.hero_act.set(text=hs["action_label"] or "")
                 if not self.hero_act_row.winfo_manager():
                     self.hero_act_row.pack(fill="x", pady=(px(10), 0))
             elif self.hero_act_row.winfo_manager():
@@ -2073,76 +2090,152 @@ class MainScreen(Screen):
         if stopping:
             self.big.set("กำลังหยุด…", style="secondary", icon="timer", enabled=False)
         elif running:
-            self.big.set("หยุดทำงาน", style="danger", icon="stop", enabled=True)
+            self.big.set("หยุดทำงาน", style="secondary", icon="stop", enabled=True)
         elif complete:
             self.big.set("เริ่มทำงาน Dobby", style="primary", icon="play", enabled=True)
         else:
-            self.big.set("ตั้งค่าให้เสร็จ", style="primary", icon="chev_r", enabled=True)
+            self.big.set("ตั้งค่าให้เสร็จ", style="primary", icon="", enabled=True)
         # checklist
         items = core.build_checklist(cfg, status, snap, now, running)
         for it in items:
             r, ic, t, d = self.rows[it["key"]]
             ic.set(it["state"])
-            t.configure(text=it["title"], fg="ink" if it["state"] != "idle" else "muted")
+            t.configure(text=it["title"], fg="ink" if it["state"] != "idle" else "slate")
             d.configure(text=it["detail"])
-        # cards
+        # numbers
         s = core.summarize_status(status, now)
         ea_on = s["age"] is not None and s["age"] < core.EA_ONLINE_S
         cur = s["currency"] or "USD"
+        bars, offset = self._bars(ui.bars_text, self._offset(running, snap))
+        price = bars["c"][-1] if bars else None
+        self._ticker(bars)
         if s["has_status"]:
-            mode = {"REAL": "บัญชีจริง", "DEMO": "บัญชีทดลอง"}.get(s["mode"], s["mode"] or "-")
-            self.c_balance.set(core.money(s["balance"]), "%s · Equity %s · %s" % (cur, core.money(s["equity"]), mode))
+            mode = {"REAL": "บัญชีจริงที่โบรก", "DEMO": "บัญชีทดลองที่โบรก"}.get(s["mode"], "บัญชี %s" % (s["mode"] or "-"))
+            self.f_balance.set(num_text(s["balance"]), cur, mode)
+            open_pl = sum(da.to_num(p.get("profit")) or 0.0 for p in s["positions"])
+            self.f_equity.set(num_text(s["equity"]), cur, ("ไม้ที่เปิดอยู่ %s" % num_text(open_pl, True))
+                              if s["positions"] else "ไม่มีไม้เปิดอยู่")
             pnl = s["day_pnl"]
-            tone = "good" if (pnl or 0) > 0 else "bad" if (pnl or 0) < 0 else ""
+            tone = "good" if (pnl or 0) > 0 else "bad" if (pnl or 0) < 0 else None
             used = s["cap_used"]
             if s["cap_hit"]:
-                sub = "ถึงเพดานขาดทุนวันนี้แล้ว: หยุดเปิดไม้ใหม่ถึงวันใหม่"
+                sub = "ถึงเพดานขาดทุนวันนี้แล้ว Dobby หยุดเปิดไม้ใหม่ถึงวันใหม่"
             elif s["cap_amount"]:
-                sub = "เพดานขาดทุน %s (%s%%) · ใช้ไป %d%%" % (core.money(s["cap_amount"]), core.pct_text(s["cap_pct"]),
-                                                          round((used or 0) * 100))
+                stop = "%s\u00a0(%s%%)" % (num_text(-s["cap_amount"]), core.pct_text(s["cap_pct"]))
+                sub = ("ยังไม่ขาดทุน จุดหยุดอยู่ที่ %s" % stop) if not used else \
+                    ("ใช้เพดานไป %d%% ของจุดหยุดที่ %s" % (round(used * 100), stop))
             else:
-                sub = "ของทุนต้นวัน"
-            self.c_today.set(core.money(pnl, True), sub, tone, bar=(used or 0.0, "bad" if s["cap_hit"] or (
-                used or 0) >= 0.8 else "warn" if (used or 0) >= 0.5 else "good") if s["cap_amount"] else None)
-            if s["positions"]:
-                p = s["positions"][0]
-                prof = da.to_num(p.get("profit"))
-                more = " (+%d ไม้)" % (len(s["positions"]) - 1) if len(s["positions"]) > 1 else ""
-                self.c_pos.set(core.money(prof, True) if prof is not None else "-", "%s %s %s ล็อต @ %s%s" % (
-                    p.get("module") or "", core.SIDE_TH.get(str(p.get("side") or "").upper(), p.get("side") or ""),
-                    da._f2(da.to_num(p.get("lots"))), da._f2(da.to_num(p.get("open_price"))), more),
-                    "good" if (prof or 0) > 0 else "bad" if (prof or 0) < 0 else "")
+                sub = "เทียบกับทุนต้นวัน"
+            bar = (used or 0.0, "bad" if s["cap_hit"] or (used or 0) >= 0.8 else "warn" if (used or 0) >= 0.5
+                   else "good") if s["cap_amount"] else None
+            self.f_today.set(num_text(pnl, True), cur, sub, tone, bar)
+            vb, vs = s["v_balance"], s["v_start"]
+            if vb is not None and vs:
+                gain = vb - vs
+                bits = "%s จากทุน\u00a0%s" % (num_text(gain / vs * 100.0, True, 1) + "%", format(vs, ",.0f"))
+                if s["trades"]:
+                    bits += " ใน\u00a0%d\u00a0ไม้" % s["trades"]
+                    if s["wins"] is not None:
+                        bits += " ชนะ\u00a0%d%%" % round(100.0 * s["wins"] / s["trades"])
+                self.f_start.set(num_text(gain, True), cur, bits, "good" if gain > 0 else "bad" if gain < 0 else None)
             else:
-                self.c_pos.set("ไม่มี", "ตอนนี้ไม่มีไม้เปิดอยู่", "", font="h2")
+                self.f_start.set("-", "", "")
+            self.today_val.configure(text=num_text(pnl, True), fg=("slate" if not ea_on else
+                                                                   TONE_INK.get(tone, "ink") if tone else "ink"))
+            self.today_unit.configure(text=cur)
+            if not self.today.winfo_manager():
+                self.today.pack(side="right", anchor="n", before=self.hc)
+            meta = ("มีไม้เปิดอยู่ %d ไม้" % len(s["positions"])) if s["positions"] else "ไม่มีไม้เปิดอยู่"
+            self.hero_meta.configure(text=meta if ea_on else "ข้อมูลล่าสุดจาก Dobby เมื่อ %s" % core.ago_th(s["age"]))
+            if not self.hero_meta.winfo_manager():
+                self.hero_meta.pack(fill="x", pady=(px(2), 0), after=self.hero_text)
         else:
-            for c in (self.c_balance, self.c_today, self.c_pos):
-                c.set("-", "รอข้อมูลจาก Dobby ใน MT5", "", font="h2")
+            self.f_balance.set("-", "", "รอข้อมูลจาก Dobby ใน MT5")
+            for f in (self.f_equity, self.f_today, self.f_start):
+                f.set("-", "", "")
+            if self.today.winfo_manager():
+                self.today.pack_forget()
+            if self.hero_meta.winfo_manager():
+                self.hero_meta.pack_forget()
+        marks = []
+        if offset is not None:
+            for p in s["positions"]:
+                dt = da.parse_server_dt(p.get("open_time"))
+                op = da.to_num(p.get("open_price"))
+                if dt is not None and op:
+                    marks.append((da.naive_to_epoch(dt) - offset * 60, op,
+                                  "sell" if str(p.get("side") or "").upper() == "SELL" else "buy"))
+        self.chart.set(bars, offset, marks)
+        self._positions(s if s["has_status"] else None, price)
         self._settings_card(status, (snap or {}).get("web_desired") or ui.web_desired, ea_on)
         self._activity()
 
+    def _ticker(self, bars):
+        if not bars or len(bars["c"]) < 2:
+            if self.ticker.winfo_manager():
+                self.ticker.pack_forget()
+            return
+        c = bars["c"]
+        chg = c[-1] - c[0]
+        self.tk_price.configure(text=num_text(c[-1]))
+        self.tk_chg.configure(text=num_text(chg, True), fg="jade" if chg > 0 else "cinnabar" if chg < 0 else "slate")
+        span = bars["t"][-1] - bars["t"][0]
+        self.tk_note.configure(text="ใน 24 ชม." if span >= 20 * 3600 else "ใน %d ชม." % max(1, round(span / 3600.0)))
+        if not self.ticker.winfo_manager():
+            self.ticker.pack(side="right", padx=(0, px(18)))
+
+    def _positions(self, s, price):
+        if s is None:
+            if self.pos_g.winfo_manager():
+                self.pos_g.pack_forget()
+            return
+        if not self.pos_g.winfo_manager():
+            self.pos_g.pack(fill="x", padx=self.side, pady=(px(22), 0), before=self.low)
+        pos = s["positions"]
+        key = (tuple((p.get("module"), p.get("side"), p.get("lots"), p.get("open_price"), p.get("sl"), p.get("tp"),
+                      p.get("profit")) for p in pos), price)
+        if key == self.pos_key:
+            return
+        self.pos_key = key
+        for w in self.pos_rows.winfo_children():
+            w.destroy()
+        if not pos:
+            L(self.pos_rows, "ตอนนี้ไม่มีไม้เปิดอยู่", font="small", fg="slate").pack(fill="x", pady=(px(2), 0))
+            return
+        for i, p in enumerate(pos):
+            if i:
+                frame(self.pos_rows, bg="hair", height=1).pack(fill="x")
+            r = frame(self.pos_rows)
+            r.pack(fill="x", pady=px(8))
+            prof = da.to_num(p.get("profit"))
+            tone = "good" if (prof or 0) > 0 else "bad" if (prof or 0) < 0 else None
+            sell = str(p.get("side") or "").upper() == "SELL"
+            L(r, p.get("module") or "-", font="bold").pack(side="left")
+            L(r, core.SIDE_TH.get(str(p.get("side") or "").upper(), p.get("side") or ""), font="med",
+              fg="cinnabar" if sell else "jade").pack(side="left", padx=(px(10), 0))
+            L(r, da._f2(da.to_num(p.get("lots"))), font="numS").pack(side="left", padx=(px(12), 0))
+            L(r, "ล็อต เข้าที่", font="small", fg="slate").pack(side="left", padx=(px(4), 0))
+            L(r, num_text(da.to_num(p.get("open_price"))), font="numS").pack(side="left", padx=(px(4), 0))
+            L(r, num_text(prof, True) if prof is not None else "-", font="numB",
+              fg=TONE_INK.get(tone, "ink") if tone else "ink").pack(side="right")
+            m = TradeMeter(r)
+            m.pack(side="right", padx=(0, px(24)))
+            m.set("SELL" if sell else "BUY", da.to_num(p.get("open_price")), da.to_num(p.get("sl")),
+                  da.to_num(p.get("tp")), price, tone)
+
     def _settings_card(self, status, desired, ea_on):
         s, src = core.current_settings(status, desired, ea_on)
-        lines = []
-        if s:
-            items = dict((it["key"], it) for it in core.settings_summary(s))
-            lines = [(items["strategies"]["title"] + " · " + items["lot"]["title"], items["lot"]["sub"]),
-                     (items["lock"]["title"], items["lock"]["sub"]),
-                     (items["asia"]["title"] + " · " + items["cap"]["title"], "")]
-        key = (tuple(lines), src)
+        sentence = core.settings_sentence(s) if s else ""
+        key = (sentence, src)
         if key == self.set_key:
             return
         self.set_key = key
-        for w in self.set_lines.winfo_children():
-            w.destroy()
-        if not lines:
-            L(self.set_lines, "ยังไม่ทราบ", font="h2").pack(fill="x")
-            self.set_src.configure(text="จะแสดงเมื่อ Dobby ใน MT5 ทำงาน")
+        if not s:
+            self.set_src.configure(text="ค่าที่ใช้อยู่")
+            self.set_lines.configure(text="จะแสดงเมื่อ Dobby ใน MT5 ทำงาน")
             return
-        for i, (a, b) in enumerate(lines):
-            L(self.set_lines, a, font="bold" if i == 0 else "sbold", wrap=True).pack(fill="x")
-            if b and i == 1:
-                L(self.set_lines, b, font="small", fg="muted").pack(fill="x")
-        self.set_src.configure(text=core.SETTINGS_SOURCE_TH.get(src, ""))
+        self.set_src.configure(text=core.SETTINGS_SOURCE_TH.get(src, "ค่าที่ใช้อยู่"))
+        self.set_lines.configure(text=sentence)
 
     def _activity(self):
         items = list(self.ui.activity)[-6:][::-1]
@@ -2153,16 +2246,18 @@ class MainScreen(Screen):
         for w in self.act_box.winfo_children():
             w.destroy()
         if not items:
-            L(self.act_box, "ยังไม่มีความเคลื่อนไหว กด เริ่มทำงาน Dobby แล้วรายการจะขึ้นที่นี่", font="small", fg="muted",
-              wrap=True).pack(fill="x")
+            L(self.act_box, "ยังไม่มีความเคลื่อนไหว กด เริ่มทำงาน Dobby แล้วรายการจะขึ้นที่นี่", font="small", fg="slate",
+              wrap=True).pack(fill="x", pady=(px(6), 0))
             return
-        for it in items:
+        for i, it in enumerate(items):
+            if i:
+                frame(self.act_box, bg="hair", height=1).pack(fill="x")
             r = frame(self.act_box)
-            r.pack(fill="x", pady=(0, px(6)))
-            L(r, it["when"], font="tiny", fg="muted", width=6).pack(side="left", anchor="n", pady=(px(1), 0))
-            tk.Label(r, image=ui_kit.dot_image(px(8), ui_kit.TONE_DOT.get(it["tone"], "accent")), bg=_bg(r),
-                     bd=0).pack(side="left", anchor="n", pady=(px(6), 0), padx=(px(4), px(8)))
-            L(r, it["text"], font="small", fg="ink2", wrap=True).pack(side="left", fill="x", expand=True)
+            r.pack(fill="x", pady=px(7))
+            L(r, it["when"], font="numXS", fg="slate", width=5).pack(side="left", anchor="n", pady=(px(1), 0))
+            tk.Label(r, image=ui_kit.dot_image(px(7), TONE_DOT.get(it["tone"], "slate")), bg=_bg(r),
+                     bd=0).pack(side="left", anchor="n", pady=(px(8), 0), padx=(px(6), px(10)))
+            L(r, it["text"], font="small", fg="ink", wrap=True).pack(side="left", fill="x", expand=True)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -2174,11 +2269,11 @@ class Mt5Screen(Screen):
         app_header(self, "เชื่อม MT5", back=lambda: ui.show("main"))
         self.scroll = ScrollFrame(self, bg="bg")
         self.scroll.pack(fill="both", expand=True)
-        center = Centered(self.scroll.inner, maxw=760)
-        center.pack(fill="both", expand=True, pady=(px(18), px(24)))
+        center = Centered(self.scroll.inner, maxw=720)
+        center.pack(fill="both", expand=True, pady=(px(22), px(28)))
         L(center.col, "เชื่อม MT5 กับ Dobby", font="h1").pack(fill="x")
-        L(center.col, "ติดตั้ง Dobby ลงใน MT5 แล้วให้แอปเปิด MT5 พร้อม Dobby หรือทำเองตามขั้นตอน", font="base", fg="muted",
-          wrap=True).pack(fill="x", pady=(px(4), px(18)))
+        L(center.col, "ติดตั้ง Dobby ลงใน MT5 แล้วให้แอปเปิด MT5 พร้อม Dobby หรือทำเองตามขั้นตอน", font="base", fg="slate",
+          wrap=True).pack(fill="x", pady=(px(4), px(22)))
         self.panel = Mt5Panel(center.col, ui)
         self.panel.pack(fill="x")
 
@@ -2198,33 +2293,38 @@ class SettingsScreen(Screen):
     def __init__(self, ui):
         Screen.__init__(self, ui)
         app_header(self, "ตั้งค่า", back=self.close)
-        bottom = frame(self, bg="surface")
+        bottom = frame(self, bg="bg")
         bottom.pack(side="bottom", fill="x")
-        frame(bottom, bg="line", height=1).pack(fill="x")
+        frame(bottom, bg="hair", height=1).pack(fill="x")
         bb = frame(bottom)
         bb.pack(fill="x", padx=px(24), pady=px(12))
         Btn(bb, "บันทึกการตั้งค่า", self.save, icon="check").pack(side="right")
         Btn(bb, "ยกเลิก", self.close, style="secondary").pack(side="right", padx=(0, px(8)))
-        self.saved_lbl = L(bb, "", font="sbold", fg="good")
+        self.saved_lbl = L(bb, "", font="med", fg="jade")
         self.saved_lbl.pack(side="left")
         body = frame(self)
-        body.pack(fill="both", expand=True, padx=px(20), pady=(px(16), px(10)))
-        nav = Box(body, pad=8)
+        body.pack(fill="both", expand=True, padx=(px(14), px(8)), pady=(px(18), px(6)))
+        nav = frame(body)
         nav.pack(side="left", fill="y")
         self.nav_items = {}
         for key, title, icon in self.SECTIONS:
-            item = Box(nav.body, fill="surface", border=None, radius=10, padx=12, pady=9)
-            item.pack(fill="x", pady=(0, px(2)))
-            g = glyph(item.body, icon, "icon", fg="muted")
+            row = frame(nav)
+            row.pack(fill="x", pady=(0, px(2)))
+            bar = frame(row, bg="bg", width=px(3))
+            bar.pack(side="left", fill="y", padx=(0, px(6)))
+            item = Box(row, fill="bg", border=None, radius=10, padx=12, pady=8)
+            item.pack(side="left", fill="x", expand=True)
+            g = glyph(item.body, icon, "icon", fg="slate")
             g.pack(side="left")
-            t = L(item.body, title, font="sbold", fg="ink2", width=15)
+            t = L(item.body, title, font="med", fg="ink", width=17)
             t.pack(side="left", padx=(px(10), 0))
             for w in (item, item.body, g, t):
                 w.configure(cursor="hand2")
                 w.bind("<Button-1>", lambda e, k=key: self.select(k))
-            self.nav_items[key] = (item, g, t)
+            self.nav_items[key] = (item, g, t, bar)
+        frame(body, bg="hair", width=1).pack(side="left", fill="y", padx=(px(14), 0))
         right = frame(body)
-        right.pack(side="left", fill="both", expand=True, padx=(px(16), 0))
+        right.pack(side="left", fill="both", expand=True, padx=(px(26), 0))
         self.banner = Banner(right, pady=(0, px(12)))
         self.banner.pack(fill="x")
         self.scroll = ScrollFrame(right, bg="bg")
@@ -2237,126 +2337,120 @@ class SettingsScreen(Screen):
         self.current = None
 
     def select(self, key):
-        for k, (item, g, t) in self.nav_items.items():
+        for k, (item, g, t, bar) in self.nav_items.items():
             on = k == key
-            item.set_fill("accent_soft" if on else "surface")
-            g.configure(fg=C["accent_hi"] if on else C["muted"])
-            t.configure(fg="accent_hi" if on else "ink2")
+            item.set_fill("well2" if on else "bg")
+            bar.configure(bg=C["gold"] if on else C["bg"])
+            g.configure(fg=C["ink"] if on else C["slate"])
+            t.configure(font="bold" if on else "med")
         if self.current:
             self.pages[self.current].pack_forget()
         self.current = key
-        self.pages[key].pack(fill="x", padx=(0, px(6)))
+        self.pages[key].pack(fill="x", padx=(0, px(18)), pady=(0, px(12)))
         self.scroll.to_top()
 
     # -- sections
     def _card(self, parent, title, why=None, icon=None):
-        b = Box(parent, pad=22)
-        b.pack(fill="x", pady=(0, px(14)))
-        section(b.body, title, why, icon=icon)
-        return b.body
+        """A settings group: a hairline above (not on the first), the heading and one sentence."""
+        first = not parent.winfo_children()
+        return group(parent, title, why, rule=not first, top=26)
 
     def _build_safety(self, p):
         self.safety = SafetyForm(p, self.ui)
         self.safety.pack(fill="x")
 
     def _build_bot(self, p):
-        b = self._card(p, "บอทของเครื่องนี้", "1 บอทบนเว็บ = MT5 1 เครื่อง ข้อมูลและคำสั่งของบอทนี้ใช้กับ MT5 ในเครื่องนี้",
-                       icon="robot")
+        b = self._card(p, "บอทของเครื่องนี้", "บอทบนเว็บหนึ่งตัวใช้กับ MT5 หนึ่งเครื่อง ข้อมูลและคำสั่งของบอทนี้ใช้กับ MT5 ในเครื่องนี้")
         self.bot_info = frame(b)
-        self.bot_info.pack(fill="x", pady=(px(12), 0))
+        self.bot_info.pack(fill="x", pady=(px(14), 0))
         row = frame(b)
-        row.pack(fill="x", pady=(px(14), 0))
-        Btn(row, "เปลี่ยน / เชื่อมบอทอื่น", lambda: self.ui.start_wizard(STEP_BOT), style="secondary",
+        row.pack(fill="x", pady=(px(16), 0))
+        Btn(row, "เปลี่ยนหรือเชื่อมบอทอื่น", lambda: self.ui.start_wizard(STEP_BOT), style="secondary",
             icon="link").pack(side="left")
-        Btn(row, "เชื่อม MT5 / เปิด MT5 พร้อม Dobby", lambda: self.ui.show("mt5"), style="secondary",
-            icon="laptop").pack(side="left", padx=(px(8), 0))
-        b = self._card(p, "ยกเลิกการเชื่อม", "เครื่องนี้จะเลิกส่งข้อมูลและรับคำสั่งจากบอท บอทบนเว็บยังอยู่ (ลบได้ที่เว็บ)",
-                       icon="cancel")
+        Btn(row, "เชื่อม MT5", lambda: self.ui.show("mt5"), style="secondary", icon="laptop").pack(side="left",
+                                                                                                 padx=(px(8), 0))
+        b = self._card(p, "ยกเลิกการเชื่อม", "เครื่องนี้จะเลิกส่งข้อมูลและรับคำสั่งจากบอท ส่วนบอทบนเว็บยังอยู่ (ลบได้ที่เว็บ)")
         self.unlink_btn = Btn(b, "ยกเลิกการเชื่อมเครื่องนี้", self.unlink, style="danger", size="sm")
-        self.unlink_btn.pack(anchor="w", pady=(px(12), 0))
+        self.unlink_btn.pack(anchor="w", pady=(px(14), 0))
 
     def _build_telegram(self, p):
         b = self._card(p, "แจ้งเตือนทาง Telegram (ไม่บังคับ)",
-                       "แจ้งเมื่อเปิด/ปิดไม้ ล็อกกำไร ถึงเพดานขาดทุน Dobby ออฟไลน์ และสรุปรายวัน", icon="send")
-        L(b, "Bot token (จาก @BotFather)", font="sbold", fg="ink2").pack(fill="x", pady=(px(14), px(4)))
-        self.tg_token = Field(b, width=50, show="•", pady=6)
+                       "แจ้งเมื่อเปิดหรือปิดไม้ ล็อกกำไร ถึงเพดานขาดทุน Dobby ออฟไลน์ และสรุปรายวัน")
+        L(b, "Bot token (จาก @BotFather)", font="med").pack(fill="x", pady=(px(16), px(6)))
+        self.tg_token = Field(b, width=50, show="•", pady=7)
         self.tg_token.pack(fill="x")
         r = frame(b)
-        r.pack(fill="x", pady=(px(6), 0))
+        r.pack(fill="x", pady=(px(8), 0))
         self.tg_show = tk.BooleanVar(value=False)
         Toggle(r, self.tg_show, command=lambda: self.tg_token.entry.configure(
             show="" if self.tg_show.get() else "•")).pack(side="left")
-        L(r, "แสดง token", font="small", fg="ink2").pack(side="left", padx=(px(8), 0))
-        L(b, "Chat id", font="sbold", fg="ink2").pack(fill="x", pady=(px(12), px(4)))
-        self.tg_chat = Field(b, width=22, pady=6)
+        L(r, "แสดง token", font="small", fg="ink").pack(side="left", padx=(px(10), 0))
+        L(b, "Chat id", font="med").pack(fill="x", pady=(px(14), px(6)))
+        self.tg_chat = Field(b, width=22, pady=7)
         self.tg_chat.pack(anchor="w")
-        L(b, "ใน Telegram: คุยกับ @BotFather แล้วพิมพ์ /newbot จะได้ token จากนั้นส่งข้อความหาบอทของคุณ 1 ครั้ง และถาม "
-             "@userinfobot เพื่อดูตัวเลข chat id", font="small", fg="muted", wrap=True).pack(fill="x", pady=(px(6), 0))
+        L(b, "ใน Telegram คุยกับ @BotFather แล้วพิมพ์ /newbot จะได้ token จากนั้นส่งข้อความหาบอทของคุณ 1 ครั้ง และถาม "
+             "@userinfobot เพื่อดูตัวเลข chat id", font="small", fg="slate", wrap=True).pack(fill="x", pady=(px(8), 0))
         r = frame(b)
-        r.pack(fill="x", pady=(px(12), 0))
+        r.pack(fill="x", pady=(px(14), 0))
         self.tg_btn = Btn(r, "ส่งข้อความทดสอบ", self.test_telegram, style="secondary", size="sm", icon="send")
         self.tg_btn.pack(side="left")
-        self.tg_result = L(r, "", font="sbold", fg="muted")
+        self.tg_result = L(r, "", font="med", fg="slate")
         self.tg_result.pack(side="left", padx=(px(12), 0))
 
     def _build_startup(self, p):
-        b = self._card(p, "การเริ่มทำงาน", "ให้ Dobby ทำงานเองหลังเปิดเครื่อง ไม่ต้องจำ", icon="power")
+        b = self._card(p, "การเริ่มทำงาน", "ให้ Dobby ทำงานเองหลังเปิดเครื่อง ไม่ต้องจำ")
         self.with_windows = tk.BooleanVar()
         self.auto_start = tk.BooleanVar()
-        for var, title, text in (
+        for i, (var, title, text) in enumerate((
                 (self.with_windows, "เปิดพร้อม Windows",
-                 "เปิดแอปเองหลังเปิดเครื่อง (ย่อไว้ที่แถบงาน) และเริ่มทำงานให้ถ้าตั้งค่าครบ: สร้างไฟล์เล็ก ๆ หนึ่งไฟล์ "
+                 "เปิดแอปเองหลังเปิดเครื่อง (ย่อไว้ที่แถบงาน) และเริ่มทำงานให้ถ้าตั้งค่าครบ โดยสร้างไฟล์เล็ก ๆ หนึ่งไฟล์ "
                  "ในโฟลเดอร์ Startup ของผู้ใช้นี้เท่านั้น ปิดเมื่อไรก็ลบไฟล์นั้นให้"),
-                (self.auto_start, "เริ่มทำงานอัตโนมัติเมื่อเปิดแอป", "ไม่ต้องกดปุ่ม เริ่มทำงาน Dobby ทุกครั้งที่เปิดแอป")):
-            r = frame(b)
-            r.pack(fill="x", pady=(px(14), 0))
-            Toggle(r, var).pack(side="left", anchor="n")
-            c = frame(r)
-            c.pack(side="left", fill="x", expand=True, padx=(px(12), 0))
-            L(c, title, font="bold").pack(fill="x")
-            L(c, text, font="small", fg="muted", wrap=True).pack(fill="x")
-        self.launcher_lbl = L(b, "", font="tiny", fg="muted", wrap=True)
-        self.launcher_lbl.pack(fill="x", pady=(px(14), 0))
+                (self.auto_start, "เริ่มทำงานอัตโนมัติเมื่อเปิดแอป", "ไม่ต้องกดปุ่ม เริ่มทำงาน Dobby ทุกครั้งที่เปิดแอป"))):
+            r = Row(b, title, text, rule=i > 0)
+            r.pack(fill="x", pady=(px(8) if i == 0 else 0, 0))
+            Toggle(r.ctl, var).pack()
+        self.launcher_lbl = L(b, "", font="small", fg="slate", wrap=True)
+        self.launcher_lbl.pack(fill="x", pady=(px(12), 0))
 
     def _build_account(self, p):
-        b = self._card(p, "บัญชีเว็บ Dobby", icon="person")
+        b = self._card(p, "บัญชีเว็บ Dobby")
         r = frame(b)
         r.pack(fill="x", pady=(px(12), 0))
-        self.acc_lbl = L(r, "", font="bold", fg="ink2")
-        self.acc_lbl.pack(side="left")
         self.acc_btn = Btn(r, "ออกจากระบบ", self.sign_out, style="secondary", size="sm")
         self.acc_btn.pack(side="right")
-        b = self._card(p, "ตัวช่วยตั้งค่า", "ใช้เมื่อต้องการเปลี่ยนบัญชี เปลี่ยนบอท หรือตั้ง MT5 ใหม่", icon="bolt")
+        self.acc_lbl = L(r, "", font="base", fg="ink")
+        self.acc_lbl.pack(side="left")
+        b = self._card(p, "ตัวช่วยตั้งค่า", "ใช้เมื่อต้องการเปลี่ยนบัญชี เปลี่ยนบอท หรือตั้ง MT5 ใหม่")
         Btn(b, "เปิดตัวช่วยตั้งค่าอีกครั้ง", lambda: self.ui.start_wizard(STEP_WELCOME), style="secondary",
-            size="sm").pack(anchor="w", pady=(px(12), 0))
+            size="sm").pack(anchor="w", pady=(px(14), 0))
 
     def _build_advanced(self, p):
-        b = self._card(p, "เซิร์ฟเวอร์", "ปกติไม่ต้องแก้ ถ้าเปลี่ยน ต้องเข้าสู่ระบบใหม่", icon="globe")
-        L(b, "Supabase URL", font="sbold", fg="ink2").pack(fill="x", pady=(px(12), px(4)))
-        self.adv_url = Field(b, width=56, pady=6)
+        b = self._card(p, "เซิร์ฟเวอร์", "ปกติไม่ต้องแก้ ถ้าเปลี่ยนต้องเข้าสู่ระบบใหม่")
+        L(b, "Supabase URL", font="med").pack(fill="x", pady=(px(14), px(6)))
+        self.adv_url = Field(b, width=56, pady=7)
         self.adv_url.pack(fill="x")
-        L(b, "Publishable key (คีย์สาธารณะ)", font="sbold", fg="ink2").pack(fill="x", pady=(px(10), px(4)))
-        self.adv_key = Field(b, width=56, pady=6)
+        L(b, "Publishable key (คีย์สาธารณะ)", font="med").pack(fill="x", pady=(px(12), px(6)))
+        self.adv_key = Field(b, width=56, pady=7)
         self.adv_key.pack(fill="x")
-        b = self._card(p, "โฟลเดอร์ไฟล์ของ Dobby", "ว่างไว้ = ค่าเริ่มต้นของ MT5 (Common\\Files\\Dobby) มีผลตอนกดเริ่มครั้งถัดไป",
-                       icon="folder")
+        b = self._card(p, "โฟลเดอร์ไฟล์ของ Dobby",
+                       "ว่างไว้เพื่อใช้ค่าเริ่มต้นของ MT5 (Common\\Files\\Dobby) มีผลตอนกดเริ่มครั้งถัดไป")
         r = frame(b)
-        r.pack(fill="x", pady=(px(12), 0))
-        self.adv_common = Field(r, width=48, pady=6)
+        r.pack(fill="x", pady=(px(14), 0))
+        self.adv_common = Field(r, width=48, pady=7)
         self.adv_common.pack(side="left", fill="x", expand=True)
         Btn(r, "เลือก…", self.pick_common, style="secondary", size="sm").pack(side="left", padx=(px(8), 0))
-        b = self._card(p, "ข้อมูลของแอป", icon="doc")
+        b = self._card(p, "ข้อมูลของแอป")
         r = frame(b)
-        r.pack(fill="x", pady=(px(12), 0))
+        r.pack(fill="x", pady=(px(14), 0))
         Btn(r, "เปิดโฟลเดอร์", lambda: self.ui.ctx.open_path(self.ui.ctx.data_dir), style="secondary",
             size="sm", icon="folder").pack(side="right", anchor="n", padx=(px(12), 0))
-        L(r, self.ui.ctx.data_dir, font="small", fg="ink2", wrap=True).pack(side="left", fill="x", expand=True)
+        L(r, self.ui.ctx.data_dir, font="small", fg="ink", wrap=True).pack(side="left", fill="x", expand=True)
         r = frame(b)
-        r.pack(fill="x", pady=(px(10), 0))
+        r.pack(fill="x", pady=(px(12), 0))
         Btn(r, "ดูบันทึกละเอียด", lambda: self.ui.show("log"), style="secondary", size="sm", icon="list").pack(
             side="left")
-        L(b, "Dobby App %s  ·  agent %s" % (APP_VERSION, da.AGENT_VERSION), font="small", fg="muted").pack(
-            fill="x", pady=(px(12), 0))
+        L(b, "Dobby App รุ่น %s ใช้ agent รุ่น %s" % (APP_VERSION, da.AGENT_VERSION), font="small", fg="slate").pack(
+            fill="x", pady=(px(14), 0))
 
     # -- behaviour
     def on_show(self, tab=None, **kw):
@@ -2375,14 +2469,14 @@ class SettingsScreen(Screen):
         folder = self.ui.ctx.startup_folder()
         self.with_windows.set(core.launcher_exists(folder))
         self.auto_start.set(bool(app.get("auto_start")))
-        self.launcher_lbl.configure(text="ไฟล์เปิดพร้อม Windows: %s" % core.launcher_path(folder))
+        self.launcher_lbl.configure(text="ไฟล์เปิดพร้อม Windows อยู่ที่ %s" % core.launcher_path(folder))
         self.refresh_account()
         self.select(tab or self.current or "safety")
 
     def refresh_account(self):
         cfg = self.ui.cfg
         if cfg.get("refresh_token"):
-            self.acc_lbl.configure(text="เข้าสู่ระบบเป็น  %s" % (cfg.get("email") or "-"))
+            self.acc_lbl.configure(text="เข้าสู่ระบบด้วย %s" % (cfg.get("email") or "-"))
             self.acc_btn.set(text="ออกจากระบบ", command=self.sign_out)
         else:
             self.acc_lbl.configure(text="ยังไม่ได้เข้าสู่ระบบ")
@@ -2390,27 +2484,25 @@ class SettingsScreen(Screen):
         for w in self.bot_info.winfo_children():
             w.destroy()
         pending = (cfg.get("app") or {}).get("pending_bot_name")
-        r = frame(self.bot_info)
-        r.pack(fill="x")
-        IconBadge(r, "robot", size=44).pack(side="left", anchor="n")
-        c = frame(r)
-        c.pack(side="left", fill="x", expand=True, padx=(px(14), 0))
+        c = frame(self.bot_info)
+        c.pack(fill="x")
         st = self.ui.status or {}
         if cfg.get("bot_id"):
-            L(c, cfg.get("bot_name") or "Dobby", font="h3").pack(fill="x")
-            L(c, "Dobby%s  ·  id %s…" % ((" v" + str(st["ea_version"])) if st.get("ea_version") else "",
-                                        cfg["bot_id"][:8]), font="small", fg="muted").pack(fill="x")
+            L(c, cfg.get("bot_name") or "Dobby", font="h2").pack(fill="x")
+            L(c, "Dobby%s รหัสบอท %s…" % ((" v" + str(st["ea_version"])) if st.get("ea_version") else "",
+                                         cfg["bot_id"][:8]), font="small", fg="slate").pack(fill="x")
             self.unlink_btn.set(enabled=True)
         elif pending:
-            L(c, pending, font="h3").pack(fill="x")
-            L(c, "รอสร้างบอทบนเว็บเมื่อ Dobby ใน MT5 ทำงาน", font="small", fg="muted").pack(fill="x")
+            L(c, pending, font="h2").pack(fill="x")
+            L(c, "รอสร้างบอทบนเว็บเมื่อ Dobby ใน MT5 ทำงาน", font="small", fg="slate").pack(fill="x")
             self.unlink_btn.set(enabled=True)
         else:
-            L(c, "ยังไม่ได้เชื่อมกับบอท", font="h3").pack(fill="x")
-            L(c, "กด เปลี่ยน / เชื่อมบอทอื่น เพื่อเลือกบอท", font="small", fg="muted").pack(fill="x")
+            L(c, "ยังไม่ได้เชื่อมกับบอท", font="h2").pack(fill="x")
+            L(c, "กด เปลี่ยนหรือเชื่อมบอทอื่น เพื่อเลือกบอท", font="small", fg="slate").pack(fill="x")
             self.unlink_btn.set(enabled=False)
         mt5 = (cfg.get("app") or {}).get("mt5_data_dir")
-        L(c, "MT5: %s" % (mt5 or "-"), font="tiny", fg="muted", wrap=True).pack(fill="x", pady=(px(4), 0))
+        L(c, "MT5 ที่ใช้: %s" % (mt5 or "ยังไม่ได้เลือก"), font="small", fg="slate", wrap=True).pack(fill="x",
+                                                                                               pady=(px(6), 0))
 
     def close(self):
         self.ui.show("main" if (self.ui.cfg.get("app") or {}).get("wizard_done") else "wizard")
@@ -2467,15 +2559,15 @@ class SettingsScreen(Screen):
         LOG.info("settings saved (limits: control %s, live %s, params %s, max lots %.2f, max cap %g%%)",
                  lim["allow_remote_control"], lim["allow_remote_live"], lim["allow_remote_params"], lim["max_lots"],
                  lim["max_daily_cap_pct"])
-        self.saved_lbl.configure(text="✓  บันทึกแล้ว" + ("  (เข้าสู่ระบบใหม่ในตัวช่วยตั้งค่า)" if server_changed else ""))
+        self.saved_lbl.configure(text="บันทึกแล้ว" + (" เข้าสู่ระบบใหม่ในตัวช่วยตั้งค่า" if server_changed else ""))
 
     def test_telegram(self):
         token, chat = self.tg_token.get().strip(), self.tg_chat.get().strip()
         if not token or not chat:
-            self.tg_result.configure(text="ใส่ token และ chat id ก่อน", fg="bad")
+            self.tg_result.configure(text="ใส่ token และ chat id ก่อน", fg="cinnabar")
             return
         self.tg_btn.set(enabled=False)
-        self.tg_result.configure(text="กำลังส่ง…", fg="muted")
+        self.tg_result.configure(text="กำลังส่ง…", fg="slate")
         tg = da.Telegram(self.ui.ctx.transport(), token, chat)
         name = self.ui.cfg.get("bot_name") or "Dobby"
         self.ui.bg(lambda: tg.send_now(da.msg_test(name)), self._tg_done, lambda e: self._tg_done((False, str(e))))
@@ -2483,8 +2575,8 @@ class SettingsScreen(Screen):
     def _tg_done(self, res):
         ok, info = res
         self.tg_btn.set(enabled=True)
-        self.tg_result.configure(text="ส่งแล้ว ดูใน Telegram ของคุณ" if ok else "ส่งไม่สำเร็จ: ตรวจ token และ chat id",
-                                 fg="good" if ok else "bad")
+        self.tg_result.configure(text="ส่งแล้ว ดูใน Telegram ของคุณ" if ok else "ส่งไม่สำเร็จ ตรวจ token และ chat id",
+                                 fg="jade" if ok else "cinnabar")
 
     def sign_out(self):
         ui = self.ui
@@ -2514,7 +2606,7 @@ class SettingsScreen(Screen):
         ui.reload_cfg()
         LOG.info("this PC was unlinked from its bot")
         self.refresh_account()
-        self.banner.show("good", "ยกเลิกการเชื่อมแล้ว", "กด เปลี่ยน / เชื่อมบอทอื่น เพื่อเลือกบอทใหม่")
+        self.banner.show("good", "ยกเลิกการเชื่อมแล้ว", "กด เปลี่ยนหรือเชื่อมบอทอื่น เพื่อเลือกบอทใหม่")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -2526,23 +2618,24 @@ class LogScreen(Screen):
         app_header(self, "บันทึกละเอียด", back=lambda: ui.show("main" if (ui.cfg.get("app") or {}).get(
             "wizard_done") else "wizard"))
         bottom = frame(self)
-        bottom.pack(side="bottom", fill="x", padx=px(20), pady=(px(8), px(14)))
+        bottom.pack(side="bottom", fill="x", padx=px(24), pady=(px(10), px(14)))
         Btn(bottom, "เปิดไฟล์บันทึก (agent.log)", lambda: ui.ctx.open_path(os.path.join(ui.ctx.data_dir, da.LOG_NAME)),
             style="secondary", size="sm", icon="doc").pack(side="left")
         Btn(bottom, "เปิดโฟลเดอร์ข้อมูล", lambda: ui.ctx.open_path(ui.ctx.data_dir), style="secondary", size="sm",
             icon="folder").pack(side="left", padx=(px(8), 0))
-        L(bottom, "ไม่มีรหัสผ่านหรือ token ในบันทึก", font="small", fg="muted").pack(side="right")
-        card = Box(self, pad=6)
-        card.pack(fill="both", expand=True, padx=px(20), pady=(px(16), 0))
-        self.text = tk.Text(card.body, bd=0, highlightthickness=0, bg=C["surface"], fg=C["ink2"], font=F["small"],
-                            wrap="word", padx=px(12), pady=px(8), cursor="arrow")
+        L(bottom, "ไม่มีรหัสผ่านหรือ token ในบันทึก", font="small", fg="slate").pack(side="right")
+        card = Box(self, fill="bg", border="hair", radius=14, pad=6)
+        card.pack(fill="both", expand=True, padx=px(24), pady=(px(18), 0))
+        self.text = tk.Text(card.body, bd=0, highlightthickness=0, bg=C["bg"], fg=C["ink"], font=F["small"],
+                            wrap="word", padx=px(12), pady=px(8), cursor="arrow", spacing1=px(2), spacing3=px(2),
+                            selectbackground=C["gold_soft"], selectforeground=C["ink"])
         vsb = ttk.Scrollbar(card.body, orient="vertical", command=self.text.yview, style="Thin.Vertical.TScrollbar")
         self.text.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         self.text.pack(fill="both", expand=True)
-        self.text.tag_configure("warn", foreground=C["warn"])
-        self.text.tag_configure("error", foreground=C["bad"])
-        self.text.tag_configure("time", foreground=C["faint"])
+        self.text.tag_configure("warn", foreground=C["gold_ink"])
+        self.text.tag_configure("error", foreground=C["cinnabar"])
+        self.text.tag_configure("time", foreground=C["slate"], font=F["numXS"])
 
     def on_show(self, **kw):
         self.text.configure(state="normal")
@@ -2595,6 +2688,7 @@ class DobbyUI(object):
         self.approved = None
         self.status, self.snap, self.phase = None, None, None
         self.web_desired = None
+        self.bars_text = None               # the EA's dobby2_bars.csv (tail), read by the status watcher
         self.lock_problem = None
         self.agent_error = None
         self.log_lines = collections.deque(maxlen=500)
@@ -2610,11 +2704,10 @@ class DobbyUI(object):
         self.log_handler = GuiLogHandler(self.q)
         LOG.addHandler(self.log_handler)
         self.icon64 = tk.PhotoImage(data=base64.b64encode(core.icon_png(64)).decode("ascii"))
-        self.icon28 = tk.PhotoImage(data=base64.b64encode(core.icon_png(px(30))).decode("ascii"))
         root.iconphoto(True, self.icon64)
         root.title(APP_NAME + (" (โหมดตัวอย่าง)" if ctx.demo else ""))
         root.configure(bg=C["bg"])
-        w, h = px(1000), px(720)
+        w, h = px(1000), px(700)
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         w, h = min(w, sw - px(40)), min(h, sh - px(80))
         root.geometry("%dx%d+%d+%d" % (w, h, max(0, (sw - w) // 2), max(0, (sh - h) // 3)))
@@ -2713,6 +2806,8 @@ class DobbyUI(object):
             self.status = item[1]
         elif kind == "journal":
             self._journal(item[1])
+        elif kind == "bars":
+            self.bars_text = item[1]
         elif kind == "agent":
             self.snap = item[1]
             self.phase = "running"
@@ -2900,6 +2995,7 @@ def enable_dpi_awareness():
 
 def make_root():
     enable_dpi_awareness()
+    load_private_fonts()            # Anuphan + Chakra Petch for this process only, before the first Tk font
     root = tk.Tk()
     root.withdraw()
     setup_theme(root)
@@ -3087,10 +3183,34 @@ def run_selftest(out_png, data_dir):
             return value
         return hook
 
+    def scroll_to(widget, margin=8):
+        """Scroll the current screen so that `widget` starts near the top of the view."""
+        sc = ui.screens[ui.current].scroll
+        pump(0.2)
+        total = max(1, sc.inner.winfo_height())
+        y = widget.winfo_rooty() - sc.inner.winfo_rooty()
+        sc.canvas.yview_moveto(max(0.0, (y - px(margin)) / float(total)))
+
+    def sized_shot(name, w, h, frac=None):
+        root.geometry("%dx%d" % (px(w), px(h)))
+        pump(0.6)
+        if frac is not None:
+            ui.screens[ui.current].scroll.canvas.yview_moveto(frac)
+        shot(name)
+
+    def default_size():
+        root.geometry("%dx%d" % (px(1000), px(700)))
+        pump(0.6)
+
     wiz = ui.screen("wizard")
     try:
+        check("bundled fonts loaded privately: Anuphan (Thai / UI) and Chakra Petch (numbers)",
+              FONTS["anuphan"] and FONTS["chakra"] and FONTS["dir"] and FONTS["dir"].endswith("fonts"),
+              "%s from %s" % (", ".join(FONTS["loaded"]) or "none", FONTS["dir"]))
         # ---- 1 welcome
         shot("wizard_welcome")
+        check("default window 1000 x 700", abs(root.winfo_width() - px(1000)) <= 2 and
+              abs(root.winfo_height() - px(700)) <= 2, "%dx%d" % (root.winfo_width(), root.winfo_height()))
         check("welcome: the fake MT5 folders are found", len(core.detect_terminals(ctx.appdata)) == 2)
         wiz.next()
         # ---- 2 sign in: empty, wrong password, not approved, ok
@@ -3154,6 +3274,13 @@ def run_selftest(out_png, data_dir):
         ed._custom_changed()
         pump()
         scroll_shot("wizard_settings_custom", 0.28)
+        scroll_to(ed.lock_card)
+        shot("wizard_settings_lock_ladder")
+        check("lock ladder: TP, 2 triggers, 2 new SLs, entry, original SL",
+              [r[1] for r in ed.lockbar.rows] == ["tp", "at", "to", "at", "to", "gap", "entry", "sl"],
+              str([r[1] for r in ed.lockbar.rows]))
+        sized_shot("wizard_settings_small_window", 880, 600)
+        default_size()
         ed.lot_mode.set("each")
         ed._lot_mode()
         ed.steppers["lot_ny"].set(0.02)
@@ -3164,7 +3291,8 @@ def run_selftest(out_png, data_dir):
         errs = ed.errors()
         check("stage 1 above the near-TP stage is refused inline", "lock1_at" in errs, errs.get("lock1_at", ""))
         check("Next does not pass with an error", wiz.pages[STEP_SETTINGS].on_next() is False)
-        scroll_shot("wizard_settings_error", 0.62)
+        scroll_to(ed.lock_card)
+        shot("wizard_settings_error")
         ed.steppers["lock1_at"].set(85)
         ed.stages.set("1")
         ed._stages()
@@ -3200,13 +3328,15 @@ def run_selftest(out_png, data_dir):
         pump()
         check("auto-start refused while this MT5 runs", [x["code"] for x in mp.check["problems"]] == ["mt5_running"]
               and not mp.start_btn.enabled)
-        scroll_shot("wizard_mt5_running", 0.45)
+        scroll_to(mp.auto_card)
+        shot("wizard_mt5_running")
         procs[:] = []
         mp.check_auto()
         pump()
         check("auto-start allowed when MT5 is closed and no chart has Dobby", mp.check["ok"])
         scroll_shot("wizard_mt5_installed", 0.0)
-        scroll_shot("wizard_mt5_ready", 0.45)
+        scroll_to(mp.auto_card)
+        shot("wizard_mt5_ready")
         ui.dialog_hook = dialog_shot("wizard_mt5_confirm")
         mp.do_start()
         ui.dialog_hook = None
@@ -3219,13 +3349,15 @@ def run_selftest(out_png, data_dir):
         check("startup ini: Dobby\\Dobby3_v304 + Dobby3_v304_web.set + XAUUSD M15 + Algo Trading on",
               ini == core.startup_ini_text("Dobby\\Dobby3_v304", core.WEB_PRESET_NAME, "XAUUSD"))
         check("the fake terminal64.exe lives in the temp folder", exe.startswith(data_dir))
-        scroll_shot("wizard_mt5_launched", 0.45)
+        scroll_to(mp.auto_card)
+        shot("wizard_mt5_launched")
         d2 = [t["data_dir"] for t in mp.terminals if t["data_dir"] != d1][0]
         mp.choose(d2)
         pump(until=lambda: not mp.busy, timeout=20)
         check("auto-start refused: Dobby already on a chart of MT5 #2",
               "dobby_attached" in [x["code"] for x in mp.check["problems"]] and not mp.start_btn.enabled)
-        scroll_shot("wizard_mt5_dobby_attached", 0.45)
+        scroll_to(mp.auto_card)
+        shot("wizard_mt5_dobby_attached")
         mp.choose(d1)
         pump(until=lambda: not mp.busy, timeout=20)
         mp.launched = launched[-1]
@@ -3285,8 +3417,20 @@ def run_selftest(out_png, data_dir):
         check("Start: remote file live=1 + the settings", "live=1" in rem and "InpLotsA=0.03" in rem and
               "InpLock1AtPct=85.0" in rem)
         pump(until=lambda: (ui.status or {}).get("remote", {}).get("live") is True, timeout=20)
+        ms = ui.screens["main"]
+        pump(until=lambda: ms.chart.points == 96 and ms.chart.offset is not None, timeout=20)
         pump(2.0)
         shot("main_running")
+        bars_path = os.path.join(common, da.BARS_NAME)
+        check("price line: 96 M15 bars from the TEMP dobby2_bars.csv, local times from the agent's offset",
+              ms.chart.points == 96 and bars_path.startswith(data_dir) and ms.chart.offset == 120,
+              "%d bars, offset %s" % (ms.chart.points, ms.chart.offset))
+        check("hero stamp: gold plate, state เทรดจริง", (ms.stamp.tone, ms.stamp.state) == ("gold", "เทรดจริง"))
+        sized_shot("main_running_large_window", 1280, 820)
+        sized_shot("main_running_small_window", 880, 600)
+        sized_shot("main_running_small_window_scrolled", 880, 600, 1.0)
+        default_size()
+        ms.scroll.to_top()
         hs = core.hero_state(ui.cfg, ui.status, ui.snap, time.time(), True)
         check("hero: Dobby กำลังเทรดจริง", hs["title"] == "Dobby กำลังเทรดจริง", hs["title"])
         demo_ea.stop()
@@ -3298,6 +3442,8 @@ def run_selftest(out_png, data_dir):
             ui.status, time.time()) > 300, timeout=15)
         pump(1.2)
         shot("main_waiting_mt5")
+        check("waiting for MT5: cinnabar ink stamp", ui.screens["main"].stamp.tone == "cinnabar",
+              str((ui.screens["main"].stamp.tone, ui.screens["main"].stamp.state)))
         demo_ea = core.DemoEA(common)
         demo_ea.trade_permitted = False
         demo_ea.live = True                      # the same running Dobby: live stays on

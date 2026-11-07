@@ -26,10 +26,20 @@ if not exist build mkdir build
 "%VPY%" "%HERE%dobby_app.py" --make-icon "%HERE%build\dobby.ico"
 if errorlevel 1 goto fail
 
-echo [4/5] PyInstaller --onefile --windowed --name DobbyApp
+rem The fonts (SIL OFL 1.1, their OFL.txt travels with them): Anuphan = static instances of the Google Fonts variable
+rem font (Anuphan[wght].ttf stays in the source tree only), Chakra Petch = the Google Fonts files. The app loads them
+rem from sys._MEIPASS\fonts for its own process only (dobby_app_ui.load_private_fonts).
+if not exist "%HERE%fonts\anuphan\Anuphan-Regular.ttf" goto nofonts
+if not exist "%HERE%fonts\chakrapetch\ChakraPetch-Medium.ttf" goto nofonts
+
+echo [4/5] PyInstaller --onefile --windowed --name DobbyApp (with fonts\anuphan + fonts\chakrapetch)
 "%VPY%" -m PyInstaller --noconfirm --clean --onefile --windowed --name DobbyApp ^
   --icon "%HERE%build\dobby.ico" --distpath "%HERE%dist" --workpath "%HERE%build\pyinstaller" ^
   --specpath "%HERE%build" --exclude-module PIL --exclude-module pytest --exclude-module numpy ^
+  --add-data "%HERE%fonts\anuphan\Anuphan-*.ttf;fonts\anuphan" ^
+  --add-data "%HERE%fonts\anuphan\OFL.txt;fonts\anuphan" ^
+  --add-data "%HERE%fonts\chakrapetch\ChakraPetch-*.ttf;fonts\chakrapetch" ^
+  --add-data "%HERE%fonts\chakrapetch\OFL.txt;fonts\chakrapetch" ^
   "%HERE%dobby_app.py"
 if errorlevel 1 goto fail
 
@@ -40,6 +50,10 @@ exit /b 0
 
 :nopython
 echo Python 3.8+ is needed to build the exe. Install it from https://www.python.org/downloads/
+exit /b 1
+
+:nofonts
+echo The fonts are missing: agent\fonts\anuphan\Anuphan-*.ttf and agent\fonts\chakrapetch\ChakraPetch-*.ttf
 exit /b 1
 
 :fail

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Dobby App graphics without Pillow: a tiny anti-aliased rasteriser (signed distance fields, one sample per pixel)
-that draws rounded-box corners, dots, rings, switch tracks and small marks as RGBA PNG bytes for Tk PhotoImages.
+that draws rounded-box corners, dots, rings, switch tracks, small marks, the hallmark stamp, soft sheet shadows and
+the price line as RGBA PNG bytes for Tk PhotoImages.
 
 Shapes are functions sd(x, y) -> signed distance in pixels (negative inside). Coverage = clamp(0.5 - sd, 0, 1), which
 gives a smooth one-pixel edge. Everything here is pure Python and testable without a window."""
@@ -12,6 +13,13 @@ import dobby_app_core as core
 def hex_rgb(c):
     c = c.lstrip("#")
     return (int(c[0:2], 16) / 255.0, int(c[2:4], 16) / 255.0, int(c[4:6], 16) / 255.0)
+
+
+def mix(a, b, t):
+    """Colour a over b at opacity t ("#rrggbb" in and out): the opaque colour a translucent paint gives on b."""
+    ra, ga, ba = hex_rgb(a)
+    rb, gb, bb = hex_rgb(b)
+    return "#%02X%02X%02X" % tuple(int(round((y + (x - y) * t) * 255)) for x, y in ((ra, rb), (ga, gb), (ba, bb)))
 
 
 # -- signed distance functions ----------------------------------------------------------------------------------------
@@ -49,6 +57,31 @@ def sd_rrect(x1, y1, x2, y2, r):
     return f
 
 
+_OK = (-0.9238795325, 0.3826834323, 0.4142135623)
+
+
+def sd_octagon(cx, cy, s, r):
+    """The hallmark plate: a regular octagon with flat sides, inside a square of side s, corners rounded by r."""
+    a = s / 2.0 - r                       # apothem of the inner (sharp) octagon
+    kx, ky, kz = _OK
+
+    def f(x, y):
+        px_, py_ = abs(x - cx), abs(y - cy)
+        d = min(kx * px_ + ky * py_, 0.0)
+        px_, py_ = px_ - 2.0 * d * kx, py_ - 2.0 * d * ky
+        d = min(-kx * px_ + ky * py_, 0.0)
+        px_, py_ = px_ + 2.0 * d * kx, py_ - 2.0 * d * ky
+        qx = px_ - max(-kz * a, min(kz * a, px_))
+        qy = py_ - a
+        return math.hypot(qx, qy) * (1.0 if qy >= 0 else -1.0) - r
+    return f
+
+
+def sd_outline(sd, w):
+    """A stroke of width w along the edge of another shape."""
+    return lambda x, y: abs(sd(x, y)) - w / 2.0
+
+
 def sd_poly(points):
     n = len(points)
 
@@ -75,7 +108,11 @@ class Raster(object):
         self.buf = [0.0] * (self.w * self.h * 4)
 
     def draw(self, sd, color, bbox=None, opacity=1.0):
-        r, g, b = hex_rgb(color) if isinstance(color, str) else color
+        """Composite a shape. color: "#rrggbb", an (r, g, b) tuple of 0..1 floats, or a function (x, y) -> such a
+        tuple (gradients)."""
+        shade = color if callable(color) else None
+        if shade is None:
+            r, g, b = hex_rgb(color) if isinstance(color, str) else color
         x0, y0, x1, y1 = bbox or (0, 0, self.w, self.h)
         x0, y0 = max(0, int(math.floor(x0))), max(0, int(math.floor(y0)))
         x1, y1 = min(self.w, int(math.ceil(x1))), min(self.h, int(math.ceil(y1)))
@@ -90,6 +127,8 @@ class Raster(object):
                 if a > 1.0:
                     a = 1.0
                 a *= opacity
+                if shade is not None:
+                    r, g, b = shade(x + 0.5, py)
                 k = (row + x) * 4
                 ia = 1.0 - a
                 buf[k] = r * a + buf[k] * ia
@@ -152,7 +191,7 @@ def pill_png(w, h, fill, border=None, bw=1):
     return img.png()
 
 
-def knob_png(d, fill="#FFFFFF", shadow="#0F172A"):
+def knob_png(d, fill="#FFFFFF", shadow="#28241A"):
     """Switch knob with a soft shadow below it."""
     img = Raster(d + 2, d + 3)
     c = d / 2.0 + 1
@@ -212,4 +251,162 @@ def rrect_png(w, h, r, fill, border=None, bw=1):
         img.draw(sd_rrect(bw, bw, w - bw, h - bw, r - bw), fill)
     else:
         img.draw(sd_rrect(0, 0, w, h, r), fill)
+    return img.png()
+
+
+# -- the hallmark (DESIGN.md "Hallmark"; geometry of docs/js/hallmark.js, viewBox 120) -----------------------------------
+GOLD_STOPS = ((0.0, "#EDD58F"), (0.48, "#D4AE52"), (1.0, "#A8822C"))   # gold-hi, gold, gold-lo
+ENGRAVE = "#6B4E10"
+_TAN = math.tan(math.pi / 8)       # a corner cut r along each edge = a circular corner of radius r / tan(22.5 deg)
+
+
+def _gradient(stops, x0, y0, size):
+    cols = [(t, hex_rgb(c)) for t, c in stops]
+
+    def shade(x, y):
+        t = max(0.0, min(1.0, ((x - x0) + (y - y0)) / (2.0 * size)))
+        for (ta, ca), (tb, cb) in zip(cols, cols[1:]):
+            if t <= tb:
+                u = (t - ta) / (tb - ta) if tb > ta else 0.0
+                return tuple(ca[i] + (cb[i] - ca[i]) * u for i in range(3))
+        return cols[-1][1]
+    return shade
+
+
+def stamp_png(size, tone="gold", ink=None, rule=True):
+    """The hallmark plate at `size` px: a rounded octagon with a double engraved outline (and the short rule between
+    the word and the state). tone gold = a struck gold plate with the faint sheen (trading live); any other tone = an
+    ink impression, outline only, in the colour `ink` (slate: stopped, cinnabar: waiting / offline / error).
+    The words are drawn by Tk on top (Anuphan)."""
+    n = int(size)
+    k = n / 120.0
+    img = Raster(n, n)
+    c = n / 2.0
+    gold = tone == "gold"
+    outer = sd_octagon(c, c, 114 * k, 13 * k / _TAN)
+    ring1 = sd_octagon(c, c, 101 * k, 10 * k / _TAN)
+    ring2 = sd_octagon(c, c, 92 * k, 8.5 * k / _TAN)
+    if gold:
+        drop = max(1.0, n / 92.0)
+        img.draw(sd_octagon(c, c + drop, 114 * k, 13 * k / _TAN), "#5A400A", opacity=0.25)
+        img.draw(outer, _gradient(GOLD_STOPS, 3 * k, 3 * k, 114 * k))
+        line = ENGRAVE
+        img.draw(sd_outline(ring1, max(0.9, 1.6 * k)), line, opacity=0.62)
+        img.draw(sd_outline(ring2, max(0.7, 0.9 * k)), line, opacity=0.62)
+        if rule:
+            img.draw(sd_rrect(44 * k, 68 * k, 76 * k, 68 * k + max(1.0, k), 0), line, opacity=0.45)
+    else:
+        line = ink or "#5E676D"
+        img.draw(outer, line, opacity=0.07 if tone != "cinnabar" else 0.06)
+        img.draw(sd_outline(ring1, max(1.2, 2.2 * k)), line)
+        img.draw(sd_outline(ring2, max(0.8, 1.1 * k)), line, opacity=0.55)
+        if rule:
+            img.draw(sd_rrect(44 * k, 68 * k, 76 * k, 68 * k + max(1.0, k), 0), line)
+    return img.png()
+
+
+def brand_png(size, fill="#D4AE52"):
+    """The small brand mark (header, window icon): the gold plate with one engraved ring; the "D" is Tk text."""
+    n = int(size)
+    k = n / 32.0
+    img = Raster(n, n)
+    c = n / 2.0
+    img.draw(sd_octagon(c, c, 28 * k, 4.2 * k / _TAN), _gradient(GOLD_STOPS, 2 * k, 2 * k, 28 * k)
+             if n >= 40 else fill)
+    img.draw(sd_outline(sd_octagon(c, c, 22.8 * k, 3.2 * k / _TAN), max(0.8, 1.1 * k)), ENGRAVE, opacity=0.8)
+    return img.png()
+
+
+# -- the hero sheet's soft, low shadow --------------------------------------------------------------------------------
+def shadow_alpha(d, sigma, alpha):
+    """Opacity of a blurred box shadow at signed distance d (px, positive outside the shadow's box)."""
+    return alpha * 0.5 * math.erfc(d / (sigma * 1.4142135623))
+
+
+def shadow_corner_png(rs, ext, sigma, alpha, which, shadow, bg):
+    """One opaque corner piece (ext + rs square, the background `bg` baked in) of a blurred rounded-box shadow whose
+    corner radius is rs; `ext` is how far the shadow reaches outside its box."""
+    s = int(ext + rs)
+    img = Raster(s, s)
+    sr, sg, sb = hex_rgb(shadow)
+    br, bg_, bb = hex_rgb(bg)
+    cx = float(s) if which in ("tl", "bl") else 0.0          # the corner circle's centre in piece coordinates
+    cy = float(s) if which in ("tl", "tr") else 0.0
+    buf = img.buf
+    for y in range(s):
+        for x in range(s):
+            qx = (cx - x - 0.5) if which in ("tl", "bl") else (x + 0.5 - cx)
+            qy = (cy - y - 0.5) if which in ("tl", "tr") else (y + 0.5 - cy)
+            d = math.hypot(max(qx, 0.0), max(qy, 0.0)) - rs
+            a = shadow_alpha(d, sigma, alpha)
+            k = (y * s + x) * 4
+            buf[k], buf[k + 1], buf[k + 2], buf[k + 3] = br + (sr - br) * a, bg_ + (sg - bg_) * a, bb + (sb - bb) * a, 1.0
+    return img.png()
+
+
+# -- the price line ---------------------------------------------------------------------------------------------------
+def polyline_png(w, h, points, width, color):
+    """An anti-aliased polyline (round joins) as a w x h PNG, transparent elsewhere. Coverage is the max over the
+    segments (no darker joints); each segment only visits its own bounding box, so long lines stay fast."""
+    w, h = int(w), int(h)
+    cov = [0.0] * (w * h)
+    half = width / 2.0
+    for (ax, ay), (bx, by) in zip(points[:-1], points[1:]):
+        x0 = max(0, int(math.floor(min(ax, bx) - half - 1)))
+        x1 = min(w, int(math.ceil(max(ax, bx) + half + 1)))
+        y0 = max(0, int(math.floor(min(ay, by) - half - 1)))
+        y1 = min(h, int(math.ceil(max(ay, by) + half + 1)))
+        dx, dy = bx - ax, by - ay
+        L = dx * dx + dy * dy
+        for y in range(y0, y1):
+            py = y + 0.5
+            row = y * w
+            for x in range(x0, x1):
+                pxx = x + 0.5
+                t = 0.0 if L == 0 else ((pxx - ax) * dx + (py - ay) * dy) / L
+                t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+                a = 0.5 + half - math.hypot(pxx - (ax + t * dx), py - (ay + t * dy))
+                if a > 0.0:
+                    if a > 1.0:
+                        a = 1.0
+                    if a > cov[row + x]:
+                        cov[row + x] = a
+    r, g, b = (int(v * 255) for v in hex_rgb(color))
+    out = bytearray(w * h * 4)
+    for i, a in enumerate(cov):
+        if a > 0.0:
+            k = i * 4
+            out[k], out[k + 1], out[k + 2], out[k + 3] = r, g, b, int(a * 255 + 0.5)
+    return core.png_bytes(w, h, bytes(out))
+
+
+def tri_png(size, up, fill, ring="#FFFFFF"):
+    """A trade mark on the price line: a small triangle (up = buy, down = sell) with a thin halo."""
+    img = Raster(size, size)
+    s = float(size)
+    pts = [(s * 0.5, s * 0.16), (s * 0.88, s * 0.80), (s * 0.12, s * 0.80)] if up else \
+        [(s * 0.12, s * 0.20), (s * 0.88, s * 0.20), (s * 0.5, s * 0.84)]
+    tri = sd_poly(pts)
+    img.draw(lambda x, y: tri(x, y) - 1.4, ring)
+    img.draw(tri, fill)
+    return img.png()
+
+
+def diamond_png(size, color, fill="#FFFFFF", bw=1.6):
+    """The ladder's trigger mark: a small diamond outline."""
+    img = Raster(size, size)
+    c = size / 2.0
+    r = c - 1.0
+    dia = sd_poly([(c, c - r), (c + r, c), (c, c + r), (c - r, c)])
+    img.draw(dia, color)
+    img.draw(lambda x, y: dia(x, y) + bw, fill)
+    return img.png()
+
+
+def tick_png(size, color, w=None):
+    """A bare tick (the quiet "ok" mark of lists)."""
+    img = Raster(size, size)
+    s = float(size)
+    img.draw(sd_polyline([(s * 0.18, s * 0.53), (s * 0.40, s * 0.74), (s * 0.82, s * 0.30)], w or max(1.6, s * 0.13)),
+             color)
     return img.png()

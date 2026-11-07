@@ -616,6 +616,7 @@ def summarize_status(status, now):
         "v_balance": num(v.get("balance")), "v_start": num(v.get("start")),
         "day_pnl": day_pnl, "day_start": day_start, "cap_pct": cap_pct, "cap_amount": cap_amount, "cap_used": used,
         "cap_hit": bool(v.get("day_cap_hit")), "positions": positions,
+        "trades": num(v.get("trades")), "wins": num(v.get("wins")),
         "last_event": str(st.get("last_event") or ""), "ea_error": str(st.get("last_error") or ""),
         "control_mode": str(((st.get("control") or {}) if isinstance(st.get("control"), dict) else {}).get("mode")
                             or ""),
@@ -658,7 +659,7 @@ def build_checklist(cfg, status, snap, now, running):
     elif not ea_on:
         add("ea", "bad", "Dobby ใน MT5 ไม่ส่งสัญญาณ", "ล่าสุด %s: MT5 ปิดอยู่ หรือ Dobby ถูกเอาออกจากกราฟ" % ago_th(age))
     else:
-        add("ea", "ok", "Dobby ทำงานอยู่ใน MT5", "%s %s · สัญญาณล่าสุด %s" % (
+        add("ea", "ok", "Dobby ทำงานอยู่ใน MT5", "%s %s ส่งสัญญาณล่าสุด %s" % (
             (st.get("ea") or "Dobby"), st.get("ea_version") or "", ago_th(age)))
     # 4 Algo Trading
     acc = (st or {}).get("account") if isinstance((st or {}).get("account"), dict) else {}
@@ -716,7 +717,7 @@ def mt5_steps(ea_name=EA_CHART_NAME, symbol="XAUUSD"):
     ea = os.path.splitext(ea_name or EA_CHART_NAME)[0]
     return [
         ("open", "เปิด MT5 และล็อกอิน", "ใช้บัญชีเทรดที่จะให้ Dobby เทรด"),
-        ("navigator", "Navigator → Refresh", "กด Ctrl+N คลิกขวาที่ Expert Advisors แล้วเลือก Refresh"),
+        ("navigator", "รีเฟรชรายชื่อใน Navigator", "กด Ctrl+N คลิกขวาที่ Expert Advisors แล้วเลือก Refresh"),
         ("drag", "ลาก %s ใส่กราฟ %s M15" % (ea, symbol),
          "เปิดกราฟ %s กรอบเวลา M15 (กราฟเดียว) แล้วลาก %s จากโฟลเดอร์ Dobby ไปวางบนกราฟ" % (symbol, ea)),
         ("load", "โหลดพรีเซ็ต %s" % WEB_PRESET_NAME, "แท็บ Inputs กด Load แล้วเลือกไฟล์นี้"),
@@ -866,7 +867,8 @@ class AppAgent(da.Agent):
                 "web_version": self.web_version, "web_desired": self.web_desired, "rejected": list(self.rejected),
                 "reject_details": list(self.reject_details), "warnings": list(self.warnings),
                 "last_error": self.last_error, "fail_count": self.fail_count, "backoff": self.backoff,
-                "last_ok_at": self.last_ok_at, "time": self.clock(), "phase": "running"}
+                "last_ok_at": self.last_ok_at, "time": self.clock(), "phase": "running",
+                "offset": self.effective_offset()}
 
 
 class AgentRunner(object):
@@ -1000,7 +1002,7 @@ class StatusWatcher(object):
         self.stop_event.set()
 
     def _run(self):
-        jkey = None
+        jkey = bkey = None
         while not self.stop_event.is_set():
             try:
                 common = self.get_common()
@@ -1016,9 +1018,38 @@ class StatusWatcher(object):
                 if key and key != jkey:
                     self.post(("journal", journal_tail(jp, 8)))
                 jkey = key
+                bp = os.path.join(common, da.BARS_NAME)
+                try:
+                    s = os.stat(bp)
+                    key = (bp, s.st_size, s.st_mtime)
+                except OSError:
+                    key = None
+                if key != bkey:
+                    self.post(("bars", read_bars_tail(bp) if key else None))
+                bkey = key
             except Exception as e:  # pragma: no cover - never crash the watcher
                 APPLOG.debug("status watcher: %s", e)
             self.stop_event.wait(self.every)
+
+
+def read_bars_tail(path, max_bytes=64 * 1024):
+    """The end of the EA's dobby2_bars.csv (read only; enough for 24 h of M15 bars). The first line of the result
+    is a header or a partial row: dobby_agent.parse_bars_text skips it."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            return f.read().decode("utf-8-sig", "replace")
+    except OSError:
+        return None
+
+
+def bars_for_chart(text, offset_min):
+    """(bars, offset) for the price line: with the agent's server offset the times are real (UTC); without it the
+    bars are parsed with offset 0 and the chart shows no time axis (offset None)."""
+    bars = da.parse_bars_text(text, offset_min if offset_min is not None else 0)
+    return bars, (offset_min if bars and offset_min is not None else None)
 
 
 class AppContext(object):
@@ -1424,13 +1455,60 @@ def settings_line(s):
     return " · ".join(parts)
 
 
+def settings_sentence(s):
+    """The settings as one plain Thai sentence (shown instead of an "A · B · C" string)."""
+    lots = settings_lots(s)
+    on = [name for key, name, _, _ in MODULES[:3] if s.get("use_" + key)]
+    main = [lots[k] for k, _, _, _ in MODULES[:3] if s.get("use_" + k)] or [lots["a"]]
+    parts = []
+    if not on:
+        parts.append("ปิดสูตรหลักทั้งหมด")
+    elif len(set(main)) <= 1:
+        parts.append("เปิด %d สูตร (%s) ล็อต %.2f%s" % (len(on), ", ".join(on), main[0],
+                                                     " ทุกสูตร" if len(on) > 1 else ""))
+    else:
+        parts.append("เปิด %d สูตร ล็อต %s" % (len(on), ", ".join(
+            "%s %.2f" % (name.replace("_new", ""), lots[k]) for k, name, _, _ in MODULES[:3] if s.get("use_" + k))))
+    b = da.to_num(s.get("balance"))
+    if b:
+        parts.append("จากทุน %s USD" % format(b, ",.0f"))
+    stages = int(_num(s.get("lock_stages"), 0))
+    if stages >= 2:
+        parts.append("ล็อกกำไร 2 ชั้น (%s→%s และ %s→%s)" % (pct_text(s["lock1_at"]), pct_text(s["lock1_to"]),
+                                                          pct_text(s["lock_at"]), pct_text(s["lock_to"])))
+    elif stages == 1:
+        parts.append("ล็อกกำไร 1 ชั้น (%s→%s)" % (pct_text(s["lock_at"]), pct_text(s["lock_to"])))
+    else:
+        parts.append("ไม่ล็อกกำไร")
+    parts.append("เปิดสูตรเอเชีย ล็อต %.2f" % lots["asia"] if s.get("use_asia") else "ปิดสูตรเอเชีย")
+    cap = _num(s.get("daily_cap"), 10.0)
+    return " ".join(parts) + " และหยุดเปิดไม้เมื่อขาดทุนถึง %s%% ต่อวัน" % pct_text(cap)
+
+
+def settings_chips(s):
+    """A few short chips for the same settings: [(text, tone)]."""
+    out = []
+    for it in settings_summary(s):
+        if it["key"] == "strategies":
+            out.append((it["title"].replace("สูตรเปิด", "สูตร"), None))
+        elif it["key"] == "lot":
+            out.append((it["title"] if it["title"] != "ล็อตแยกสูตร" else "ล็อต " + it["sub"].replace(" · ", ", "), None))
+        elif it["key"] == "lock":
+            out.append((it["title"], "gold" if it["title"] != "ไม่ล็อกกำไร" else None))
+        elif it["key"] == "asia":
+            out.append((it["title"], None))
+        else:
+            out.append(("หยุดที่ %s%%/วัน" % pct_text(_num(s.get("daily_cap"), 10.0)), None))
+    return out
+
+
 # -- lot calculator (SPEC 5.1, research r37: 0.03 lot on a 280 balance, 2025-01 .. 2026-10) ---------------------------
 CALC_BASE_BALANCE, CALC_BASE_LOT = 280.0, 0.03
 HORIZON30 = [(0.03, 151.79, -151.36, 487.86, 28.7), (0.04, 135.40, -229.53, 663.16, 40.2),
              (0.05, 132.42, -292.65, 776.21, 41.4), (0.06, 90.37, -299.85, 899.49, 50.6),
              (0.08, 31.98, -301.55, 1012.44, 60.9)]
 DAILY_BASE = {"losing_pct": 41, "mean": -30.6, "median": -26.2, "p10": -56.4, "p5": -65.3, "worst": -96.9}
-RISK_DISCLAIMER = "ผลจำลองย้อนหลัง ไม่ใช่การคาดการณ์ · ตลาดแบบปี 2025 แย่กว่าปี 2026 มาก"
+RISK_DISCLAIMER = "ตัวเลขนี้เป็นผลจำลองย้อนหลัง ไม่ใช่การคาดการณ์ และตลาดแบบปี 2025 แย่กว่าปี 2026 มาก"
 
 
 def _interp_row(eq):
@@ -1474,18 +1552,18 @@ def risk_estimate(balance, lot, cap_pct=10.0):
         med, p10, p90, half = row
         out.update(median=med * scale, p10=p10 * scale, p90=p90 * scale, half_pct=half)
     if kind in ("in", "near"):
-        out["text"] = "ผลจำลอง 30 วัน%s: กลาง ๆ %s · กรณีแย่ (1 ใน 10) %s · โอกาสทุนลดเหลือครึ่ง %s%.0f%%" % (
+        out["text"] = "ผลจำลอง 30 วัน%s: กลาง ๆ %s กรณีแย่ (1 ใน 10) %s และโอกาสทุนลดเหลือครึ่ง %s%.0f%%" % (
             " (โดยประมาณ)" if kind == "near" else "", usd(out["median"]), usd(out["p10"]),
             "~" if kind == "near" else "", out["half_pct"])
     elif kind == "below":
-        out["text"] = "ล็อตนี้เล็กกว่าระดับที่ทดสอบ (เสี่ยงน้อยกว่า) · วันที่ขาดทุนเฉลี่ยราว %s" % usd(out["daily_mean"])
+        out["text"] = "ล็อตนี้เล็กกว่าระดับที่ทดสอบ (เสี่ยงน้อยกว่า) วันที่ขาดทุนเฉลี่ยราว %s" % usd(out["daily_mean"])
     else:
-        out["text"] = "ล็อตนี้เสี่ยงกว่าที่ทดสอบ (เกินล็อต 0.08 ต่อทุน 280) · ขาดทุนแรงได้ แนะนำลดล็อต"
+        out["text"] = "ล็อตนี้เสี่ยงกว่าที่ทดสอบ (เกินล็อต 0.08 ต่อทุน 280) ขาดทุนแรงได้ แนะนำลดล็อต"
     det = ["เทียบเท่าล็อต %.3f ที่ทุน 280 (ช่วงที่ทดสอบ 0.03 ถึง 0.08)" % eq]
     if row is not None and kind != "below":
-        det.append("30 วัน: ดี (1 ใน 10) %s · กลาง ๆ %s · แย่ (1 ใน 10) %s" % (
+        det.append("ใน 30 วัน กรณีดี (1 ใน 10) %s กลาง ๆ %s และกรณีแย่ (1 ใน 10) %s" % (
             usd(out["p90"]), usd(out["median"]), usd(out["p10"])))
-    det.append("วันที่ขาดทุนมีราว %d%% ของวัน · เฉลี่ย %s · แย่สุดที่เคยเจอ %s" % (
+    det.append("วันที่ขาดทุนมีราว %d%% ของวัน เฉลี่ย %s และแย่สุดที่เคยเจอ %s" % (
         DAILY_BASE["losing_pct"], usd(out["daily_mean"]), usd(out["daily_worst"])))
     if cap_pct:
         det.append("Dobby หยุดเองเมื่อขาดทุนถึง %s%% ของทุนต้นวัน (≈ %s)" % (pct_text(cap_pct),
@@ -2098,10 +2176,15 @@ def hero_state(cfg, status, snap, now, running, stopping=False, phase=None, lock
     snap = snap or {}
     err = (snap.get("last_error") or "") if running else (agent_error or "")
 
-    def out(tone, title, text, action=None, label=None):
-        return {"tone": tone, "title": title, "text": text, "action": action, "action_label": label}
+    def out(tone, title, text, action=None, label=None, stamp=None):
+        """stamp: the hallmark (tone gold | slate | cinnabar, state word); by default from the tone."""
+        if stamp is None:
+            stamp = {"good": ("gold", "เทรดจริง"), "bad": ("cinnabar", "ต้องแก้"), "warn": ("cinnabar", "รอ MT5"),
+                     "info": ("slate", "ตั้งค่า"), "idle": ("slate", "หยุดอยู่")}[tone]
+        return {"tone": tone, "title": title, "text": text, "action": action, "action_label": label,
+                "stamp": stamp}
     if stopping:
-        return out("idle", "กำลังหยุด…", "รอให้รอบสุดท้ายจบ แอปไม่เขียนไฟล์ของ Dobby แล้ว")
+        return out("idle", "กำลังหยุด…", "รอให้รอบสุดท้ายจบ แอปไม่เขียนไฟล์ของ Dobby แล้ว", stamp=("slate", "กำลังหยุด"))
     if not config_complete(cfg):
         if not cfg.get("refresh_token"):
             return out("info", "ยังไม่ได้เข้าสู่ระบบ", "เข้าสู่ระบบด้วยบัญชีเว็บ Dobby แล้วเลือกบอท", "wizard",
@@ -2119,8 +2202,8 @@ def hero_state(cfg, status, snap, now, running, stopping=False, phase=None, lock
             return out("bad", "ต้องเข้าสู่ระบบใหม่", "การเข้าสู่ระบบหมดอายุ: เข้าสู่ระบบอีกครั้งแล้วกดเริ่ม", "signin",
                        "เข้าสู่ระบบ")
         if not ea_on:
-            return out("idle", "Dobby หยุดอยู่", "กด เริ่มทำงาน Dobby เพื่อเชื่อมกับเว็บ · ยังไม่พบ Dobby ทำงานใน MT5",
-                       "mt5", "เชื่อม MT5")
+            return out("idle", "Dobby หยุดอยู่", "ยังไม่พบ Dobby ทำงานใน MT5 เชื่อม MT5 ก่อน แล้วกด เริ่มทำงาน Dobby "
+                       "เพื่อเชื่อมกับเว็บ", "mt5", "เชื่อม MT5")
         return out("idle", "Dobby หยุดอยู่", "กด เริ่มทำงาน Dobby เพื่อให้บอทรับคำสั่งจากเว็บและส่งข้อมูลขึ้นเว็บ")
     if err.startswith("login:"):
         return out("bad", "ต้องเข้าสู่ระบบใหม่", "แอปเข้าสู่ระบบเว็บไม่ได้ จึงรับคำสั่งจากเว็บไม่ได้", "signin",
@@ -2137,21 +2220,24 @@ def hero_state(cfg, status, snap, now, running, stopping=False, phase=None, lock
     if acc.get("trade_permitted") is not True:
         return out("warn", "รอ MT5", "ปุ่ม Algo Trading ใน MT5 ยังไม่เปิด: กดให้เป็นสีเขียว", "algo_help", "ดูวิธีเปิด")
     if err.startswith("network:"):
-        return out("warn", "เชื่อมต่อเว็บไม่ได้", "ตรวจอินเทอร์เน็ต แอปจะลองใหม่เอง (Dobby ใน MT5 ทำงานต่อตามคำสั่งล่าสุด)")
+        return out("warn", "เชื่อมต่อเว็บไม่ได้", "ตรวจอินเทอร์เน็ต แอปจะลองใหม่เอง (Dobby ใน MT5 ทำงานต่อตามคำสั่งล่าสุด)",
+                   stamp=("cinnabar", "ออฟไลน์"))
     if err:
         t, d = explain_error(err)
         return out("bad", t, d)
     if "live_not_allowed_locally" in (snap.get("rejected") or []):
         return out("warn", "เว็บสั่งเปิดเทรดจริง แต่เครื่องนี้ไม่อนุญาต", "เปิดได้ที่ ตั้งค่า > ความปลอดภัย", "safety",
-                   "เปิดความปลอดภัย")
+                   "เปิดความปลอดภัย", stamp=("slate", "ไม่เทรดจริง"))
     if flags.get("live_locked"):
         how = "เปิดได้จากเว็บ (สวิตช์ เทรดจริง)" if remote.get("live_enabled") else \
             "ตั้ง InpAllowLive = true ใน Dobby หรือใช้พรีเซ็ต %s" % WEB_PRESET_NAME
-        return out("warn", "Dobby ยังไม่เปิดเทรดจริง", how, "web", "เปิดเว็บ")
+        return out("warn", "Dobby ยังไม่เปิดเทรดจริง", how, "web", "เปิดเว็บ", stamp=("slate", "ไม่เทรดจริง"))
     if str(ctl.get("mode") or "run").lower() == "pause":
-        return out("warn", "Dobby หยุดชั่วคราว", "เว็บสั่งหยุดไว้: บอทไม่เปิดไม้ใหม่ สั่งทำงานต่อได้บนเว็บ", "web", "เปิดเว็บ")
+        return out("warn", "Dobby หยุดชั่วคราว", "เว็บสั่งหยุดไว้: บอทไม่เปิดไม้ใหม่ สั่งทำงานต่อได้บนเว็บ", "web", "เปิดเว็บ",
+                   stamp=("slate", "พักอยู่"))
     if virt.get("day_cap_hit"):
-        return out("warn", "วันนี้หยุดเทรดแล้ว", "ขาดทุนถึงเพดานรายวัน Dobby จะเริ่มเทรดใหม่เองวันพรุ่งนี้")
+        return out("warn", "วันนี้หยุดเทรดแล้ว", "ขาดทุนถึงเพดานรายวัน Dobby จะเริ่มเทรดใหม่เองวันพรุ่งนี้",
+                   stamp=("slate", "พักวันนี้"))
     mode = str(acc.get("mode") or "").upper()
     title = "Dobby กำลังเทรดจริง" if mode == "REAL" else "Dobby กำลังเทรด (บัญชีทดลอง)" if mode == "DEMO" else \
         "Dobby กำลังเทรด"
@@ -2162,7 +2248,8 @@ def hero_state(cfg, status, snap, now, running, stopping=False, phase=None, lock
         bits.append("ส่งข้อมูลขึ้นเว็บล่าสุด %s" % ago_th(now - snap["last_ok_at"]))
     elif not snap:
         bits.append("กำลังเชื่อมต่อเว็บ…")
-    return out("good", title, " · ".join(bits) or "ทุกอย่างพร้อม")
+    word = "เทรดจริง" if mode == "REAL" else "ทดลอง" if mode == "DEMO" else "ทำงาน"
+    return out("good", title, " และ".join(bits) or "ทุกอย่างพร้อม", stamp=("gold", word))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -2421,7 +2508,8 @@ class DemoEA(object):
         self.clock = clock
         self.thread = None
         self.stop_event = threading.Event()
-        self.profit = 4.2
+        self.profit = 11.0
+        self._bars_at = None
         self.balance = balance
         self.trade_permitted = True
         self.live_locked = None             # None: follow the remote file (live=1 -> unlocked)
@@ -2471,9 +2559,11 @@ class DemoEA(object):
         day = server[:10]
         e = self.effective
         lots = e["InpLotsC5G"]
-        pos = {"open": True, "module": "C5G", "ticket": 4123, "side": "BUY", "lots": lots, "open_price": 2512.30,
-               "sl": 2505.90, "tp": 2521.90, "profit": round(self.profit, 2), "swap": 0.0,
-               "open_time": day + " 09:45:00"} if self.position else {"open": False, "module": "C5G"}
+        opened = da.epoch_to_naive((int(now + self.offset_min * 60) // 900) * 900 - 9 * 900)
+        pos = {"open": True, "module": "C5G", "ticket": 4123, "side": "BUY", "lots": lots, "open_price": 4012.30,
+               "sl": 4005.90, "tp": 4021.90, "profit": round(self.profit, 2), "swap": 0.0,
+               "open_time": opened.strftime("%Y.%m.%d %H:%M:%S")} if self.position else {"open": False,
+                                                                                            "module": "C5G"}
         locked = (not self.live) if self.live_locked is None else self.live_locked
         mods = [{"module": name, "enabled": bool(e[use_k]), "lots": e[lot_k]} for _, name, use_k, lot_k in MODULES]
         return {
@@ -2497,7 +2587,7 @@ class DemoEA(object):
                        "waiting": "", "live": self.live, "rejects": "",
                        "ceilings": {"max_lots": PRESET_MAX_LOTS, "max_cap_pct": PRESET_MAX_CAP},
                        "effective": dict(e)},
-            "last_event": "%s 09:45:00 OPEN C5G BUY %.2f @ 2512.30 SL 2505.90 TP 2521.90" % (day, lots),
+            "last_event": "%s 09:45:00 OPEN C5G BUY %.2f @ 4012.30 SL 4005.90 TP 4021.90" % (day, lots),
             "last_error": "",
         }
 
@@ -2511,16 +2601,49 @@ class DemoEA(object):
             with open(jp, "w", encoding="utf-8", newline="") as f:
                 f.write(da.JOURNAL_HEADER + "\r\n")
                 f.write("%s 00:05:00,START,ALL,NONE,0.00,,,,0.00,1032.40,0,v3.04 demo\r\n" % day)
-                f.write("%s 08:15:00,OPEN,A_new,SELL,0.03,2519.10,2525.10,2510.10,0.00,1032.40,0,demo\r\n" % day)
-                f.write("%s 08:58:00,LOCK1,A_new,SELL,0.03,2511.40,2511.45,2510.10,0.00,1032.40,0,stage-1 85->83\r\n"
+                f.write("%s 08:15:00,OPEN,A_new,SELL,0.03,4019.10,4025.10,4010.10,0.00,1032.40,0,demo\r\n" % day)
+                f.write("%s 08:58:00,LOCK1,A_new,SELL,0.03,4011.40,4011.45,4010.10,0.00,1032.40,0,stage-1 85->83\r\n"
                         % day)
-                f.write("%s 09:02:00,CLOSE,A_new,SELL,0.03,2510.10,,,13.50,1045.90,0,reason=tp\r\n" % day)
-                f.write("%s 09:45:00,OPEN,C5G,BUY,0.03,2512.30,2505.90,2521.90,0.00,1045.90,0,demo\r\n" % day)
+                f.write("%s 09:02:00,CLOSE,A_new,SELL,0.03,4010.10,,,13.50,1045.90,0,reason=tp\r\n" % day)
+                f.write("%s 09:45:00,OPEN,C5G,BUY,0.03,4012.30,4005.90,4021.90,0.00,1045.90,0,demo\r\n" % day)
         if self._journal_add:
             with open(jp, "a", encoding="utf-8", newline="") as f:
                 for ev, det in self._journal_add:
                     f.write("%s,%s,ALL,NONE,0.00,,,,0.00,1045.90,0,%s\r\n" % (st["server_time"], ev, det))
             self._journal_add = []
+
+        self._write_bars(self.clock())
+
+    def _write_bars(self, now):
+        """dobby2_bars.csv like the EA's: the last 24 h of M15 bars (server time), close and VWAP, rewritten when a
+        new bar starts. The shape is the same every run (fixed seed), ending near 4,016."""
+        bar = (int(now + self.offset_min * 60) // 900) * 900          # server-time epoch of the current bar
+        if bar == self._bars_at:
+            return
+        self._bars_at = bar
+        rnd = random.Random(20261107)
+        closes, p = [], 3962.0
+        for i in range(96):
+            p += rnd.gauss(0.55, 3.6) + (6.0 if i in (21, 22) else 0.0) - (5.0 if i in (47, 48) else 0.0)
+            closes.append(p)
+        shift = 4015.98 - closes[-1]
+        lines = ["bar_time,decision_time,close,rsi,atr,sl_dist,h4_close,h4_ema,h4_ema_prev,trend,bull,bear,signal,"
+                 "note,vwap,vwap_touch,decision"]
+        tot = cnt = 0.0
+        day = None
+        for i, c in enumerate(closes):
+            t = da.epoch_to_naive(bar - (95 - i) * 900).strftime("%Y.%m.%d %H:%M:%S")
+            if t[:10] != day:
+                day, tot, cnt = t[:10], 0.0, 0.0
+            c += shift
+            tot, cnt = tot + c, cnt + 1
+            lines.append("%s,%s,%.2f,51.0,6.5,6.0,%.2f,%.2f,%.2f,1,0,0,0,,%.3f,0,demo" % (
+                t, t, c, c, c - 20, c - 21, tot / cnt))
+        os.makedirs(self.common, exist_ok=True)
+        tmp = os.path.join(self.common, da.BARS_NAME + ".tmp")
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write("\r\n".join(lines) + "\r\n")
+        os.replace(tmp, os.path.join(self.common, da.BARS_NAME))
 
     def start(self, every=4.0):
         def run():
@@ -2555,28 +2678,41 @@ def _mix(a, b, t):
     return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(len(a)))
 
 
+def _octagon_d(x, y, a, r):
+    """Signed distance to a flat-sided regular octagon centred on 0 (apothem a, corners rounded by r)."""
+    kx, ky, kz = -0.9238795325, 0.3826834323, 0.4142135623
+    a -= r
+    px_, py_ = abs(x), abs(y)
+    d = min(kx * px_ + ky * py_, 0.0)
+    px_, py_ = px_ - 2.0 * d * kx, py_ - 2.0 * d * ky
+    d = min(-kx * px_ + ky * py_, 0.0)
+    px_, py_ = px_ + 2.0 * d * kx, py_ - 2.0 * d * ky
+    qx, qy = px_ - max(-kz * a, min(kz * a, px_)), py_ - a
+    return math.hypot(qx, qy) * (1.0 if qy >= 0 else -1.0) - r
+
+
 def icon_rgba(size):
-    """The Dobby App icon: a blue rounded tile, a white "D" and a gold dot. 4x4 supersampled."""
-    top, bottom = (42, 92, 214), (29, 67, 168)
-    white, gold = (255, 255, 255), (236, 198, 94)
+    """The Dobby App icon: the hallmark brand mark - a struck gold octagon plate with one engraved ring and an
+    engraved "D" (DESIGN.md: fine gold #D4AE52, engrave #6B4E10). 4x4 supersampled."""
+    hi, mid, lo = (237, 213, 143), (212, 174, 82), (168, 130, 44)
+    engrave = (107, 78, 16)
     out = bytearray(size * size * 4)
     n = 4
-    r_tile = 0.22
 
-    def tile_in(x, y):
-        dx = max(abs(x - 0.5) - (0.5 - r_tile), 0.0)
-        dy = max(abs(y - 0.5) - (0.5 - r_tile), 0.0)
-        return dx * dx + dy * dy <= r_tile * r_tile
+    def plate(x, y):
+        t = max(0.0, min(1.0, (x + y) / 2.0))
+        return _mix(hi, mid, t / 0.48) if t < 0.48 else _mix(mid, lo, (t - 0.48) / 0.52)
 
-    def d_in(x, y):
-        if 0.27 <= x <= 0.41 and 0.22 <= y <= 0.78:
+    def d_in(x, y):                       # the "D": a stem and a bowl, as strokes
+        w = 0.085
+        if 0.33 <= x <= 0.33 + w and 0.28 <= y <= 0.72:
             return True
-        cx, cy = 0.41, 0.5
-        dist = math.hypot(x - cx, (y - cy) * 1.0)
-        return x >= cx and 0.145 <= dist <= 0.28
-
-    def dot_in(x, y):
-        return math.hypot(x - 0.74, y - 0.26) <= 0.075
+        if 0.33 <= x <= 0.52 and (0.28 <= y <= 0.28 + w or 0.72 - w <= y <= 0.72):
+            return True
+        if x >= 0.52:
+            dist = math.hypot(x - 0.52, y - 0.5)
+            return 0.22 - w <= dist <= 0.22
+        return False
 
     for py in range(size):
         for px in range(size):
@@ -2585,14 +2721,16 @@ def icon_rgba(size):
                 for sx in range(n):
                     x = (px + (sx + 0.5) / n) / size
                     y = (py + (sy + 0.5) / n) / size
-                    if not tile_in(x, y):
+                    d = _octagon_d(x - 0.5, y - 0.5, 0.47, 0.11)
+                    if d > 0:
                         continue
-                    if dot_in(x, y):
-                        c = gold
-                    elif d_in(x, y):
-                        c = white
+                    ring = abs(_octagon_d(x - 0.5, y - 0.5, 0.395, 0.08)) <= max(0.012, 0.6 / size)
+                    if d_in(x, y):
+                        c = engrave
+                    elif ring:
+                        c = _mix(plate(x, y), engrave, 0.7)
                     else:
-                        c = _mix(top, bottom, y)
+                        c = plate(x, y)
                     acc[0] += c[0]
                     acc[1] += c[1]
                     acc[2] += c[2]
