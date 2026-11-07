@@ -79,8 +79,9 @@ audit      id bigserial pk, ts timestamptz not null default now(), actor uuid, b
 news_events id bigserial pk, ts_utc timestamptz not null, name text not null, tier int not null default 1, note text,
            unique (ts_utc, name)
 ```
-Feature batch 2026-11-07 (definitions in 9.1 / 9.2 / 9.6 / 9.7): tables `bars`, `cash_flows`, `trade_notes`,
-`push_subscriptions`, and `bots.offline_notified_at timestamptz` (set only by the push job, see 2.4).
+Feature batch 2026-11-07 (definitions in 9.1 / 9.2 / 9.6): tables `bars`, `cash_flows`, `trade_notes`. (The push
+objects of 9.7, `push_subscriptions`, `bots.offline_notified_at` and `register_push_subscription`, were removed on
+2026-11-08; schema.sql drops them if an earlier run created them.)
 
 ### 2.2 Functions (RPC, callable by `authenticated`)
 - `is_approved() returns boolean` — caller has a profile with approved and not disabled.
@@ -98,11 +99,6 @@ Feature batch 2026-11-07 (definitions in 9.1 / 9.2 / 9.6 / 9.7): tables `bars`, 
   — admin only (friends' bot details come from the admin select policies, see 2.3).
 - `register_bot(p_name text, p_desired jsonb) returns uuid` — approved caller; inserts bots + bot_control
   (version 1, desired = p_desired). Used by the agent on first setup.
-- `register_push_subscription(p_endpoint text, p_p256dh text, p_auth text, p_ua text default null,
-  p_events text[] default null) returns bigint` (added 2026-11-07, SPEC 9.7) — approved caller; upsert by endpoint for
-  the caller. A browser that another account subscribed before moves to the caller (a plain upsert would be refused by
-  RLS). p_events null keeps the caller's earlier choice (new rows: all four). Errors `not_approved`,
-  `subscription_invalid` (endpoint must be https, keys 1..300 chars), `events_invalid`.
 
 ### 2.3 Row Level Security
 - profiles: select own row; admin selects all. No direct insert/update/delete (RPCs only).
@@ -118,8 +114,7 @@ Feature batch 2026-11-07 (definitions in 9.1 / 9.2 / 9.6 / 9.7): tables `bars`, 
 - bars: approved owner of the bot select / insert / update (update only for PostgREST upserts); admin select. No
   client delete (cascade only).
 - cash_flows, trade_notes: approved owner of the bot select / insert / update / delete; admin select.
-- push_subscriptions: own rows only (user_id = auth.uid(), approved, not disabled) for every command; no admin read.
-- Unapproved and disabled users see nothing in any of the four batch tables (not even their own rows).
+- Unapproved and disabled users see nothing in any of the three batch tables (not even their own rows).
 - Storage bucket `downloads` (private): approved users read; admin insert/update/delete.
 
 ### 2.4 Triggers
@@ -138,9 +133,6 @@ Feature batch 2026-11-07 (definitions in 9.1 / 9.2 / 9.6 / 9.7): tables `bars`, 
   insert/update/delete -> audit row (action 'cash_flow_insert|update|delete', bot_id = the row's bot, before/after =
   the row). The owner and the admin read these rows through the existing audit policy (bot_id of an owned bot).
 - `trade_notes` before insert/update: updated_at = now(), updated_by = auth.uid() (client values are ignored).
-- `bots` before insert/update (bots_before): besides the last_seen stamp, `offline_notified_at` is cleared whenever
-  last_seen moves; client roles can never set it (it keeps its old value; null on insert). Only postgres (the pg_cron
-  job of push.sql) sets it.
 
 ### 2.5 Realtime
 `alter publication supabase_realtime add table bot_status, bot_control, bots, journal;` (guarded, idempotent).
@@ -416,10 +408,10 @@ The agent adds the EA's recent M15 bars to `bots.agent_state.bars` (no DB change
 are converted with the confirmed server offset; while the offset is unknown, `bars` is omitted. The website draws the
 price line and places the journal's OPEN / CLOSE rows on it. Demo mode generates synthetic bars.
 
-## 9. Feature batch 2026-11-07 (trade detail, cash flows, auto blackouts, health, summary, risk, notes, push)
+## 9. Feature batch 2026-11-07 (trade detail, cash flows, auto blackouts, health, summary, risk, notes)
 No EA change. Agent 1.2.0 + DobbyApp rebuild, new tables in schema.sql (idempotent, same RLS pattern: the approved owner
-writes, the admin reads everything, members read only their own), website pages. Push notifications need a one-time
-Supabase step by the owner (9.7).
+writes, the admin reads everything, members read only their own), website pages. Push notifications (9.7) were built
+and then removed on 2026-11-08.
 
 ### 9.1 Price history: table `bars`
 ```
@@ -552,47 +544,9 @@ bot all; admin select. Website: note + tags on the trade page, tag filter in ป
 DB (2026-11-07): trade_key 1..200 characters, note <= 5000, at most 30 tags; updated_at / updated_by are set by the
 server on every insert / update (upsert with on_conflict=bot_id,trade_key works). Not audited.
 
-### 9.7 Push notifications (installable website)
-- Website: `manifest.webmanifest` + PNG icons + `sw.js` at docs/ root (scope = the site). The service worker handles
-  ONLY `push` and `notificationclick`; it must not intercept `fetch` or cache anything (the import-map versioning in
-  SPEC 5 stays the only cache rule). ตั้งค่าบัญชี > การแจ้งเตือน: turn on for this device (Notification permission +
-  PushManager.subscribe with `VAPID_PUBLIC_KEY` from js/config.js), choose events, send a test; iPhone needs the site
-  added to the home screen first (iOS 16.4+), explained in one sentence.
-- Table:
-```
-push_subscriptions  id bigserial pk, user_id uuid not null default auth.uid() -> profiles on delete cascade,
-                    endpoint text not null unique, p256dh text not null, auth text not null, ua text,
-                    events text[] not null default '{open,close,daycap,offline}', created_at timestamptz default now()
-```
-  RLS: own rows only (select / insert / update / delete); no admin read.
-- Server (owner deploys once, steps in supabase/README.md): Edge Function `notify` (supabase/functions/notify/index.ts,
-  Deno, npm:web-push, secrets VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT, called with a shared secret header)
-  and `supabase/push.sql` (NOT in schema.sql: needs pg_net + pg_cron): an after-insert trigger on journal for OPEN /
-  CLOSE / DAYCAP that posts {bot_id, event, row} to the function; a pg_cron job every 5 min for bots whose last_seen is
-  5-60 min old and not yet notified (column bots.offline_notified_at, cleared when last_seen moves). The function sends to
-  the bot owner's subscriptions that include the event, Thai text, and deletes subscriptions that answer 404 / 410.
-- Implementation (2026-11-07):
-  - push.sql keeps the function URL and the shared secret in `dobby_private.push_settings` (a schema no client can
-    reach), not in the trigger source. Trigger `dobby_journal_push` pushes only rows whose ts_server, converted with
-    bots.server_utc_offset_min, is at most 30 minutes old (nothing while the offset is unknown, never an agent's
-    history upload), only when the owner is approved, not disabled and has a subscription with the event; it never
-    blocks the insert. Cron job `dobby-push-offline` runs `dobby_private.push_offline_bots()` every 5 minutes. The
-    clearing of offline_notified_at is done by schema.sql's bots_before trigger (2.4).
-  - Edge Function, deployed with "Verify JWT" off. DB call: header `x-notify-secret`, body {bot_id, event, row} (row =
-    the journal row without line_hash; offline: {name, last_seen}). User call: `Authorization: Bearer <access token>`
-    (+ apikey), body {"event": "test", "endpoint"?: <only this browser>}; checked with auth.getUser, caller must be
-    approved. CORS: https://tataprin.github.io (+ optional secret NOTIFY_ALLOWED_ORIGINS, comma separated). Answers:
-    200 {ok, sent, removed, failed}; 400 bad_request / bad_json / event_invalid; 401 bad_secret / not_authenticated;
-    403 not_approved; 404 bot_not_found; 500 vapid_secrets_missing / internal.
-  - Push payload (JSON): {title: the bot name ("Dobby" for the test), body: Thai text, tag: "<event>:<bot_id>:<journal
-    id>" (offline / daycap "<event>:<bot_id>", test "dobby-test"), url: "https://tataprin.github.io/dobby-web/#/dashboard",
-    event, bot_id, ts}. Texts: OPEN "เปิดไม้ C5G ซื้อ 0.10 ล็อต ที่ 4,121.78"; CLOSE "ปิดไม้ C5G +83.20 USD (ล็อกกำไร)"
-    (currency from bot_status account.currency; reason TP ถึงเป้ากำไร, SL ตัดขาดทุน, LOCK ล็อกกำไร, MANUAL ปิดเอง,
-    STOPOUT โบรกตัดไม้ (stop out), other EA codes as they are, OTHER / none omitted); DAYCAP "ชนจุดหยุดรายวัน
-    วันนี้ไม่เปิดไม้ใหม่"; offline "บอท <name> ขาดการติดต่อ"; test "ทดสอบการแจ้งเตือนจาก Dobby". TTL 6 h (daycap 12 h,
-    test 5 min), urgency high.
-  - push_subscriptions checks: endpoint https and <= 2048 characters, p256dh / auth 1..300, ua <= 500, events a subset
-    of {open, close, daycap, offline}. A plain upsert (on_conflict=endpoint) works for the caller's own row; for a
-    browser that another account subscribed before, use rpc `register_push_subscription` (2.2).
-- VAPID keys are generated locally; the private key never enters the repo (stored at D:\Dobby\secrets\vapid.json for the
-  owner to paste into the Supabase secrets).
+### 9.7 Push notifications: removed (2026-11-08)
+Built on 2026-11-07 (service worker, `push_subscriptions`, Edge Function `notify`, push.sql with pg_net + pg_cron) and
+removed the next day: the site owner chose not to do the one-time Supabase setup. Nothing of it remains: the website
+unregisters the old service worker, and schema.sql drops `push_subscriptions`, `register_push_subscription` and
+`bots.offline_notified_at` if an earlier run created them. The web manifest and icons stay (home-screen name and icon).
+Telegram alerts from the agent (agent/README_TH.md) are unchanged.

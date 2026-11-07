@@ -28,8 +28,6 @@
 //   listCashFlows(botId) -> rows (desc), addCashFlow(botId, {ts, amount, note}),
 //   updateCashFlow(botId, id, patch), deleteCashFlow(botId, id)                                    (9.2)
 //   listTradeNotes(botId) -> rows, saveTradeNote(botId, key, {note, tags}), deleteTradeNote(botId, key)   (9.6)
-//   listPushSubscriptions() -> my rows, savePushSubscription({endpoint, p256dh, auth, ua, events}) (RPC register_push_subscription),
-//   updatePushSubscription(endpoint, patch), deletePushSubscription(endpoint), sendTestPush() -> {ok}      (9.7)
 //   A table that is not in the database yet raises ApiError('not_deployed') (schema.sql not updated).
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { createDemoDb, DEMO_OFFSET_MIN } from './demo.js';
@@ -82,9 +80,6 @@ const THAI = {
   storage: 'จัดการไฟล์ไม่สำเร็จ',
   read_only: 'บอทนี้เป็นของสมาชิกคนอื่น ผู้ดูแลดูได้อย่างเดียว สั่งงานไม่ได้',
   not_deployed: 'ส่วนนี้ยังไม่พร้อมในฐานข้อมูล ผู้ดูแลต้องรัน supabase/schema.sql รุ่นใหม่ก่อน',
-  push_not_ready: 'ฝั่งเซิร์ฟเวอร์ยังไม่ได้ตั้งค่าการแจ้งเตือน (ผู้ดูแลต้องติดตั้งฟังก์ชัน notify ตามคู่มือใน supabase/README.md)',
-  subscription_invalid: 'ข้อมูลการสมัครรับแจ้งเตือนของเบราว์เซอร์นี้ไม่ถูกต้อง ลองปิดแล้วเปิดใหม่',
-  events_invalid: 'เรื่องที่จะแจ้งไม่ถูกต้อง',
 };
 
 export const THAI_ERRORS = THAI;
@@ -376,38 +371,6 @@ export class SupabaseApi {
   async deleteTradeNote(botId, key) {
     await this.assertOwn(botId);
     unwrap(await this.sb.from('trade_notes').delete().eq('bot_id', botId).eq('trade_key', key));
-  }
-  async listPushSubscriptions() {
-    return unwrap(await this.sb.from('push_subscriptions').select('*').eq('user_id', this.uid()).order('created_at'));
-  }
-  // RPC, not an upsert: a browser endpoint subscribed earlier by another account is taken over (RLS would refuse it)
-  async savePushSubscription({ endpoint, p256dh, auth, ua, events }) {
-    return unwrap(await this.sb.rpc('register_push_subscription', { p_endpoint: endpoint, p_p256dh: p256dh, p_auth: auth, p_ua: ua || null, p_events: events }));
-  }
-  async updatePushSubscription(endpoint, patch) {
-    return unwrap(await this.sb.from('push_subscriptions').update(patch).eq('endpoint', endpoint).select().maybeSingle());
-  }
-  async deletePushSubscription(endpoint) {
-    unwrap(await this.sb.from('push_subscriptions').delete().eq('endpoint', endpoint));
-  }
-  // The Edge Function `notify` (SPEC 9.7) with {event: "test"}: the apikey header and the user's access token.
-  async sendTestPush() {
-    const token = this.session && this.session.access_token;
-    if (!token) throw new ApiError('session_expired');
-    let res;
-    try {
-      res = await fetch(`${SUPABASE_URL}/functions/v1/notify`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ event: 'test' }),
-      });
-    } catch { throw new ApiError('push_not_ready'); } // not deployed (no CORS answer) or offline
-    if (res.status === 404) throw new ApiError('push_not_ready');
-    let body = null;
-    try { body = await res.json(); } catch { /* not JSON */ }
-    if (body && body.error === 'vapid_secrets_missing') throw new ApiError('push_not_ready', 'vapid_secrets_missing', 'ฝั่งเซิร์ฟเวอร์ตั้งค่าการแจ้งเตือนยังไม่ครบ (ยังไม่ได้ใส่คีย์ VAPID ใน Supabase secrets)');
-    if (body && THAI[body.error]) throw new ApiError(body.error);
-    if (!res.ok) throw new ApiError('push_failed', `notify ${res.status}`, `ส่งทดสอบไม่สำเร็จ (เซิร์ฟเวอร์ตอบ ${res.status}${body && (body.error || body.message) ? `: ${body.error || body.message}` : ''})`);
-    return { ok: true, ...(body && typeof body === 'object' ? body : {}) };
   }
 
   async listDownloads() {
@@ -884,34 +847,6 @@ export class DemoApi {
   async deleteTradeNote(botId, key) {
     await this.wait(); this.ownBot(botId, true);
     this.db.notes = this.db.notes.filter((x) => !(x.bot_id === botId && x.trade_key === key));
-  }
-  // push: own rows only (no admin read). The demo "device" is this browser tab.
-  async listPushSubscriptions() { await this.wait(80); this.approvedOrThrow(); return clone(this.db.push.filter((x) => x.user_id === this.uidCur)); }
-  // like the RPC register_push_subscription: validates, and an endpoint of another account is taken over
-  async savePushSubscription({ endpoint, p256dh, auth, ua, events }) {
-    await this.wait(); this.approvedOrThrow();
-    if (!/^https:\/\//.test(endpoint || '') || !p256dh || !auth) throw new ApiError('subscription_invalid');
-    if (events && !events.every((e) => ['open', 'close', 'daycap', 'offline'].includes(e))) throw new ApiError('events_invalid');
-    let row = this.db.push.find((x) => x.endpoint === endpoint);
-    if (row) row.user_id = this.uidCur;
-    if (!row) { row = { id: Math.max(0, ...this.db.push.map((x) => x.id)) + 1, user_id: this.uidCur, endpoint, created_at: new Date().toISOString() }; this.db.push.push(row); }
-    Object.assign(row, { p256dh, auth, ua: ua ? String(ua).slice(0, 500) : null, events: [...(events || ['open', 'close', 'daycap', 'offline'])] });
-    return row.id;
-  }
-  async updatePushSubscription(endpoint, patch) {
-    await this.wait(); this.approvedOrThrow();
-    const row = this.db.push.find((x) => x.endpoint === endpoint && x.user_id === this.uidCur);
-    if (row) Object.assign(row, clone(patch));
-    return clone(row || null);
-  }
-  async deletePushSubscription(endpoint) {
-    await this.wait(); this.approvedOrThrow();
-    this.db.push = this.db.push.filter((x) => !(x.endpoint === endpoint && x.user_id === this.uidCur));
-  }
-  async sendTestPush() {
-    await this.wait(500); this.approvedOrThrow();
-    const n = this.db.push.filter((x) => x.user_id === this.uidCur).length;
-    return { ok: true, sent: n, removed: 0, failed: 0, demo: true };
   }
 
   async listDownloads() { await this.wait(); this.approvedOrThrow(); return clone(this.db.downloads); }

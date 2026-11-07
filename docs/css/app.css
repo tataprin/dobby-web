@@ -1638,9 +1638,6 @@ a.trade:hover .trade-main > p:first-child { text-decoration: underline; text-dec
 /* news: the PC calendar */
 .cal-note { margin-bottom: calc(-1 * var(--s2)); }
 .cal-lines { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: var(--fs-14); color: var(--slate); }
-/* account: notifications */
-.push-events { padding: 0; }
-.push-ios { padding-top: var(--s4); border-top: 1px solid var(--hair); }
 
 /* ================================================================ print: ประวัติ > สรุป as one clean page */
 @media print {

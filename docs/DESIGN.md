@@ -140,9 +140,7 @@ profit / TP, cinnabar = loss / SL).
 - **Automatic blackouts** live in the existing งดเข้าไม้ section as two sub-heads ("อัตโนมัติ" above "ตั้งเอง"), using the
   existing switch rows (`toggle-card`), steppers in the inset `toggle-extra`, 44 px selects for weekly rows and the
   existing blackout list for the upcoming windows. A save row appears only while there are unsent edits.
-- **การแจ้งเตือน** is one more grouped section in ตั้งค่าบัญชี: the device row (state chip + one action), the event
-  checkboxes, the test row, and the iPhone sentence as the group's foot.
-- **Icons for the installable site** are rendered from the hallmark geometry (gold plate with its one sheen, double
+- **Home-screen icons** are rendered from the hallmark geometry (gold plate with its one sheen, double
   engraved outline, a Chakra Petch "D"); maskable and Apple icons put it on graphite `#20262A`.
 
 ## Principles

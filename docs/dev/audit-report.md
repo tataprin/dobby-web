@@ -6,7 +6,7 @@ Every width ran all routes in light and dark: ภาพรวม, ตั้ง�
 view-only mode (ภาพรวม, ประวัติ, ตั้งค่าบอท), a member's preset (read only), the no-bot state, the welcome tour, a confirm
 dialog, a toast and the sign-in page (3 tabs); each page again with every `<details>` opened.
 
-Run after the feature batch (SPEC 9, 2026-11-07) in headless Chrome over CDP (Runtime.evaluate in the page), demo mode, served locally. Routes added for the batch: ประวัติ > สรุป and เงินฝาก-ถอน, a trade page (a closed trade with lock steps), the same three on a member's bot in view-only mode, the cash-flow form and the ปรับทุนตั้งต้นของบอท dialog; ตั้งค่าบอท (automatic blackouts), ข่าว (merged calendar) and ตั้งค่าบัญชี (notifications) are part of the default routes. No console errors.
+Run after the feature batch (SPEC 9, 2026-11-07) in headless Chrome over CDP (Runtime.evaluate in the page), demo mode, served locally. Routes added for the batch: ประวัติ > สรุป and เงินฝาก-ถอน, a trade page (a closed trade with lock steps), the same three on a member's bot in view-only mode, the cash-flow form and the ปรับทุนตั้งต้นของบอท dialog; ตั้งค่าบอท (automatic blackouts), ข่าว (merged calendar) and ตั้งค่าบัญชี are part of the default routes. No console errors.
 
 | width | rowHeights | gaps | overlap | edges | fontSize | controls | icons | overflow | contrast | clipped | failures | illustration (info) |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|

@@ -101,9 +101,6 @@ error ("ผู้ดูแลต้องรัน supabase/schema.sql รุ่
 | `bars(botId, fromIso, toIso)` | `bars` (t, close, vwap), ascending |
 | `listCashFlows`, `addCashFlow` (source `manual`, status `confirmed`), `updateCashFlow`, `deleteCashFlow` | `cash_flows` |
 | `listTradeNotes`, `saveTradeNote` (upsert on `bot_id,trade_key`), `deleteTradeNote` | `trade_notes` |
-| `listPushSubscriptions`, `updatePushSubscription`, `deletePushSubscription` | `push_subscriptions` (own rows) |
-| `savePushSubscription` | `rpc('register_push_subscription', {p_endpoint, p_p256dh, p_auth, p_ua, p_events})` (not an upsert: a browser endpoint subscribed earlier by another account is taken over, which RLS would refuse) |
-| `sendTestPush()` | `POST ${SUPABASE_URL}/functions/v1/notify` `{event: "test"}`, headers `apikey` + `Authorization: Bearer <user access token>` -> `{ok, sent, removed, failed}`; 404, a network error (function not deployed, no CORS answer) or `vapid_secrets_missing` = `push_not_ready`; `sent: 0` = "no device" line |
 
 - **Trade page** `#/trade/<trade_key>` (`pages/trade.js`, nav = ประวัติ). `trade_key` = `<tag>|<open ts_server as
   YYYY-MM-DD HH:MM:SS>` (`journal.tradeKeyOf`, carried by every paired trade as `t.key`). Opens from ประวัติ > รายการเทรด
@@ -158,25 +155,17 @@ error ("ผู้ดูแลต้องรัน supabase/schema.sql รุ่
   5 minutes of an admin item are folded into it (their titles, forecast and previous as small lines); the rest become
   items of their own marked "ปฏิทินอัตโนมัติ" (High = สำคัญมาก, Medium = สำคัญ), one per moment; only admin items can be
   edited or deleted.
-- **Push** (SPEC 9.7): `sw.js` at the site root handles only `push` (payload `{title, body, tag, url, event, bot_id, ts}`,
-  also `{notification: {...}}` or plain text; `ts` becomes the notification time) and `notificationclick` (focuses an open tab and navigates it, or opens one);
-  install = `skipWaiting`, activate = `clients.claim`; **no fetch handler and no cache**, so the import-map addresses stay
-  the only cache rule. `app.js` registers it (`./sw.js`, scope `./`) on every visit in a secure context.
-  `manifest.webmanifest` + `icons/` (192, 512, maskable 512 and the 180 apple-touch icon rendered from the hallmark; a
-  96 px monochrome badge); `index.html` links both. ตั้งค่าบัญชี > การแจ้งเตือน (`push.js`): turn on for this device
-  (permission -> `pushManager.subscribe` with `VAPID_PUBLIC_KEY` from `config.js` -> `push_subscriptions` row with
-  `p256dh` / `auth` / `ua` / `events`), choose events (เปิดไม้, ปิดไม้, ถึงจุดหยุดรายวัน, เครื่องออฟไลน์; saved on the row),
-  turn off (row deleted + unsubscribe), "ส่งทดสอบ", the blocked / unsupported states, and the one-sentence iPhone hint
-  (Add to Home Screen, iOS 16.4+).
+- **No push notifications** (removed 2026-11-08, the site owner's decision). `app.js` unregisters any service worker
+  that the 2026-11-07 build registered. `manifest.webmanifest` + `icons/` (192, 512, maskable 512 and the 180
+  apple-touch icon rendered from the hallmark) stay, so "Add to Home Screen" gets the Dobby name and icon.
 
 ## Structure
 
 ```
 index.html            shell; applies the saved theme before paint, links the manifest, loads js/app.js
-sw.js                 service worker: push + notificationclick only (no fetch handler, no cache)
-manifest.webmanifest  installable site (name, start_url, theme colours, icons/)
+manifest.webmanifest  home-screen name, start_url, theme colours, icons/
 css/app.css           all styles; DESIGN.md tokens on :root (porcelain / vault), dark via prefers-color-scheme or [data-theme]
-js/config.js          SUPABASE_URL / SUPABASE_ANON_KEY / VAPID_PUBLIC_KEY (public)
+js/config.js          SUPABASE_URL / SUPABASE_ANON_KEY (public)
 js/app.js             boot, theme, hash router (#/name/part?query) + aliases, shell (grouped sidebar / bottom tabs), tour hook
 js/hallmark.js        the hallmark stamp (rounded octagon, double engraved outline, "Dobby" + state) and the brand mark
 js/pricechart.js      readBars (agent_state.bars) + the hero's SVG price line with trade marks (click -> trade page), tooltip, motion
@@ -187,7 +176,6 @@ js/insights.js        health panel, risk panel and the dashboard risk strip
 js/history-summary.js ประวัติ > สรุป (printable report)
 js/history-flows.js   ประวัติ > เงินฝาก-ถอน (suggestions, manual rows, the capital offer)
 js/autoblackout.js    ตั้งค่าบอท > งดเข้าไม้ > อัตโนมัติ (desired.auto_news / schedule, upcoming auto windows)
-js/push.js            Web Push on this device + ตั้งค่าบัญชี > การแจ้งเตือน
 js/ticker.js          header XAUUSD ticker (bid + change since the broker day's first bar)
 js/api.js             the API interface + SupabaseApi + DemoApi, Thai error mapping (DB error codes)
 js/demo.js            synthetic deterministic demo data (my 2 bots + friends' bots, ~3 weeks of journal, invites, news...)
@@ -247,7 +235,7 @@ non-standard control heights, horizontal overflow, contrast below 4.5:1 and clip
   suggestion, a -12.40 dismissed manual trade; นก a confirmed 200), notes and tags on a few trades (นก one), automatic
   blackouts (คอมหลัก news 30 / 60 + Friday night + US holidays; นก news only; บีม a `news_error`; DESKTOP-NPNL85P runs agent
   1.0.0 and shows the "update to 1.2.0" line), `agent_state.news` (the demo news under the calendar's titles plus two
-  calendar-only events), and push simulated in the page (no permission prompt; "ส่งทดสอบ" shows the notification text).
+  calendar-only events).
 - Each demo bot has `agent_state.bars` (SPEC 8): the last 96 closed M15 bars on the same price path as the demo trades
   (so the marks sit on the line) with a small deterministic jitter and a VWAP anchored to each server day; the window
   rolls forward when a new bar closes.

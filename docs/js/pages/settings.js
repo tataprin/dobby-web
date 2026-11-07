@@ -1,10 +1,9 @@
 // ตั้งค่าบัญชี: grouped rows like ตั้งค่าบอท (label left, control right). Display name, password (dialog), 2FA (TOTP enroll
-// with QR, unenroll), notifications on this device (push.js), theme, account facts and sign out.
+// with QR, unenroll), theme, account facts and sign out.
 import { h, icon, fmtThai, toast, errText, confirmDialog, openModal, field, busy, copyText, newId, mount } from '../util.js';
 import { app, isAdmin } from '../state.js';
 import { pageHead } from '../views.js';
 import { themeSegment } from '../app.js';
-import { notifySection } from '../push.js';
 
 // one settings row: label (+ hint) left, control right
 const row = (label, hint, ...ctrl) => h('div', { class: 'set-row' },
@@ -45,7 +44,6 @@ export async function render(root, ctx) {
       row('รหัสผ่าน', 'อย่างน้อย 8 ตัวอักษร เครื่องที่ล็อกอินไว้แล้วยังทำงานต่อ',
         h('button', { class: 'btn', type: 'button', onclick: () => passwordDialog() }, icon('key'), 'เปลี่ยนรหัสผ่าน')),
       mfaRow),
-    notifySection(),
     section('acct-display', 'การแสดงผล', null, row('ธีม', 'สว่าง มืด หรือตามการตั้งค่าของเครื่อง', themeSegment())),
     section('acct-account', 'บัญชี', null,
       h('dl', { class: 'kv' },

@@ -426,14 +426,16 @@ async function boot() {
   window.addEventListener('hashchange', () => route());
   on('bot-changed', () => { if (currentBot()) route(); });
   route();
-  registerServiceWorker();
+  dropServiceWorkers();
 }
 
-// sw.js handles only push and notificationclick (SPEC 9.7): no fetch handler and no cache, so the import-map file
-// addresses stay the only cache rule. Registered on every visit so a device that turned notifications on keeps them.
-function registerServiceWorker() {
-  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
-  navigator.serviceWorker.register('./sw.js', { scope: './' }).catch((e) => console.warn('service worker not registered', e));
+// Push notifications were removed (2026-11-08). The 2026-11-07 build registered sw.js (push only, no cache) on every
+// visit; unregister it so no browser keeps it (or its push subscription) around.
+function dropServiceWorkers() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.getRegistrations()
+    .then((regs) => regs.forEach((r) => r.unregister()))
+    .catch(() => { /* nothing to drop */ });
 }
 
 boot();

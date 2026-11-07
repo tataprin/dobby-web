@@ -729,7 +729,7 @@ export function createDemoDb(nowUtc = Date.now()) {
 
   return {
     user: DEMO_USER, profiles, invites, bots, control, sims: { 'demo-bot-1': sim1, 'demo-bot-2': sim2, 'demo-bot-nok': simNok, 'demo-bot-beam': simBeam },
-    presets, audit, news, downloads, flows, notes, push: [],
+    presets, audit, news, downloads, flows, notes,
     factors: [{ id: 'demo-totp-1', factor_type: 'totp', status: 'verified', friendly_name: 'มือถือ (ตัวอย่าง)', created_at: iso(nowUtc - 30 * DAY) }],
   };
 }

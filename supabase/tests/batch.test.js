@@ -1,14 +1,12 @@
-// Feature batch 2026-11-07 (SPEC 9): bars, cash_flows (+ audit), trade_notes, push_subscriptions,
-// bots.offline_notified_at. Same pattern as rls.test.js: the approved owner writes, another member sees nothing, the
-// admin reads (except push_subscriptions) but never writes, unapproved / disabled users see nothing.
+// Feature batch 2026-11-07 (SPEC 9): bars, cash_flows (+ audit), trade_notes, and the removal of the push objects
+// (2026-11-08). Same pattern as rls.test.js: the approved owner writes, another member sees nothing, the admin reads
+// but never writes, unapproved / disabled users see nothing.
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { freshDb } from './helpers.js';
 
 let ctx, admin, bob, erin, carol, dave;
 let botB, botE;
-
-const SUB = (n, extra = {}) => ({ endpoint: `https://push.example.test/send/${n}`, p256dh: `BPk-${n}-key`, auth: `au-${n}`, ...extra });
 
 before(async () => {
   ctx = await freshDb({ runs: 2 });
@@ -24,18 +22,15 @@ before(async () => {
     await ctx.as(uid, `insert into public.cash_flows (bot_id, ts, amount, source) values ($1, '2026-11-05T03:00:00Z', 100, 'manual')`, [bot]);
     await ctx.as(uid, `insert into public.trade_notes (bot_id, trade_key, note, tags) values ($1, 'C5G|2026-11-06 15:30:00', 'n', '{ช่วงข่าว}')`, [bot]);
   }
-  await ctx.as(bob, `insert into public.push_subscriptions (endpoint, p256dh, auth) values ($1, $2, $3)`, Object.values(SUB('bob')));
-  await ctx.as(erin, `insert into public.push_subscriptions (endpoint, p256dh, auth) values ($1, $2, $3)`, Object.values(SUB('erin')));
   const daveBot = await ctx.registerBot(dave, 'Dave PC');
   await ctx.as(dave, `insert into public.bars (bot_id, t, close) values ($1, '2026-11-06T13:30:00Z', 4100)`, [daveBot]);
-  await ctx.as(dave, `insert into public.push_subscriptions (endpoint, p256dh, auth) values ($1, $2, $3)`, Object.values(SUB('dave')));
   await ctx.as(admin, `select public.admin_set_user($1, null, null, true)`, [dave]);
 });
 
 const count = async (who, table, where = 'true', params = []) =>
   (await ctx.as(who, `select count(*)::int as n from ${table} where ${where}`, params))[0].n;
 const touched = async (who, sql, params = []) => (await ctx.as(who, sql + ' returning 1', params)).length;
-const NEW_TABLES = ['public.bars', 'public.cash_flows', 'public.trade_notes', 'public.push_subscriptions'];
+const NEW_TABLES = ['public.bars', 'public.cash_flows', 'public.trade_notes'];
 
 // ------------------------------------------------------------------------------------------------------ visibility
 test('owner sees own rows; another member sees none of them', async () => {
@@ -43,8 +38,6 @@ test('owner sees own rows; another member sees none of them', async () => {
     assert.equal(await count(bob, t), 1, `bob sees his ${t}`);
     assert.equal(await count(bob, t, 'bot_id = $1', [botE]), 0, `bob cannot read erin's ${t}`);
   }
-  assert.equal(await count(bob, 'public.push_subscriptions'), 1);
-  assert.deepEqual((await ctx.as(bob, `select endpoint from public.push_subscriptions`)).map(r => r.endpoint), [SUB('bob').endpoint]);
 });
 
 test('unapproved and disabled users see nothing in the new tables', async () => {
@@ -52,17 +45,14 @@ test('unapproved and disabled users see nothing in the new tables', async () => 
     assert.equal(await count(carol, t), 0, `carol sees nothing in ${t}`);
     assert.equal(await count(dave, t), 0, `disabled dave sees nothing in ${t} (not even his own rows)`);
   }
-  await assert.rejects(ctx.as(carol, `insert into public.push_subscriptions (endpoint, p256dh, auth) values ('https://x.test/c', 'k', 'a')`), /row-level security/);
   await assert.rejects(ctx.as(carol, `insert into public.bars (bot_id, t, close) values ($1, now(), 1)`, [botB]), /row-level security/);
-  await assert.rejects(ctx.as(dave, `insert into public.push_subscriptions (endpoint, p256dh, auth) values ('https://x.test/d2', 'k', 'a')`), /row-level security/);
-  assert.equal(await touched(dave, `delete from public.push_subscriptions`), 0);
+  assert.equal(await touched(dave, `delete from public.cash_flows`), 0);
 });
 
-test('admin reads every bar, cash flow and trade note, but no push subscription of anyone else', async () => {
+test('admin reads every bar, cash flow and trade note', async () => {
   for (const t of ['public.bars', 'public.cash_flows', 'public.trade_notes'])
     assert.ok(await count(admin, t) >= 2, `admin reads all ${t}`);
   assert.equal(await count(admin, 'public.bars', 'bot_id = any($1::uuid[])', [[botB, botE]]), 2);
-  assert.equal(await count(admin, 'public.push_subscriptions'), 0, 'no admin read on push_subscriptions');
 });
 
 // ---------------------------------------------------------------------------------------------------------- writes
@@ -75,9 +65,6 @@ test('admin cannot write friends\' bars, cash flows or trade notes', async () =>
   assert.equal(await touched(admin, `delete from public.cash_flows where bot_id = $1`, [botB]), 0);
   assert.equal(await touched(admin, `update public.trade_notes set note = 'x' where bot_id = $1`, [botB]), 0);
   assert.equal(await touched(admin, `delete from public.trade_notes where bot_id = $1`, [botB]), 0);
-  assert.equal(await touched(admin, `update public.push_subscriptions set events = '{}' where user_id = $1`, [bob]), 0);
-  assert.equal(await touched(admin, `delete from public.push_subscriptions where user_id = $1`, [bob]), 0);
-  assert.equal((await ctx.sql(`select count(*)::int as n from public.push_subscriptions where user_id = $1`, [bob]))[0].n, 1);
 });
 
 test('another member cannot write a bot that is not theirs', async () => {
@@ -89,8 +76,6 @@ test('another member cannot write a bot that is not theirs', async () => {
   // moving own rows onto someone else's bot is refused by WITH CHECK
   await assert.rejects(ctx.as(erin, `update public.cash_flows set bot_id = $1 where bot_id = $2`, [botB, botE]), /row-level security/);
   await assert.rejects(ctx.as(erin, `update public.bars set bot_id = $1 where bot_id = $2`, [botB, botE]), /row-level security/);
-  await assert.rejects(ctx.as(erin, `insert into public.push_subscriptions (user_id, endpoint, p256dh, auth) values ($1, 'https://x.test/e2', 'k', 'a')`, [bob]), /row-level security/);
-  await assert.rejects(ctx.as(erin, `update public.push_subscriptions set user_id = $1`, [bob]), /row-level security/);
 });
 
 // ------------------------------------------------------------------------------------------------------------ bars
@@ -164,72 +149,19 @@ test('trade_notes: owner upserts a note; updated_by / updated_at come from the s
   await assert.rejects(ctx.as(bob, `insert into public.trade_notes (bot_id, trade_key) values ($1, '')`, [botB]), /check constraint/);
 });
 
-// ---------------------------------------------------------------------------------------------- push_subscriptions
-test('push_subscriptions: own rows, user_id defaults to the caller, events are checked, endpoint is unique', async () => {
-  const s = SUB('bob-phone');
-  const [r] = await ctx.as(bob, `insert into public.push_subscriptions (endpoint, p256dh, auth, ua) values ($1, $2, $3, 'iPhone') returning user_id, events`, [s.endpoint, s.p256dh, s.auth]);
-  assert.deepEqual(r, { user_id: bob, events: ['open', 'close', 'daycap', 'offline'] });
-  assert.equal(await touched(bob, `update public.push_subscriptions set events = '{close,offline}' where endpoint = $1`, [s.endpoint]), 1);
-  await assert.rejects(ctx.as(bob, `update public.push_subscriptions set events = '{close,spam}' where endpoint = $1`, [s.endpoint]), /check constraint/);
-  await assert.rejects(ctx.as(bob, `insert into public.push_subscriptions (endpoint, p256dh, auth) values ('http://insecure.test/x', 'k', 'a')`), /check constraint/);
-  await assert.rejects(ctx.as(erin, `insert into public.push_subscriptions (endpoint, p256dh, auth) values ($1, 'k', 'a')`, [s.endpoint]), /duplicate key/);
-  assert.equal(await touched(bob, `delete from public.push_subscriptions where endpoint = $1`, [s.endpoint]), 1);
-});
-
-test("push_subscriptions: the website upsert (on_conflict=endpoint) updates its own row, never another account's", async () => {
-  const s = SUB('upsert');
-  const upsert = (who, events) => ctx.as(who, `insert into public.push_subscriptions (user_id, endpoint, p256dh, auth, ua, events)
-      values (auth.uid(), $1, $2, $3, 'Firefox', $4::text[])
-      on conflict (endpoint) do update set p256dh = excluded.p256dh, auth = excluded.auth, ua = excluded.ua, events = excluded.events
-      returning user_id, events`, [s.endpoint, s.p256dh, s.auth, events]);
-  assert.deepEqual(await upsert(bob, ['open']), [{ user_id: bob, events: ['open'] }]);
-  assert.deepEqual(await upsert(bob, ['open', 'offline']), [{ user_id: bob, events: ['open', 'offline'] }]);
-  await assert.rejects(upsert(erin, ['close']), /row-level security/);
-  assert.deepEqual((await ctx.sql(`select user_id, events from public.push_subscriptions where endpoint = $1`, [s.endpoint]))[0],
-    { user_id: bob, events: ['open', 'offline'] });
-  await ctx.as(bob, `delete from public.push_subscriptions where endpoint = $1`, [s.endpoint]);
-});
-
-test('register_push_subscription: saves for the caller, keeps chosen events, takes over a browser from another account', async () => {
-  const s = SUB('shared-pc');
-  const call = (who, events = null) => ctx.as(who, `select public.register_push_subscription($1, $2, $3, 'Chrome', $4::text[]) as id`,
-    [s.endpoint, s.p256dh, s.auth, events]);
-  const [{ id }] = await call(bob, ['close']);
-  assert.ok(Number(id) > 0);
-  await call(bob);                                                    // re-register without events: keeps {close}
-  assert.deepEqual((await ctx.as(bob, `select events from public.push_subscriptions where endpoint = $1`, [s.endpoint]))[0].events, ['close']);
-  await call(erin);                                                   // the same browser, now signed in as erin
-  assert.equal(await count(bob, 'public.push_subscriptions', 'endpoint = $1', [s.endpoint]), 0);
-  const [e] = await ctx.as(erin, `select user_id, events from public.push_subscriptions where endpoint = $1`, [s.endpoint]);
-  assert.deepEqual(e, { user_id: erin, events: ['open', 'close', 'daycap', 'offline'] }, 'a new owner starts with all events');
-  await assert.rejects(call(carol), /not_approved/);
-  await assert.rejects(call(dave), /not_approved/);
-  await assert.rejects(ctx.as(bob, `select public.register_push_subscription('http://x.test', 'k', 'a')`), /subscription_invalid/);
-  await assert.rejects(ctx.as(bob, `select public.register_push_subscription($1, 'k', 'a', null, '{spam}')`, [SUB('z').endpoint]), /events_invalid/);
-});
-
-test('deleting a user removes their push subscriptions (cascade)', async () => {
-  const frank = await ctx.approvedUser('frank@example.test');
-  await ctx.as(frank, `insert into public.push_subscriptions (endpoint, p256dh, auth) values ($1, $2, $3)`, Object.values(SUB('frank')));
-  await ctx.sql(`delete from auth.users where id = $1`, [frank]);
-  assert.equal((await ctx.sql(`select count(*)::int as n from public.push_subscriptions where endpoint = $1`, [SUB('frank').endpoint]))[0].n, 0);
-});
-
-// ------------------------------------------------------------------------------------------ bots.offline_notified_at
-test('bots.offline_notified_at: only the push job (postgres) sets it; it is cleared when last_seen moves', async () => {
-  await ctx.as(bob, `update public.bots set last_seen = now() where id = $1`, [botB]);
-  await ctx.sql(`update public.bots set offline_notified_at = now() where id = $1`, [botB]);
-  const flag = async () => (await ctx.sql(`select offline_notified_at from public.bots where id = $1`, [botB]))[0].offline_notified_at;
-  assert.ok(await flag(), 'set by postgres');
-  await ctx.as(bob, `update public.bots set name = 'Bob PC', offline_notified_at = null where id = $1`, [botB]);
-  assert.ok(await flag(), 'a client cannot clear it without last_seen moving');
-  await ctx.as(bob, `update public.bots set agent_version = '1.2.0', last_seen = '2020-01-01T00:00:00Z' where id = $1`, [botB]);
-  assert.equal(await flag(), null, 'cleared when the agent reports last_seen');
-  await ctx.as(bob, `update public.bots set offline_notified_at = now() where id = $1`, [botB]);
-  assert.equal(await flag(), null, 'a client cannot set it');
-  const [n] = await ctx.as(bob, `insert into public.bots (name, offline_notified_at) values ('Tmp', now()) returning id, offline_notified_at`);
-  assert.equal(n.offline_notified_at, null);
-  await ctx.as(bob, `delete from public.bots where id = $1`, [n.id]);
+// ------------------------------------------------------------------------------------- removed push objects
+test('schema.sql drops the push objects that the 2026-11-07 version created, and keeps the bots', async () => {
+  await ctx.sql(`alter table public.bots add column if not exists offline_notified_at timestamptz`);
+  await ctx.sql(`create table if not exists public.push_subscriptions (id bigserial primary key, endpoint text)`);
+  await ctx.sql(`create or replace function public.register_push_subscription(p_endpoint text, p_p256dh text, p_auth text,
+                   p_ua text default null, p_events text[] default null) returns bigint language sql as 'select 1::bigint'`);
+  await ctx.runSchemaAgain();
+  const has = async (q) => (await ctx.sql(q)).length > 0;
+  assert.equal(await has(`select 1 from pg_class where relname = 'push_subscriptions'`), false);
+  assert.equal(await has(`select 1 from pg_proc where proname = 'register_push_subscription'`), false);
+  assert.equal(await has(`select 1 from information_schema.columns where table_schema = 'public' and table_name = 'bots'
+                          and column_name = 'offline_notified_at'`), false);
+  assert.equal(await count(bob, 'public.bots', 'id = $1', [botB]), 1);
 });
 
 test('schema.sql runs again with data in the new tables and keeps it', async () => {
@@ -238,6 +170,4 @@ test('schema.sql runs again with data in the new tables and keeps it', async () 
   await ctx.runSchemaAgain();
   for (const t of NEW_TABLES) assert.equal((await ctx.sql(`select count(*)::int as n from ${t}`))[0].n, before[t], t);
   assert.equal(await count(bob, 'public.bars', 'bot_id = $1', [botB]), 3);
-  const [c] = await ctx.sql(`select column_name from information_schema.columns where table_schema = 'public' and table_name = 'bots' and column_name = 'offline_notified_at'`);
-  assert.ok(c);
 });
