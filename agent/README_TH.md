@@ -9,6 +9,49 @@ agent คือโปรแกรมเล็ก ๆ ที่รันบนเ
   เว็บเปลี่ยนไม่ได้
 - รหัสผ่านไม่ถูกเก็บ เก็บแค่ refresh token ใน `agent_config.json` (อย่าส่งไฟล์นี้ให้ใคร)
 
+## แอป Dobby (ไม่ต้องลง Python)
+
+สำหรับเพื่อนที่ไม่อยากใช้บรรทัดคำสั่ง: `DobbyApp.exe` คือ agent ตัวเดียวกันนี้ ในหน้าต่างภาษาไทย
+
+1. ดาวน์โหลด `DobbyApp.exe` จากหน้า **ดาวน์โหลดและติดตั้ง** บนเว็บ (ไฟล์เดียว ไม่ต้องติดตั้ง)
+2. ดับเบิลคลิก ถ้า Windows ขึ้น **"Windows protected your PC"** (แอปยังไม่ได้ลงลายเซ็นดิจิทัล) กด **More info** แล้ว
+   **Run anyway**
+3. ตัวช่วยตั้งค่า 5 ขั้น:
+   1. **เข้าสู่ระบบ** ด้วยอีเมล/รหัสผ่านของเว็บ (บัญชีที่ยังไม่ได้ใส่รหัสเชิญจะไปต่อไม่ได้ แอปบอกให้ใส่บนเว็บก่อน)
+   2. **เลือก MT5** ที่พบใน `%APPDATA%\MetaQuotes\Terminal\<id>` (ชื่อจาก `origin.txt` และเซิร์ฟเวอร์ของโบรก)
+      หรือเลือกโฟลเดอร์เอง
+   3. **ติดตั้ง EA**: ติ๊กไฟล์ `.ex5` / `.set` จาก bucket `downloads` แอปคัดลอก `.ex5` ไป `MQL5\Experts\Dobby\`
+      และ `.set` ไป `MQL5\Presets\` (ถามก่อนทับไฟล์ชื่อเดียวกัน ไม่แตะไฟล์อื่น) หรือกด "ติดตั้งเองแล้ว"
+   4. **ตั้งชื่อเครื่อง** แล้วสร้างบอทใหม่ หรือเลือกบอทเดิมในบัญชี (ถ้า EA ยังไม่ทำงาน แอปจะสร้างบอทให้เองตอนกด
+      เริ่มทำงานและ EA เริ่มส่งสถานะ โดยตั้งต้นจากสถานะของ EA เหมือน `register`)
+   5. **ความปลอดภัย**: ขีดจำกัดเดียวกับ `limits` (เก็บในเครื่องนี้เท่านั้น)
+4. ใน MT5 ทำเองครั้งเดียว: Navigator > Refresh > ลาก **Dobby3_v304** ใส่กราฟ XAUUSD M15 > Inputs: Load พรีเซ็ต >
+   Common: ติ๊ก Allow Algo Trading > กดปุ่ม Algo Trading ให้เขียว (แอปไม่เปิด MT5 และไม่แตะค่าใน MT5)
+5. กด **เริ่มทำงาน Dobby** รายการ "ความพร้อม" ต้องเป็นสีเขียวครบ: เข้าสู่ระบบ, เชื่อมเครื่อง, EA ทำงาน (สัญญาณ
+   ไม่เกิน 120 วินาที), Algo Trading, เทรดได้, รับคำสั่งจากเว็บแล้ว
+
+- ก่อนกดเริ่ม แอปไม่เขียนไฟล์ใดให้ EA เลย กดหยุดแล้วหยุดเขียนทันที (EA ทำงานต่อตามไฟล์ล่าสุด)
+- ปิดหน้าต่างตอนทำงานอยู่: แอปถามว่าจะ "ย่อหน้าต่างไว้" หรือ "หยุดและปิดแอป"
+- **ตั้งค่า**: ขีดจำกัด, Telegram (+ ส่งข้อความทดสอบ), เปิดพร้อม Windows (สร้างไฟล์ `DobbyApp-autostart.cmd`
+  ในโฟลเดอร์ Startup ของผู้ใช้นี้ เปิดแอปด้วย `--autostart` = ย่อไว้และกดเริ่มให้ถ้าตั้งค่าครบ), เริ่มอัตโนมัติเมื่อเปิดแอป,
+  ออกจากระบบ (ลืม refresh token), ยกเลิกการเชื่อมเครื่องนี้, ขั้นสูง (Supabase URL/คีย์, โฟลเดอร์ EA)
+- ข้อมูลของแอปอยู่ที่ `%APPDATA%\DobbyApp\` (`agent_config.json`, `agent_state.json`, `agent.log`,
+  `agent_decisions.log`) ไม่ใช่ข้างไฟล์ exe รูปแบบไฟล์เหมือน CLI ทุกอย่าง
+- **หนึ่ง MT5 ใช้ได้กับ Dobby ตัวเดียว**: ทั้งแอปและ `run` จับไฟล์ล็อก `Common\Files\Dobby\dobby_agent.lock`
+  ถ้าเปิดซ้อน ตัวที่สองจะบอกว่าใครทำงานอยู่ (โปรแกรม, PID, เวลาเริ่ม) ให้ปิดตัวนั้นก่อน
+
+สำหรับนักพัฒนา:
+```
+python dobby_app.py                     เปิดแอปจากซอร์ส (ต้องมี requests)
+python dobby_app.py --demo              ลองทุกหน้าจอกับข้อมูลปลอม (ไม่ต่อเน็ต ใช้โฟลเดอร์ชั่วคราว)
+python dobby_app.py --selftest out.png --data-dir %TEMP%\dobby_selftest
+                                        สร้างทุกหน้าจอด้วยข้อมูลปลอม บันทึกภาพ out_NN_*.png + out_selftest.txt แล้วออก (0 = ผ่าน)
+build_exe.bat                           สร้าง dist\DobbyApp.exe (venv ใน .venv-build, PyInstaller --onefile --windowed)
+dist\DobbyApp.exe --selftest out.png --data-dir %TEMP%\dobby_selftest      ตรวจ exe ที่สร้างแล้ว
+```
+ไฟล์: `dobby_app.py` (หน้าจอ Tkinter), `dobby_app_core.py` (ส่วนที่ไม่ใช่หน้าจอ: โฟลเดอร์ MT5, Storage, ติดตั้ง EA,
+ไฟล์ Startup, agent ใน thread, ข้อมูลปลอมสำหรับ demo/selftest), `build_exe.bat`
+
 ## ติดตั้ง (ครั้งเดียว)
 1. ติดตั้ง Python 3.8 ขึ้นไปจาก https://www.python.org/downloads/ (ติ๊ก **Add python.exe to PATH**)
 2. ดับเบิลคลิก `install.bat` (ติดตั้งไลบรารี `requests`)
@@ -69,13 +112,14 @@ agent ที่กำลังรันจะหยุดเขียนไฟ�
 ## ไฟล์ในโฟลเดอร์นี้
 `agent_config.json` (ตั้งค่า + refresh token, ห้ามแชร์), `agent_state.json` (สถานะภายใน), `agent.log` (บันทึก,
 หมุนไฟล์เอง), `agent_decisions.log` (ทุกคำสั่งที่นำไปใช้/ปฏิเสธ), `agent.lock`
+ในโฟลเดอร์ EA (`Common\Files\Dobby`) ตอนทำงาน: `dobby_agent.lock` (ใครกำลังเป็น agent ของ MT5 นี้)
 
 ## ทดสอบโค้ด (สำหรับนักพัฒนา)
 ```
 pip install pytest
-python -m pytest tests
+python -m pytest -q
 ```
-ทุกเทสต์ทำงานแบบออฟไลน์ ใช้โฟลเดอร์ชั่วคราว ไม่แตะโฟลเดอร์ Common จริงของ EA
+ทุกเทสต์ทำงานแบบออฟไลน์ ใช้โฟลเดอร์ชั่วคราว ไม่แตะโฟลเดอร์ Common จริงของ EA (95 เทสต์: agent 74 + แอป 21)
 
 ---
 
@@ -122,3 +166,24 @@ python -m pytest tests
 14. **Telegram:** at most 3 messages per cycle and 20 per minute, queue of 30 (oldest dropped with a note), 429
     `retry_after` honoured, a message is dropped after 3 failed sends; agent errors are de-duplicated for 30 min, a
     login failure is sent once, network failures are not sent. Daily summary on server weekdays only.
+15. **One agent per MT5 (EA-folder lock).** `run` (not `--dry-run`) and the Dobby App take
+    `<EA folder>\dobby_agent.lock` (folder created if missing) in addition to the per-folder `agent.lock`. The OS
+    locks byte 1 MiB of the file (Windows `msvcrt.locking`, POSIX `flock`) and the body is JSON
+    `{pid, host, program, started, started_unix, agent_version}`, readable while locked, so a refused agent can say
+    who holds it (exit code 3). The OS drops the lock when a process dies: a body left by a crashed agent is *stale* and
+    taken over (logged). Where the file system cannot lock, the body alone decides: same host and the pid is alive
+    and was not created after `started_unix` (pid reuse) = held. Release empties the body (Windows also deletes the
+    file). The EA never reads this file.
+16. **Dobby App** (`dobby_app.py` + `dobby_app_core.py`) reuses `Agent` unchanged except: no EA-file write once Stop
+    is pressed (`_write_file` / `_apply_control` / local-change adoption check a stop event), one shared, serialised
+    Supabase client for the GUI and the agent thread (a rotated refresh token is never used twice), config writes
+    under one lock. Data folder `%APPDATA%\DobbyApp`. Config = the CLI format + an `app` section
+    (`wizard_done, auto_start, start_with_windows, mt5_data_dir, pending_bot_name`); the website URL and publishable
+    key are filled in as defaults.
+17. **Registering from the app** = `register` (`seed_from_ea()` + `first_state()`, shared with the CLI). Without an
+    EA status file the bot is registered at the first Start, as soon as the EA heartbeat is fresh (`pending_bot_name`).
+    **Linking an existing bot** writes a state with `applied_version = 0` (the web state is applied at the first
+    cycle after Start) and `adopted_mtime` = the current control file (a local file is not pushed to the web).
+18. **Storage (app only):** `POST /storage/v1/object/list/downloads` `{prefix:"", limit:200, offset:0,
+    sortBy:{column:name, order:asc}}`, `GET /storage/v1/object/authenticated/downloads/<url-encoded name>`, both with
+    `apikey` + the user's Bearer token. `HttpResponse` gained `content` (bytes) for binary downloads.

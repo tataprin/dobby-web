@@ -171,7 +171,7 @@ export function rejectionsBlock(bot, st) {
     const info = rejectionInfo(r);
     out.push(callout('warn', info.title,
       h('p', null, info.text, info.detail ? ` (${info.detail})` : ''),
-      info.cmd ? h('p', { class: 'muted small' }, 'รันในโฟลเดอร์ของเอเจนต์บนเครื่องนั้น:') : null,
+      info.cmd ? h('p', { class: 'muted small' }, 'แก้ที่เครื่องนั้น: แอป Dobby → ตั้งค่า → ความปลอดภัย หรือถ้าใช้แบบคำสั่ง รันในโฟลเดอร์ของเอเจนต์:') : null,
       info.cmd ? cmdBlock(info.cmd) : null,
       h('p', { class: 'muted small' }, `รหัส: ${info.code}`)));
   }

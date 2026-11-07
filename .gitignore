@@ -11,3 +11,9 @@ agent/agent_decisions.log
 *.set
 .env
 .DS_Store
+# Dobby App build (agent/build_exe.bat)
+.venv-build/
+build/
+dist/
+*.spec
+agent/*.lock

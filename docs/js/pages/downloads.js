@@ -7,7 +7,7 @@ import { panel, pageHead } from '../views.js';
 export async function render(root, ctx) {
   root.append(pageHead('ดาวน์โหลดและติดตั้ง', 'ทุกอย่างที่ต้องใช้เพื่อให้บอทบนคอมพิวเตอร์ของคุณขึ้นที่เว็บนี้'));
   const filesBox = h('div');
-  root.append(filesBox, guide(ctx));
+  root.append(filesBox, guide(ctx), advancedGuide(ctx));
   filesBox.append(panel('ไฟล์', {}, loadingState()));
   let files = [];
   const load = async () => { files = await ctx.api.listDownloads(); };
@@ -32,7 +32,8 @@ export async function render(root, ctx) {
     },
     isAdmin() ? up : null,
     files.length ? h('ul', { class: 'file-list' }, files.map((f) => h('li', { class: 'file' },
-      h('div', { class: 'grow' }, h('p', { class: 'file-name' }, f.name),
+      h('div', { class: 'grow' }, h('p', { class: 'file-name' }, f.name,
+        /^dobbyapp.*\.exe$/i.test(f.name) ? [' ', h('span', { class: 'chip good' }, 'แอป Dobby: เริ่มที่นี่')] : null),
         h('p', { class: 'muted small' }, [f.size != null ? fmtBytes(f.size) : null, f.updated_at ? `อัปเดต ${fmtThai(Date.parse(f.updated_at), 'date')}` : null].filter(Boolean).join(', '))),
       h('button', {
         class: 'btn small', type: 'button',
@@ -64,29 +65,53 @@ function step(title, ...body) {
 }
 
 function guide(ctx) {
-  const cfg = ctx.api.config || {};
-  const repo = 'https://github.com/tataprin/dobby-web';
-  return panel('ติดตั้งบนคอมพิวเตอร์ของคุณ', { sub: 'ทำครั้งเดียว ใช้เวลาราว 30 นาที ต้องใช้คอมพิวเตอร์ Windows ที่เปิดทิ้งไว้ได้' },
+  return panel('ติดตั้งบนคอมพิวเตอร์ของคุณ ด้วยแอป Dobby', { sub: 'ทำครั้งเดียว ราว 15 นาที ไม่ต้องลง Python ใช้คอมพิวเตอร์ Windows ที่เปิดทิ้งไว้ได้' },
     h('ol', { class: 'guide' },
       step('ติดตั้ง MetaTrader 5 และล็อกอินบัญชี',
         h('p', null, 'ดาวน์โหลด MT5 จากเว็บโบรกเกอร์ของคุณ ติดตั้ง แล้วล็อกอินบัญชีเทรด (File แล้ว Login to Trade Account)'),
         h('p', { class: 'muted small' }, 'แนะนำให้ลองกับบัญชีทดลอง (Demo) ก่อน แล้วค่อยใช้บัญชีจริง')),
-      step('ใส่ไฟล์ EA',
-        h('p', null, 'ดาวน์โหลดไฟล์ ', h('code', null, 'Dobby3_v304.ex5'), ' จากรายการไฟล์ด้านบน'),
-        h('p', null, 'ใน MT5 กด File แล้ว Open Data Folder เปิดโฟลเดอร์ ', h('code', null, 'MQL5\\Experts'), ' แล้ววางไฟล์ไว้ในนั้น'),
-        h('p', null, 'กลับมาที่ MT5 คลิกขวาที่ Expert Advisors ในหน้าต่าง Navigator แล้วกด Refresh จะเห็น Dobby3')),
-      step('เปิดกราฟ XAUUSD M15',
-        h('p', null, 'เปิดกราฟทอง (XAUUSD หรือชื่อที่โบรกเกอร์ใช้ เช่น XAUUSD.f) แล้วเลือกกรอบเวลา M15 ใช้กราฟเดียวเท่านั้น')),
-      step('ลาก EA ใส่กราฟและโหลดพรีเซ็ต',
-        h('p', null, 'ลาก Dobby3 จาก Navigator ไปวางบนกราฟ ในหน้าต่างที่ขึ้นมา:'),
+      step('ดาวน์โหลดแอป Dobby',
+        h('p', null, 'กดดาวน์โหลดไฟล์ ', h('code', null, 'DobbyApp.exe'), ' จากรายการไฟล์ด้านบน (ไฟล์เดียว ไม่ต้องติดตั้ง) เก็บไว้ที่ไหนก็ได้ เช่น บนเดสก์ท็อป')),
+      step('เปิดแอป (ครั้งแรก Windows อาจเตือน)',
+        h('p', null, 'ดับเบิลคลิก ', h('code', null, 'DobbyApp.exe'), ' ถ้าขึ้นหน้าจอสีฟ้า ', h('strong', null, '"Windows protected your PC"'),
+          ' (Windows ป้องกันพีซีของคุณ) เป็นเพราะแอปยังไม่ได้ลงลายเซ็นดิจิทัล (code signing) ไม่ใช่ไวรัส:'),
         h('ul', null,
-          h('li', null, 'แท็บ Common: ติ๊ก ', h('strong', null, 'Allow Algo Trading')),
-          h('li', null, 'แท็บ Inputs: กด ', h('strong', null, 'Load'), ' แล้วเลือกไฟล์ .set (ดาวน์โหลดจากด้านบน หรือส่งออกจากหน้าพรีเซ็ต)'),
-          h('li', null, 'บัญชีจริง: ตั้ง ', h('code', null, 'InpAllowLive = true'), ' (หรือใน v3.04 ตั้ง ', h('code', null, 'InpRemoteLive = true'), ' เพื่อให้เว็บเปิด/ปิดได้)'),
-          h('li', null, 'อยากให้เว็บส่งพรีเซ็ตได้: ตั้ง ', h('code', null, 'InpRemoteParams = true'), ' และเพดาน ', h('code', null, 'InpRemoteMaxLots'))),
-        h('p', null, 'กด OK แล้วดูมุมขวาบนของกราฟ ต้องเห็นชื่อ Dobby3')),
-      step('กดปุ่ม Algo Trading',
-        h('p', null, 'ปุ่ม ', h('strong', null, 'Algo Trading'), ' บนแถบเครื่องมือด้านบนของ MT5 ต้องเป็นสีเขียว ถ้าเป็นสีแดง บอทจะไม่ส่งคำสั่งเลย')),
+          h('li', null, 'กด ', h('strong', null, 'More info'), ' (ข้อมูลเพิ่มเติม)'),
+          h('li', null, 'แล้วกด ', h('strong', null, 'Run anyway'), ' (เรียกใช้ต่อไป)')),
+        h('p', { class: 'muted small' }, 'ดาวน์โหลดจากหน้านี้เท่านั้น อย่ารับไฟล์ DobbyApp.exe ที่ส่งต่อกันทางแชต')),
+      step('ทำตามตัวช่วยตั้งค่าในแอป',
+        h('ul', null,
+          h('li', null, h('strong', null, 'เข้าสู่ระบบ'), ' ด้วยอีเมลและรหัสผ่านเดียวกับเว็บนี้ (แอปเก็บแค่ token ไม่เก็บรหัสผ่าน)'),
+          h('li', null, h('strong', null, 'เลือก MT5'), ' ที่ล็อกอินบัญชีที่จะให้ Dobby เทรด'),
+          h('li', null, h('strong', null, 'ติดตั้ง EA'), ': แอปคัดลอก ', h('code', null, 'Dobby3_v304.ex5'), ' และพรีเซ็ต .set จากรายการด้านบนไปไว้ใน MT5 ให้เอง'),
+          h('li', null, h('strong', null, 'ตั้งชื่อเครื่อง'), ' (ชื่อจะขึ้นที่เว็บ) หรือเลือกบอทเดิมของคุณ'),
+          h('li', null, h('strong', null, 'ความปลอดภัย'), ': ค่าเริ่มต้นปลอดภัย เว็บสั่งหยุด/ทำงานต่อได้ แต่เปิดเทรดจริงและส่งพรีเซ็ตไม่ได้ จนกว่าคุณจะติ๊กอนุญาตในแอป'))),
+      step('ใน MT5: ติด EA ใส่กราฟ (ครั้งเดียว)',
+        h('ul', null,
+          h('li', null, 'กด Ctrl+N เปิดหน้าต่าง Navigator คลิกขวาที่ Expert Advisors แล้วกด ', h('strong', null, 'Refresh')),
+          h('li', null, 'เปิดกราฟทอง ', h('strong', null, 'XAUUSD กรอบเวลา M15'), ' (หรือชื่อที่โบรกใช้ เช่น XAUUSD.f) ใช้กราฟเดียวเท่านั้น'),
+          h('li', null, 'ลาก ', h('strong', null, 'Dobby3_v304'), ' จาก Navigator ไปวางบนกราฟ'),
+          h('li', null, 'แท็บ Inputs: กด ', h('strong', null, 'Load'), ' แล้วเลือกไฟล์ .set (บัญชีจริงต้องมี ', h('code', null, 'InpAllowLive = true'),
+            ' หรือ v3.04 ตั้ง ', h('code', null, 'InpRemoteLive = true'), ' เพื่อให้เว็บเปิด/ปิดได้)'),
+          h('li', null, 'แท็บ Common: ติ๊ก ', h('strong', null, 'Allow Algo Trading'), ' แล้วกด OK'),
+          h('li', null, 'กดปุ่ม ', h('strong', null, 'Algo Trading'), ' บนแถบเครื่องมือด้านบนของ MT5 ให้เป็นสีเขียว')),
+        h('p', { class: 'muted small' }, 'แอปไม่เปิด MT5 และไม่แตะการตั้งค่าใน MT5 เอง ขั้นนี้จึงต้องทำด้วยมือครั้งเดียว หน้าแรกของแอปมีขั้นตอนนี้ให้ดูด้วย')),
+      step('กด "เริ่มทำงาน Dobby"',
+        h('p', null, 'รายการ ', h('strong', null, 'ความพร้อม'), ' ในแอปต้องเป็นเครื่องหมายถูกสีเขียว: เข้าสู่ระบบ, เชื่อมเครื่อง, EA ทำงาน, Algo Trading, เทรดได้, รับคำสั่งจากเว็บ'),
+        h('p', null, 'ภายในหนึ่งนาที เปิด ', h('a', { href: '#/dashboard' }, 'ภาพรวม'), ' จะเห็นยอดเงินและป้าย "ออนไลน์"'),
+        h('p', { class: 'muted small' }, 'อยากให้ทำงานเองหลังเปิดเครื่อง: ในแอป ตั้งค่า > เริ่มอัตโนมัติ > ติ๊ก "เปิดพร้อม Windows" ปิดหน้าต่างแอป = หยุดส่งข้อมูล (EA ใน MT5 ยังทำงานต่อ)'))),
+    callout('info', 'เรื่องความปลอดภัย',
+      h('p', null, 'แอปและเอเจนต์ไม่ส่งคำสั่งซื้อขายเอง แค่อ่านไฟล์สถานะของ EA และเขียนไฟล์ควบคุม การเปิดเทรดจริงจากเว็บต้องใส่รหัสผ่านซ้ำ (และรหัส 2FA ถ้าเปิดไว้) ทุกครั้ง และเครื่องต้องอนุญาตไว้ในแอปก่อน'),
+      h('p', null, 'หนึ่ง MT5 ใช้ได้กับโปรแกรม Dobby ตัวเดียว (แอป หรือ Python agent) ถ้าเปิดซ้อน ตัวที่สองจะบอกว่ามีอีกตัวทำงานอยู่')));
+}
+
+// The Python agent: the same engine as the app, for owners who prefer the command line.
+function advancedGuide(ctx) {
+  const cfg = ctx.api.config || {};
+  const repo = 'https://github.com/tataprin/dobby-web';
+  return h('details', { class: 'panel' }, h('summary', null, 'ขั้นสูง: ใช้ Python agent แทนแอป (บรรทัดคำสั่ง)'),
+    h('p', { class: 'muted small' }, 'ทำงานเหมือนแอปทุกอย่าง ใช้แทนกันได้ แต่อย่าเปิดพร้อมกันกับแอปบน MT5 เดียวกัน ขั้นตอน MT5 เหมือนด้านบน'),
+    h('ol', { class: 'guide' },
       step('ติดตั้ง Python',
         h('p', null, 'ดาวน์โหลด Python 3 จาก ', h('a', { href: 'https://www.python.org/downloads/', target: '_blank', rel: 'noopener' }, 'python.org'),
           ' ตอนติดตั้งติ๊ก ', h('strong', null, 'Add python.exe to PATH')),
@@ -114,7 +139,5 @@ function guide(ctx) {
         cmdBlock('python dobby_agent.py run'),
         h('p', null, 'เปิดหน้าต่างนี้ทิ้งไว้ (หรือใช้ไฟล์ ', h('code', null, 'run_agent.bat'), ') ภายในหนึ่งนาทีบอทจะขึ้นที่หน้าภาพรวมพร้อมป้าย "ออนไลน์"')),
       step('ตรวจที่เว็บ',
-        h('p', null, 'เปิด ', h('a', { href: '#/dashboard' }, 'ภาพรวม'), ' ต้องเห็นยอดเงิน สถานะ และป้ายออนไลน์ ถ้าเห็นคำเตือนจากเอเจนต์ ให้ทำตามคำสั่งที่แสดง'))),
-    callout('info', 'เรื่องความปลอดภัย',
-      h('p', null, 'เอเจนต์ไม่ส่งคำสั่งซื้อขายเอง มันแค่อ่านไฟล์สถานะของ EA และเขียนไฟล์ควบคุม การเปิดเทรดจริงจากเว็บต้องใส่รหัสผ่านซ้ำ (และรหัส 2FA ถ้าเปิดไว้) ทุกครั้ง')));
+        h('p', null, 'เปิด ', h('a', { href: '#/dashboard' }, 'ภาพรวม'), ' ต้องเห็นยอดเงิน สถานะ และป้ายออนไลน์ ถ้าเห็นคำเตือนจากเอเจนต์ ให้ทำตามคำสั่งที่แสดง'))));
 }

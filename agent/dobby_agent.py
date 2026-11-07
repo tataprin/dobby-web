@@ -16,12 +16,14 @@ the local limits in agent_config.json. It never trades, never imports MetaTrader
   python dobby_agent.py test-telegram               send a test message
 
 Quick stop of remote control:  python dobby_agent.py limits --allow-control off
+One agent per MT5: `run` and the Dobby App (dobby_app.py) both hold Common\\Files\\Dobby\\dobby_agent.lock.
 Python >= 3.8, standard library + requests.
 """
 import argparse
 import calendar
 import copy
 import csv
+import errno
 import getpass
 import hashlib
 import json
@@ -57,6 +59,7 @@ STATE_NAME = "agent_state.json"
 LOG_NAME = "agent.log"
 DECISIONS_NAME = "agent_decisions.log"
 LOCK_NAME = "agent.lock"
+COMMON_LOCK_NAME = "dobby_agent.lock"   # in the EA folder: one agent (CLI or Dobby App) per MT5
 
 JOURNAL_HEADER = "time_server,event,tag,side,lots,price,sl,tp,pnl,v_balance,step,detail"
 JOURNAL_FIELDS = JOURNAL_HEADER.split(",")
@@ -928,6 +931,45 @@ def desired_from_files(status, parsed_ctl, offset_min, now, note="registered by 
     }
 
 
+def seed_from_ea(common, cfg, clock=time.time, sleep=time.sleep, wait_s=6):
+    """`register` (also used by the Dobby App): the desired state built from the EA's files. Two status samples
+    `wait_s` apart (the offset is only trusted while the server clock runs). None when there is no status file.
+    Returns {status, desired, confirmed, offset, offset_override, now}."""
+    st_path = os.path.join(common, STATUS_NAME)
+    s1 = read_status_file(st_path, sleep=sleep)
+    if s1 is None:
+        return None
+    sleep(wait_s)
+    s2 = read_status_file(st_path, sleep=sleep) or s1
+    ov = config_offset(cfg)
+    confirmed = offset_confirmed_by(offset_sample(s1), offset_sample(s2))
+    offset = ov if ov is not None else raw_offset_min(s2)
+    ctl_text = read_text(os.path.join(common, CONTROL_NAME), sleep=sleep)
+    parsed = parse_control_text(ctl_text) if ctl_text is not None else None
+    now = clock()
+    return {"status": s2, "desired": desired_from_files(s2, parsed, offset, now), "confirmed": confirmed,
+            "offset": offset, "offset_override": ov is not None, "now": now}
+
+
+def first_state(common, now, applied_live=None, applied_version=1, status=None, confirmed=False):
+    """agent_state.json for a freshly registered bot (version 1 = the EA's own state, already applied) or a PC linked
+    to an existing bot (applied_version 0: the web's state is applied at the first cycle). A control file that is
+    present now is never adopted back into the web state."""
+    state = default_state()
+    state["applied_version"] = state["reported_version"] = int(applied_version)
+    if applied_version:
+        state["applied_at"] = iso_z(now)
+        state["applied_live"] = applied_live
+    try:
+        state["control"]["adopted_mtime"] = os.stat(os.path.join(common, CONTROL_NAME)).st_mtime
+    except OSError:
+        pass
+    if status is not None:
+        state["offset"] = {"min": raw_offset_min(status) if confirmed else None, "confirmed": confirmed,
+                           "sample": offset_sample(status)}
+    return state
+
+
 def adopt_into_desired(desired, parsed_ctl, offset_min, now, live_effective):
     """SPEC 3.4 step 5: copy the control part and the blackouts of a locally edited control file into desired.
     desired.live and desired.params are never touched (a local change can never turn live on). A 'mode=pause' that
@@ -961,10 +1003,27 @@ def adopt_into_desired(desired, parsed_ctl, offset_min, now, live_effective):
 # HTTP + Supabase
 # ---------------------------------------------------------------------------------------------------------------------
 class HttpResponse(object):
-    def __init__(self, status, text="", headers=None):
+    """`text` (str) and `content` (bytes) are both available; whichever was not given is derived on first use
+    (a binary download is never decoded unless someone asks for its text)."""
+
+    def __init__(self, status, text="", headers=None, content=None, encoding=None):
         self.status = int(status)
-        self.text = text or ""
         self.headers = headers or {}
+        self._text = text
+        self._content = content
+        self._encoding = encoding or "utf-8"
+
+    @property
+    def text(self):
+        if self._text is None:
+            self._text = self._content.decode(self._encoding, "replace") if self._content else ""
+        return self._text or ""
+
+    @property
+    def content(self):
+        if self._content is None:
+            self._content = (self._text or "").encode("utf-8")
+        return self._content
 
     def json(self):
         return json.loads(self.text) if self.text.strip() else None
@@ -985,7 +1044,7 @@ class HttpTransport(object):
                                      timeout=timeout or self.timeout)
         except requests.RequestException as e:
             raise NetworkError(redact("%s: %s" % (type(e).__name__, e)))
-        return HttpResponse(r.status_code, r.text, dict(r.headers))
+        return HttpResponse(r.status_code, None, dict(r.headers), r.content, r.encoding)
 
 
 def _error_message(resp):
@@ -1435,6 +1494,219 @@ class InstanceLock(object):
                 pass
             self.fh.close()
             self.fh = None
+
+
+_LOCK_AT = 1 << 20   # the byte the OS locks: far after the JSON body, so a refused agent can still read who holds it
+_LOCK_BUSY = set(e for e in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EDEADLK,
+                             getattr(errno, "EDEADLOCK", errno.EDEADLK)))
+
+
+def pid_alive(pid):
+    """True when a process with this id is running on this PC."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        h = k32.OpenProcess(0x1000, False, pid)          # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ctypes.get_last_error() == 5           # access denied: it exists (another user's process)
+        try:
+            code = wintypes.DWORD()
+            if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return True
+            return code.value == 259                      # STILL_ACTIVE
+        finally:
+            k32.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def process_started_at(pid):
+    """Creation time (epoch seconds) of a running process, or None (unknown / not Windows)."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        h = k32.OpenProcess(0x1000, False, int(pid))
+        if not h:
+            return None
+        try:
+            ft = [wintypes.FILETIME() for _ in range(4)]
+            if not k32.GetProcessTimes(h, *[ctypes.byref(f) for f in ft]):
+                return None
+            ticks = (ft[0].dwHighDateTime << 32) | ft[0].dwLowDateTime
+            return ticks / 1e7 - 11644473600.0
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        return None
+
+
+def lock_holder_alive(body, host=None):
+    """Is the agent described by a lock body still running? (only used when the OS lock is not available)"""
+    if not isinstance(body, dict) or not body.get("pid"):
+        return False
+    if (body.get("host") or "") != (host or socket.gethostname()):
+        return True                                       # another PC (network drive): cannot check, assume alive
+    if not pid_alive(body["pid"]):
+        return False
+    started = to_num(body.get("started_unix"))
+    created = process_started_at(body["pid"])
+    if started is not None and created is not None and created > started + 5:
+        return False                                      # the pid was reused by a newer process
+    return True
+
+
+def lock_holder_text(body):
+    """Thai description of the agent that holds the EA-folder lock."""
+    if not isinstance(body, dict) or not body:
+        return "โปรแกรม Dobby อีกตัว"
+    parts = [str(body.get("program") or "Dobby agent")]
+    if body.get("pid"):
+        parts.append("PID %s" % body["pid"])
+    if body.get("started"):
+        parts.append("เริ่มเมื่อ %s" % body["started"])
+    if body.get("host") and body.get("host") != socket.gethostname():
+        parts.append("เครื่อง %s" % body["host"])
+    return ", ".join(parts)
+
+
+class CommonLock(object):
+    """One agent per MT5: the CLI `run` and the Dobby App both take Common\\Files\\Dobby\\dobby_agent.lock, so two
+    agents can never write the same control file. The OS locks one byte far after a small JSON body (pid, start time,
+    host, program). The OS drops that lock when the process dies, so a file left by a crashed agent is stale and is
+    taken over (`stale` = its body). A refused acquire() sets `holder` (the body of the running agent) for the message.
+    Where the file system cannot lock (some network drives) the body alone decides: a dead or reused pid is stale."""
+
+    def __init__(self, common_dir, program="dobby_agent.py run", clock=time.time, local_now=datetime.now):
+        self.common_dir = common_dir
+        self.path = os.path.join(common_dir, COMMON_LOCK_NAME)
+        self.program = program
+        self.clock = clock
+        self.local_now = local_now
+        self.fh = None
+        self.os_locked = False
+        self.holder = None
+        self.stale = None
+        self.error = ""
+
+    def body(self):
+        return {"pid": os.getpid(), "host": socket.gethostname(), "program": self.program,
+                "started": self.local_now().strftime("%Y-%m-%d %H:%M:%S"), "started_unix": int(self.clock()),
+                "agent_version": AGENT_VERSION}
+
+    @staticmethod
+    def _parse(data):
+        try:
+            obj = json.loads((data or b"").decode("utf-8", "replace").strip() or "null")
+        except ValueError:
+            return None
+        return obj if isinstance(obj, dict) else None
+
+    def read(self):
+        """The current body (also readable while another process holds the lock), or None."""
+        try:
+            with open(self.path, "rb") as f:
+                return self._parse(f.read(4096))
+        except OSError:
+            return None
+
+    def _os_lock(self, fh):
+        """True = locked by us, False = held by another process, None = locking not supported here."""
+        try:
+            if os.name == "nt":
+                import msvcrt
+                fh.seek(_LOCK_AT)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError as e:
+            return False if e.errno in _LOCK_BUSY else None
+
+    def acquire(self):
+        self.holder = self.stale = None
+        self.error = ""
+        if self.fh is not None:
+            return True
+        try:
+            os.makedirs(self.common_dir, exist_ok=True)
+            fh = os.fdopen(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644), "r+b")
+        except OSError as e:
+            self.error = str(e)
+            return False
+        try:
+            fh.seek(0)
+            old = self._parse(fh.read(4096))
+            got = self._os_lock(fh)
+            if got is False or (got is None and lock_holder_alive(old)):
+                fh.close()
+                self.holder = old or {}
+                return False
+            self.stale = old if old and old.get("pid") else None
+            fh.seek(0)
+            fh.truncate()
+            fh.write((json.dumps(self.body(), ensure_ascii=False) + "\n").encode("utf-8"))
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        except OSError as e:
+            fh.close()
+            self.error = str(e)
+            return False
+        self.fh, self.os_locked = fh, bool(got)
+        if self.stale:
+            LOG.info("EA folder lock: a stale lock (pid %s, started %s) was taken over",
+                     self.stale.get("pid"), self.stale.get("started"))
+        return True
+
+    def release(self):
+        if self.fh is None:
+            return
+        fh, self.fh = self.fh, None
+        try:
+            fh.seek(0)
+            fh.truncate()            # an empty body = free
+            fh.flush()
+        except OSError:
+            pass
+        if os.name == "nt" and self.os_locked:
+            try:
+                import msvcrt
+                fh.seek(_LOCK_AT)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        fh.close()
+        if os.name == "nt":          # Windows refuses the delete while anyone else has it open: then it just stays
+            try:
+                os.remove(self.path)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -2120,24 +2392,14 @@ def cmd_register(args, rt):
         return EXIT_CONFIG
     name = (args.name or cfg.get("bot_name") or socket.gethostname()).strip()[:100]
     common = resolve_common_dir(cfg, rt.environ)
-    st_path = os.path.join(common, STATUS_NAME)
-    s1 = read_status_file(st_path, sleep=rt.sleep)
-    if s1 is None:
+    seed = seed_from_ea(common, cfg, clock=rt.clock, sleep=rt.sleep)
+    if seed is None:
         rt.out("ไม่พบ %s ใน %s: เปิด MT5 + EA Dobby3 ก่อน แล้วลองใหม่" % (STATUS_NAME, common))
         return EXIT_CONFIG
-    # two status samples: the offset is only trusted while the server clock runs
-    rt.sleep(6)
-    s2 = read_status_file(st_path, sleep=rt.sleep) or s1
-    ov = config_offset(cfg)
-    confirmed = offset_confirmed_by(offset_sample(s1), offset_sample(s2))
-    offset = ov if ov is not None else raw_offset_min(s2)
-    if not confirmed and ov is None:
+    if not seed["confirmed"] and not seed["offset_override"]:
         rt.out("หมายเหตุ: ตลาดปิดหรือ EA ไม่ได้รับราคา ค่าเวลาเซิร์ฟเวอร์ (UTC%+d นาที) ยังไม่ยืนยัน "
-               "agent จะยืนยันเองเมื่อตลาดเปิด" % (offset or 0))
-    ctl_text = read_text(os.path.join(common, CONTROL_NAME), sleep=rt.sleep)
-    parsed = parse_control_text(ctl_text) if ctl_text is not None else None
-    now = rt.clock()
-    desired = desired_from_files(s2, parsed, offset, now)
+               "agent จะยืนยันเองเมื่อตลาดเปิด" % (seed["offset"] or 0))
+    desired, now = seed["desired"], seed["now"]
     client = _make_client(cfg, rt)
     try:
         bot_id = client.rpc("register_bot", {"p_name": name, "p_desired": desired})
@@ -2160,16 +2422,7 @@ def cmd_register(args, rt):
     def mut(c):
         c["bot_id"], c["bot_name"] = bot_id, name
     update_config(path, mut)
-    state = default_state()
-    state["applied_version"] = state["reported_version"] = 1
-    state["applied_at"] = iso_z(now)
-    state["applied_live"] = desired["live"]
-    try:
-        state["control"]["adopted_mtime"] = os.stat(os.path.join(common, CONTROL_NAME)).st_mtime
-    except OSError:
-        pass
-    sample = offset_sample(s2)
-    state["offset"] = {"min": raw_offset_min(s2) if confirmed else None, "confirmed": confirmed, "sample": sample}
+    state = first_state(common, now, applied_live=desired["live"], status=seed["status"], confirmed=seed["confirmed"])
     write_json_atomic(os.path.join(rt.agent_dir, STATE_NAME), state)
     ctl = desired["control"]
     rt.out("ลงทะเบียนบอท \"%s\" สำเร็จ (id %s)" % (name, bot_id))
@@ -2190,12 +2443,22 @@ def cmd_run(args, rt):
     if not _need(cfg, rt, ["supabase_url", "anon_key", "refresh_token", "bot_id"]):
         return EXIT_CONFIG
     common = resolve_common_dir(cfg, rt.environ)
-    lock = None
+    lock = common_lock = None
     if not args.dry_run:
         lock = InstanceLock(os.path.join(rt.agent_dir, LOCK_NAME))
         if not lock.acquire():
             rt.out("มี agent อีกตัวกำลังรันอยู่ในโฟลเดอร์นี้แล้ว")
             return EXIT_RUNNING
+        # one agent per MT5: the Dobby App and other agent folders take the same lock in the EA folder
+        common_lock = CommonLock(common, program="dobby_agent.py run", clock=rt.clock, local_now=rt.local_now)
+        if not common_lock.acquire():
+            lock.release()
+            if common_lock.holder is not None:
+                rt.out("มี Dobby agent อีกตัวทำงานกับ MT5 นี้อยู่แล้ว (%s): ปิดตัวนั้นก่อน (แอป Dobby กดหยุด)"
+                       % lock_holder_text(common_lock.holder))
+                return EXIT_RUNNING
+            rt.out("สร้างไฟล์ล็อกในโฟลเดอร์ EA ไม่ได้ (%s): %s" % (common, common_lock.error))
+            return EXIT_CONFIG
     tg_cfg = cfg.get("telegram") or {}
     tg = Telegram(rt.transport(), tg_cfg.get("token"), tg_cfg.get("chat_id"), tg_cfg.get("events", TELEGRAM_EVENTS),
                   clock=rt.clock, dry_run=args.dry_run)
@@ -2217,6 +2480,8 @@ def cmd_run(args, rt):
     except KeyboardInterrupt:
         LOG.info("stopped by the user")
     finally:
+        if common_lock:
+            common_lock.release()
         if lock:
             lock.release()
     return EXIT_CRASH if (args.once and agent.last_error) else EXIT_OK
