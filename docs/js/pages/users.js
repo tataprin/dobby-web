@@ -4,9 +4,11 @@
 //                 balance / today / since start, open trades, the last trade, the settings summary, saved presets,
 //                 and "ดูบอทนี้" (opens ภาพรวม / ประวัติ / ตั้งค่าบอท for that bot in view-only mode).
 //   ผู้ใช้และรหัสเชิญ  admin_overview, invites (create with copy, list, revoke), set role / approve / disable.
+//   ผู้ช่วย AI       users-ai.js: on / off, limits, budget, model, this month's usage (SPEC 10.4).
 import { h, mount, icon, fmtNum, fmtSigned, fmtThai, ago, toast, errText, confirmDialog, errorState, loadingState, emptyState, field, busy,
   copyText, callout, money, serverToUtc, thaiDayKey, toneOf } from '../util.js';
 import { app, selectBot } from '../state.js';
+import { renderAi } from './users-ai.js';
 import { panel, pageHead, modChip, sideEl } from '../views.js';
 import { normDesired, onlineInfo, heroState, rejectionInfo, activeBlackout, isPending } from '../botctl.js';
 import { currentValues, summaryText, lockText, pctText, STRATS, ASIA } from '../simple.js';
@@ -15,7 +17,7 @@ import { EVENT_LABELS, REASON_LABELS } from '../journal.js';
 // a rejection in a 28 px chip (the full reason is the chip's title and on the bot's ตั้งค่าบอท page)
 const shortReject = (code) => (/lots/.test(code) ? 'ล็อตถูกลดตามเพดานเครื่อง' : /live/.test(code) ? 'เครื่องไม่ให้เปิดเทรดจริง'
   : /param|cap|unknown|v304/.test(code) ? 'เครื่องไม่รับค่าที่ส่ง' : /remote_control/.test(code) ? 'เครื่องปิดการสั่งจากเว็บ' : 'เครื่องปฏิเสธคำสั่ง');
-const TABS = [{ id: 'bots', label: 'บอทของสมาชิก', icon: 'monitor' }, { id: 'people', label: 'ผู้ใช้และรหัสเชิญ', icon: 'users' }];
+const TABS = [{ id: 'bots', label: 'บอทของสมาชิก', icon: 'monitor' }, { id: 'people', label: 'ผู้ใช้และรหัสเชิญ', icon: 'users' }, { id: 'ai', label: 'ผู้ช่วย AI', icon: 'chat' }];
 const initial = (name) => { const s = String(name || '?').trim(); return (/^[เ-ไ]/.test(s) ? s.slice(0, 2) : s.slice(0, 1)).toUpperCase(); };
 
 export async function render(root, ctx) {
@@ -24,6 +26,7 @@ export async function render(root, ctx) {
     h('div', { class: 'view-tabs' }, h('nav', { class: 'segmented', 'aria-label': 'มุมมอง' }, TABS.map((t) => h('a', {
       href: `#/users${t.id === 'bots' ? '' : `?tab=${t.id}`}`, class: tab === t.id ? 'on' : '', 'aria-current': tab === t.id ? 'page' : null,
     }, icon(t.icon), t.label)))));
+  if (tab === 'ai') return renderAi(root, ctx);
   return tab === 'bots' ? renderBots(root, ctx) : renderPeople(root, ctx);
 }
 

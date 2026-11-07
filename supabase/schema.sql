@@ -1,5 +1,5 @@
 -- =====================================================================================================
--- Dobby Web - database schema for Supabase (contract: SPEC.md sections 2 and 9)
+-- Dobby Web - database schema for Supabase (contract: SPEC.md sections 2, 9 and 10)
 --
 -- HOW TO USE: Supabase dashboard -> SQL Editor -> New query -> paste this WHOLE file -> Run.
 -- The last result shows the bootstrap admin invite code (first run only; see README.md).
@@ -162,6 +162,62 @@ create table if not exists public.trade_notes (
   primary key (bot_id, trade_key)
 );
 
+-- SPEC 10.1: AI assistant. ai_config is exactly one row (id = 1), seeded here; "on conflict do nothing" keeps the
+-- admin's settings on every re-run. (Changing the allowed model list later: drop constraint ai_config_model_check
+-- and add the new one.)
+create table if not exists public.ai_config (
+  id                 int primary key default 1 check (id = 1),
+  enabled            boolean not null default true,
+  member_daily_limit int not null default 20 check (member_daily_limit between 0 and 1000),
+  admin_daily_limit  int not null default 100 check (admin_daily_limit between 0 and 5000),
+  monthly_budget_usd numeric not null default 30 check (monthly_budget_usd between 0 and 100000),
+  model              text not null default 'claude-opus-5-5'
+                       check (model in ('claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5')),
+  updated_at         timestamptz not null default now(),
+  updated_by         uuid
+);
+insert into public.ai_config (id) values (1) on conflict (id) do nothing;
+
+-- Chats are private: only the user reads them (no admin read).
+create table if not exists public.ai_conversations (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null default auth.uid() references public.profiles(id) on delete cascade,
+  title      text not null default 'บทสนทนาใหม่' check (char_length(title) between 1 and 120),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists ai_conversations_user_updated_idx on public.ai_conversations (user_id, updated_at desc);
+
+create table if not exists public.ai_messages (
+  id              bigserial primary key,
+  conversation_id uuid not null references public.ai_conversations(id) on delete cascade,
+  user_id         uuid not null default auth.uid() references public.profiles(id) on delete cascade,
+  role            text not null check (role in ('user', 'assistant')),
+  content         text not null check (char_length(content) between 1 and 30000),
+  -- user: {page, bot_id, trade_key, now_th}; assistant: {proposals, tools}
+  context         jsonb not null default '{}'::jsonb check (jsonb_typeof(context) = 'object'),
+  created_at      timestamptz not null default now()
+);
+create index if not exists ai_messages_conversation_idx on public.ai_messages (conversation_id, id);
+
+-- One row per chat turn, written only by the service_role RPCs ai_start_turn / ai_finish_turn.
+-- conversation_id has no FK on purpose: a deleted conversation keeps its cost.
+create table if not exists public.ai_usage (
+  id                 bigserial primary key,
+  user_id            uuid not null references public.profiles(id) on delete cascade,
+  conversation_id    uuid,
+  ts                 timestamptz not null default now(),
+  model              text not null,
+  status             text not null default 'pending' check (status in ('pending', 'ok', 'error', 'refused')),
+  input_tokens       int not null default 0 check (input_tokens >= 0),
+  output_tokens      int not null default 0 check (output_tokens >= 0),
+  cache_read_tokens  int not null default 0 check (cache_read_tokens >= 0),
+  cache_write_tokens int not null default 0 check (cache_write_tokens >= 0),
+  cost_usd           numeric(12, 6) not null default 0 check (cost_usd >= 0)
+);
+create index if not exists ai_usage_user_ts_idx on public.ai_usage (user_id, ts desc);
+create index if not exists ai_usage_ts_idx on public.ai_usage (ts);
+
 -- Push notifications were removed (2026-11-08, site owner's decision). Drop what a run of the 2026-11-07 version of
 -- this file created; nothing else used these objects.
 drop function if exists public.register_push_subscription(text, text, text, text, text[]);
@@ -180,6 +236,10 @@ alter table public.news_events enable row level security;
 alter table public.bars               enable row level security;
 alter table public.cash_flows         enable row level security;
 alter table public.trade_notes        enable row level security;
+alter table public.ai_config          enable row level security;
+alter table public.ai_conversations   enable row level security;
+alter table public.ai_messages        enable row level security;
+alter table public.ai_usage           enable row level security;
 
 
 -- -----------------------------------------------------------------------------------------------------
@@ -271,6 +331,26 @@ begin
   end loop;
   return v_code;
 end;
+$$;
+
+-- Internal (SPEC 10.2): a user's ai_usage rows of the current Thai day (Asia/Bangkok), any status (a pending row
+-- left by a crashed call counts too).
+create or replace function public.ai_used_today(p_user uuid)
+returns int
+language sql stable set search_path = public
+as $$
+  select count(*)::int from public.ai_usage u
+  where u.user_id = p_user
+    and u.ts >= (date_trunc('day', now() at time zone 'Asia/Bangkok') at time zone 'Asia/Bangkok');
+$$;
+
+-- Internal (SPEC 10.2): total cost of every user's ai_usage rows in the current Thai calendar month.
+create or replace function public.ai_month_cost()
+returns numeric
+language sql stable set search_path = public
+as $$
+  select coalesce(sum(u.cost_usd), 0) from public.ai_usage u
+  where u.ts >= (date_trunc('month', now() at time zone 'Asia/Bangkok') at time zone 'Asia/Bangkok');
 $$;
 
 
@@ -490,6 +570,118 @@ begin
   insert into public.bots (owner, name) values (v_uid, v_name) returning id into v_id;
   insert into public.bot_control (bot_id, version, desired, updated_by) values (v_id, 1, p_desired, v_uid);
   return v_id;
+end;
+$$;
+
+-- SPEC 10.2: the caller's AI quota. "today" = the Thai day, "month" = the Thai calendar month (Asia/Bangkok).
+-- budget_reached = this month's cost of EVERY user >= monthly_budget_usd (a budget of 0 means no AI at all).
+-- The admin also gets month_cost_usd and monthly_budget_usd.
+create or replace function public.ai_quota()
+returns jsonb
+language plpgsql stable security definer set search_path = public
+as $$
+declare
+  v_uid  uuid := auth.uid();
+  v_prof public.profiles%rowtype;
+  v_cfg  public.ai_config%rowtype;
+  v_cost numeric;
+  v_out  jsonb;
+begin
+  select * into v_prof from public.profiles where id = v_uid;
+  if not found or not v_prof.approved or v_prof.disabled then
+    raise exception 'not_approved';
+  end if;
+  select * into v_cfg from public.ai_config where id = 1;
+  if not found then
+    raise exception 'ai_disabled';
+  end if;
+  v_cost := public.ai_month_cost();
+  v_out := jsonb_build_object(
+    'enabled',        v_cfg.enabled,
+    'model',          v_cfg.model,
+    'used_today',     public.ai_used_today(v_uid),
+    'limit_today',    case when v_prof.role = 'admin' then v_cfg.admin_daily_limit else v_cfg.member_daily_limit end,
+    'budget_reached', v_cost >= v_cfg.monthly_budget_usd);
+  if v_prof.role = 'admin' then
+    v_out := v_out || jsonb_build_object('month_cost_usd', v_cost, 'monthly_budget_usd', v_cfg.monthly_budget_usd);
+  end if;
+  return v_out;
+end;
+$$;
+
+-- SPEC 10.2: service_role ONLY (the Edge Function `chat`). Checks in this order: not_approved, ai_disabled,
+-- ai_daily_limit, ai_monthly_budget; then inserts a 'pending' ai_usage row with the configured model.
+-- The ai_config row is locked (FOR UPDATE) before counting, so parallel turns run these checks one at a time and
+-- two of them cannot both take the last free slot (each statement then sees the other's committed row).
+create or replace function public.ai_start_turn(p_user uuid, p_conversation uuid)
+returns jsonb
+language plpgsql volatile security definer set search_path = public
+as $$
+declare
+  v_prof  public.profiles%rowtype;
+  v_cfg   public.ai_config%rowtype;
+  v_limit int;
+  v_used  int;
+  v_id    bigint;
+begin
+  select * into v_prof from public.profiles where id = p_user;
+  if not found or not v_prof.approved or v_prof.disabled then
+    raise exception 'not_approved';
+  end if;
+  select * into v_cfg from public.ai_config where id = 1 for update;
+  if not found or not v_cfg.enabled then
+    raise exception 'ai_disabled';
+  end if;
+  v_limit := case when v_prof.role = 'admin' then v_cfg.admin_daily_limit else v_cfg.member_daily_limit end;
+  v_used  := public.ai_used_today(p_user);
+  if v_used >= v_limit then
+    raise exception 'ai_daily_limit';
+  end if;
+  if public.ai_month_cost() >= v_cfg.monthly_budget_usd then
+    raise exception 'ai_monthly_budget';
+  end if;
+  insert into public.ai_usage (user_id, conversation_id, model, status)
+    values (p_user, p_conversation, v_cfg.model, 'pending')
+    returning id into v_id;
+  return jsonb_build_object('usage_id', v_id, 'model', v_cfg.model, 'used_today', v_used + 1,
+                            'limit_today', v_limit, 'role', v_prof.role);
+end;
+$$;
+
+-- SPEC 10.2: service_role ONLY. Finishes a 'pending' row once; a finished row never changes again
+-- (usage_finished). A null token count / cost counts as 0; a null p_conversation keeps the row's conversation.
+create or replace function public.ai_finish_turn(p_usage_id bigint, p_status text, p_input int, p_output int,
+                                                 p_cache_read int, p_cache_write int, p_cost numeric,
+                                                 p_conversation uuid)
+returns void
+language plpgsql volatile security definer set search_path = public
+as $$
+begin
+  if p_status is null or p_status not in ('ok', 'error', 'refused') then
+    raise exception 'status_invalid';
+  end if;
+  if coalesce(p_input, 0) < 0 or coalesce(p_output, 0) < 0
+     or coalesce(p_cache_read, 0) < 0 or coalesce(p_cache_write, 0) < 0 then
+    raise exception 'tokens_invalid';
+  end if;
+  if coalesce(p_cost, 0) < 0 then
+    raise exception 'cost_invalid';
+  end if;
+  update public.ai_usage
+     set status             = p_status,
+         input_tokens       = coalesce(p_input, 0),
+         output_tokens      = coalesce(p_output, 0),
+         cache_read_tokens  = coalesce(p_cache_read, 0),
+         cache_write_tokens = coalesce(p_cache_write, 0),
+         cost_usd           = coalesce(p_cost, 0),
+         conversation_id    = coalesce(p_conversation, conversation_id)
+   where id = p_usage_id and status = 'pending';
+  if not found then
+    if exists (select 1 from public.ai_usage where id = p_usage_id) then
+      raise exception 'usage_finished';
+    end if;
+    raise exception 'usage_not_found';
+  end if;
 end;
 $$;
 
@@ -757,6 +949,56 @@ create trigger trade_notes_before
   before insert or update on public.trade_notes
   for each row execute function public.trade_notes_before();
 
+-- ai_config (SPEC 10.1): updated_at / updated_by are the server's; every change is audited as ai_config_update
+create or replace function public.ai_config_before()
+returns trigger
+language plpgsql security invoker set search_path = public
+as $$
+begin
+  new.updated_at := now();
+  new.updated_by := auth.uid();
+  return new;
+end;
+$$;
+
+drop trigger if exists ai_config_before on public.ai_config;
+create trigger ai_config_before
+  before update on public.ai_config
+  for each row execute function public.ai_config_before();
+
+create or replace function public.ai_config_audit()
+returns trigger
+language plpgsql security definer set search_path = public
+as $$
+begin
+  insert into public.audit (actor, bot_id, action, before, after)
+    values (auth.uid(), null, 'ai_config_update', to_jsonb(old), to_jsonb(new));
+  return null;
+end;
+$$;
+
+drop trigger if exists ai_config_audit on public.ai_config;
+create trigger ai_config_audit
+  after update on public.ai_config
+  for each row execute function public.ai_config_audit();
+
+-- ai_messages (SPEC 10.1): a new message moves its conversation to the top (updated_at = now()).
+-- SECURITY DEFINER: clients may update only ai_conversations.title, not updated_at.
+create or replace function public.ai_messages_touch_conversation()
+returns trigger
+language plpgsql security definer set search_path = public
+as $$
+begin
+  update public.ai_conversations set updated_at = now() where id = new.conversation_id;
+  return null;
+end;
+$$;
+
+drop trigger if exists ai_messages_touch_conversation on public.ai_messages;
+create trigger ai_messages_touch_conversation
+  after insert on public.ai_messages
+  for each row execute function public.ai_messages_touch_conversation();
+
 
 -- -----------------------------------------------------------------------------------------------------
 -- 5. Privileges. anon: nothing. authenticated: only what the policies below allow. (Supabase's default
@@ -764,10 +1006,11 @@ create trigger trade_notes_before
 -- -----------------------------------------------------------------------------------------------------
 revoke all on table public.profiles, public.invites, public.bots, public.bot_status, public.journal,
                     public.bot_control, public.presets, public.audit, public.news_events,
-                    public.bars, public.cash_flows, public.trade_notes
+                    public.bars, public.cash_flows, public.trade_notes,
+                    public.ai_config, public.ai_conversations, public.ai_messages, public.ai_usage
   from anon, authenticated;
 revoke all on sequence public.journal_id_seq, public.audit_id_seq, public.news_events_id_seq,
-                       public.cash_flows_id_seq
+                       public.cash_flows_id_seq, public.ai_messages_id_seq, public.ai_usage_id_seq
   from anon, authenticated;
 
 grant select                         on table public.profiles, public.invites, public.audit to authenticated;
@@ -776,7 +1019,12 @@ grant select, insert, update         on table public.bot_status, public.journal 
 grant select, update                 on table public.bot_control to authenticated;  -- NO insert: register_bot only
 grant select, insert, update         on table public.bars to authenticated;         -- no delete: cascade only
 grant select, insert, update, delete on table public.cash_flows, public.trade_notes to authenticated;
-grant usage, select on sequence public.journal_id_seq, public.news_events_id_seq, public.cash_flows_id_seq
+grant select, update                 on table public.ai_config to authenticated;    -- update: admin (policy)
+grant select, insert, delete         on table public.ai_conversations, public.ai_messages to authenticated;
+grant update (title)                 on table public.ai_conversations to authenticated;  -- only the title changes
+grant select                         on table public.ai_usage to authenticated;     -- writes: service_role RPCs only
+grant usage, select on sequence public.journal_id_seq, public.news_events_id_seq, public.cash_flows_id_seq,
+                                public.ai_messages_id_seq
   to authenticated;
 
 -- RPCs and helpers used by policies: authenticated only
@@ -791,6 +1039,7 @@ revoke execute on function public.admin_set_user(uuid, text, boolean, boolean) f
 revoke execute on function public.set_display_name(text)                      from public, anon;
 revoke execute on function public.admin_overview()                            from public, anon;
 revoke execute on function public.register_bot(text, jsonb)                   from public, anon;
+revoke execute on function public.ai_quota()                                  from public, anon;
 
 grant execute on function public.is_approved()                               to authenticated, service_role;
 grant execute on function public.is_admin()                                  to authenticated, service_role;
@@ -803,6 +1052,14 @@ grant execute on function public.admin_set_user(uuid, text, boolean, boolean) to
 grant execute on function public.set_display_name(text)                      to authenticated, service_role;
 grant execute on function public.admin_overview()                            to authenticated, service_role;
 grant execute on function public.register_bot(text, jsonb)                   to authenticated, service_role;
+grant execute on function public.ai_quota()                                  to authenticated, service_role;
+
+-- AI turn bookkeeping (SPEC 10.2): service_role ONLY (the Edge Function's service key); no client can call them
+revoke execute on function public.ai_start_turn(uuid, uuid)                    from public, anon, authenticated;
+revoke execute on function public.ai_finish_turn(bigint, text, int, int, int, int, numeric, uuid)
+  from public, anon, authenticated;
+grant execute on function public.ai_start_turn(uuid, uuid)                     to service_role;
+grant execute on function public.ai_finish_turn(bigint, text, int, int, int, int, numeric, uuid) to service_role;
 
 -- internal functions: nobody but the owner (triggers fire regardless of EXECUTE rights)
 revoke execute on function public.gen_invite_code()        from public, anon, authenticated;
@@ -818,6 +1075,11 @@ revoke execute on function public.journal_skip_duplicate() from public, anon, au
 revoke execute on function public.cash_flows_before()      from public, anon, authenticated;
 revoke execute on function public.cash_flows_audit()       from public, anon, authenticated;
 revoke execute on function public.trade_notes_before()     from public, anon, authenticated;
+revoke execute on function public.ai_used_today(uuid)      from public, anon, authenticated;
+revoke execute on function public.ai_month_cost()          from public, anon, authenticated;
+revoke execute on function public.ai_config_before()       from public, anon, authenticated;
+revoke execute on function public.ai_config_audit()        from public, anon, authenticated;
+revoke execute on function public.ai_messages_touch_conversation() from public, anon, authenticated;
 
 
 -- -----------------------------------------------------------------------------------------------------
@@ -995,6 +1257,48 @@ drop policy if exists trade_notes_delete on public.trade_notes;
 create policy trade_notes_delete on public.trade_notes for delete to authenticated
   using ((select public.is_approved())
          and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+
+-- AI assistant (SPEC 10.1). ai_config: approved read, admin update; no client insert / delete (no grant).
+drop policy if exists ai_config_select on public.ai_config;
+create policy ai_config_select on public.ai_config for select to authenticated
+  using ((select public.is_approved()));
+drop policy if exists ai_config_update on public.ai_config;
+create policy ai_config_update on public.ai_config for update to authenticated
+  using ((select public.is_admin())) with check ((select public.is_admin()));
+
+-- ai_conversations / ai_messages: the approved user's own rows only. NO admin read: chats are private.
+-- Conversations: only the title can be updated (column grant). Messages: no update; an insert must point at one of
+-- the caller's own conversations.
+drop policy if exists ai_conversations_select on public.ai_conversations;
+create policy ai_conversations_select on public.ai_conversations for select to authenticated
+  using (user_id = (select auth.uid()) and (select public.is_approved()));
+drop policy if exists ai_conversations_insert on public.ai_conversations;
+create policy ai_conversations_insert on public.ai_conversations for insert to authenticated
+  with check (user_id = (select auth.uid()) and (select public.is_approved()));
+drop policy if exists ai_conversations_update on public.ai_conversations;
+create policy ai_conversations_update on public.ai_conversations for update to authenticated
+  using (user_id = (select auth.uid()) and (select public.is_approved()))
+  with check (user_id = (select auth.uid()) and (select public.is_approved()));
+drop policy if exists ai_conversations_delete on public.ai_conversations;
+create policy ai_conversations_delete on public.ai_conversations for delete to authenticated
+  using (user_id = (select auth.uid()) and (select public.is_approved()));
+
+drop policy if exists ai_messages_select on public.ai_messages;
+create policy ai_messages_select on public.ai_messages for select to authenticated
+  using (user_id = (select auth.uid()) and (select public.is_approved()));
+drop policy if exists ai_messages_insert on public.ai_messages;
+create policy ai_messages_insert on public.ai_messages for insert to authenticated
+  with check (user_id = (select auth.uid()) and (select public.is_approved())
+              and conversation_id in (select c.id from public.ai_conversations c
+                                      where c.user_id = (select auth.uid())));
+drop policy if exists ai_messages_delete on public.ai_messages;
+create policy ai_messages_delete on public.ai_messages for delete to authenticated
+  using (user_id = (select auth.uid()) and (select public.is_approved()));
+
+-- ai_usage: own rows; the admin reads every row (usage table on the Users page). No client writes (no grant).
+drop policy if exists ai_usage_select on public.ai_usage;
+create policy ai_usage_select on public.ai_usage for select to authenticated
+  using ((user_id = (select auth.uid()) and (select public.is_approved())) or (select public.is_admin()));
 
 
 -- -----------------------------------------------------------------------------------------------------

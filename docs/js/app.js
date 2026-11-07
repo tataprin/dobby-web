@@ -5,6 +5,7 @@ import { h, icon, mount, loadingState, errorState, emptyState, errText, openModa
 import { maybeStartTour } from './tour.js';
 import { brandMark } from './hallmark.js';
 import { ticker } from './ticker.js';
+import { chatLauncher, refreshChatBot } from './chat.js';
 
 // ------------------------------------------------------------------ theme
 const THEMES = ['system', 'light', 'dark'];
@@ -288,7 +289,8 @@ function buildShell() {
       viewBanner(),
       demoBanner(),
       main),
-    tabbar);
+    tabbar,
+    chatLauncher());
   return { el, main, drawNav, drawUser };
 }
 
@@ -424,7 +426,7 @@ async function boot() {
     return;
   }
   window.addEventListener('hashchange', () => route());
-  on('bot-changed', () => { if (currentBot()) route(); });
+  on('bot-changed', () => { refreshChatBot(); if (currentBot()) route(); });
   route();
   dropServiceWorkers();
 }

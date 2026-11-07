@@ -23,6 +23,7 @@ Open http://localhost:8765/?demo=1 (demo) or http://localhost:8765/ (login with 
 
 ```
 python tools/stamp_versions.py
+node tools/sync_chat_params.mjs        # only after a change to js/params.js: the AI assistant's parameter reference
 ```
 It gives every module and the stylesheet an address with a hash of its content (an import map in `index.html`), so a
 browser never mixes a new file with an old cached one after an update. `python tools/stamp_versions.py --check` exits 1
@@ -159,6 +160,33 @@ error ("ผู้ดูแลต้องรัน supabase/schema.sql รุ่
   that the 2026-11-07 build registered. `manifest.webmanifest` + `icons/` (192, 512, maskable 512 and the 180
   apple-touch icon rendered from the hallmark) stay, so "Add to Home Screen" gets the Dobby name and icon.
 
+## AI assistant (SPEC 10, 2026-11-08)
+
+- **Launcher and panel** (`chat.js`): the "ถาม AI" button (`.btn.chat-fab`, 48 px) sits bottom right on every
+  signed-in page, above the tab bar on phones and above the settings action bar when it shows. The panel is a
+  non-modal `section[role=dialog]`: a 440 px drawer from 600 px, a full-screen sheet on phones (body scroll locked).
+  Header: title, the selected bot, history, new chat, close. Escape closes; focus returns to the button.
+- **Sending**: `api.chat({conversationId, message, context}, onEvent, signal)`; context = `{page, bot_id, trade_key}`
+  read from the hash and `app.botId`. Events (SPEC 10.3): `start` (keeps the conversation id in localStorage
+  `dobby-ai-conv:<user id>`), `status` (one grey line with a pulsing dot), `text` (streamed, painted once per frame),
+  `proposal` (a card), `done` (updates the quota), `error` (an inline red box with "ลองอีกครั้ง" unless it is a limit).
+  The view follows the stream until the user scrolls up. The send button becomes a stop button while answering.
+- **Rendering**: `renderMd` builds DOM nodes from a Markdown subset (paragraphs, `-` / `1.` lists, `**bold**`,
+  `` `code` ``, fenced code, pipe tables, `#` headings as bold lines, and links only when the target starts with `#/`).
+  No innerHTML anywhere.
+- **States**: quota from `rpc ai_quota` ("วันนี้ถามได้อีก N ครั้ง"); `not_deployed` / `ai_not_configured` (the RPC or
+  the function is missing, or no answer at all) shows "ผู้ช่วย AI ยังไม่พร้อมใช้งาน" with the setup hint for the
+  admin; disabled / daily limit / monthly budget disable the input with the reason.
+- **Proposals** (SPEC 10.5): "ดูและใช้ค่านี้" stores `dobby-ai-proposal` in sessionStorage, selects the bot, closes
+  the panel and opens `#/bot?ai=1`; `botsettings.js` loads the remote keys as unsent edits (`coerce` + params bounds
+  through the normal validation), shows a note above the editor and removes `?ai=1` from the address. Nothing is sent
+  until "บันทึกและส่งให้บอท".
+- **Trade page**: "ถาม AI เรื่องไม้นี้" opens the panel and asks about that trade with its `trade_key`.
+- **ผู้ใช้ > ผู้ช่วย AI** (`pages/users-ai.js`, admin): on / off, member and admin daily limits, monthly budget, model
+  (`ai_config`), and this month's questions and cost per user from `ai_usage` (Thai day / month).
+- **Demo**: `DemoApi.chat` runs `chat-demo.js`, a scripted answer from the demo data (why a trade opened, a weekly
+  summary table, the status, a lock-stage proposal); the panel's foot says it is simulated.
+
 ## Structure
 
 ```
@@ -176,6 +204,8 @@ js/insights.js        health panel, risk panel and the dashboard risk strip
 js/history-summary.js ประวัติ > สรุป (printable report)
 js/history-flows.js   ประวัติ > เงินฝาก-ถอน (suggestions, manual rows, the capital offer)
 js/autoblackout.js    ตั้งค่าบอท > งดเข้าไม้ > อัตโนมัติ (desired.auto_news / schedule, upcoming auto windows)
+js/chat.js           the AI assistant: launcher, panel, streaming, Markdown subset, proposal cards (SPEC 10.4)
+js/chat-demo.js      demo mode: the scripted stand-in for the assistant
 js/ticker.js          header XAUUSD ticker (bid + change since the broker day's first bar)
 js/api.js             the API interface + SupabaseApi + DemoApi, Thai error mapping (DB error codes)
 js/demo.js            synthetic deterministic demo data (my 2 bots + friends' bots, ~3 weeks of journal, invites, news...)

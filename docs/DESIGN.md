@@ -143,6 +143,22 @@ profit / TP, cinnabar = loss / SL).
 - **Home-screen icons** are rendered from the hallmark geometry (gold plate with its one sheen, double
   engraved outline, a Chakra Petch "D"); maskable and Apple icons put it on graphite `#20262A`.
 
+## AI assistant (SPEC 10, 2026-11-08)
+
+- **Launcher**: one graphite (`--inverse`) button, 48 px, radius 16, bottom right, with the chat icon and "ถาม AI"
+  (icon only under 600 px). It is the only floating control; it moves up with the tab bar and the action bar like the
+  toasts do.
+- **Panel**: the sheet surface with a hairline border and the dialog shadow; 440 px wide drawer on wide screens, the
+  full screen on phones (rises like the other sheets). Header 64 px (title 18, the selected bot in 13 slate), body,
+  and a foot with the input (44) and a 40 px gold send button that turns into a stop button.
+- **Messages**: the user's text in a `--well-strong` bubble on the right (85 % max); the assistant's text is plain on
+  the sheet at reading width, 1.65 line height, no bubble, so long answers read like the rest of the site. Tables use
+  Chakra Petch tabular numerals. Work in progress is one slate line with a pulsing gold dot (static with reduced
+  motion).
+- **Proposal card**: a panel inside the answer: sliders icon in gold ink, the summary, the existing `.change-list`
+  rows (from struck through, to), the caution in 14 px slate, one primary button and the sentence "ยังไม่มีอะไรเปลี่ยน
+  จนกว่าคุณจะกดส่งในหน้าตั้งค่าบอท". Gold stays meaningful: it marks the one action that leads to a change.
+
 ## Principles
 1. **The market is always visible** — a live XAUUSD ticker in the header (22 px price on desktop); the dashboard hero is
    today's price line with Dobby's own trades stamped on it (bars from `bots.agent_state.bars`, SPEC 8).

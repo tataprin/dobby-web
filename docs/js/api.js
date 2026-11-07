@@ -29,6 +29,10 @@
 //   updateCashFlow(botId, id, patch), deleteCashFlow(botId, id)                                    (9.2)
 //   listTradeNotes(botId) -> rows, saveTradeNote(botId, key, {note, tags}), deleteTradeNote(botId, key)   (9.6)
 //   A table that is not in the database yet raises ApiError('not_deployed') (schema.sql not updated).
+// AI assistant (SPEC 10): aiQuota() -> {enabled, used_today, limit_today, budget_reached, ...} (rpc ai_quota),
+//   aiConfig(), updateAiConfig(patch) (admin), aiUsage(fromIso) (admin: every row; member: own),
+//   listConversations(), conversationMessages(id), deleteConversation(id),
+//   chat({conversationId, message, context}, onEvent, signal): POST functions/v1/chat, onEvent per SSE event (10.3).
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { createDemoDb, DEMO_OFFSET_MIN } from './demo.js';
 import { sleep, utcToServer } from './util.js';
@@ -80,6 +84,16 @@ const THAI = {
   storage: 'จัดการไฟล์ไม่สำเร็จ',
   read_only: 'บอทนี้เป็นของสมาชิกคนอื่น ผู้ดูแลดูได้อย่างเดียว สั่งงานไม่ได้',
   not_deployed: 'ส่วนนี้ยังไม่พร้อมในฐานข้อมูล ผู้ดูแลต้องรัน supabase/schema.sql รุ่นใหม่ก่อน',
+  ai_not_configured: 'ผู้ดูแลยังไม่ได้เปิดผู้ช่วย AI (ต้องสร้างฟังก์ชัน chat และใส่ API key ใน Supabase ก่อน)',
+  ai_disabled: 'ผู้ดูแลปิดผู้ช่วย AI ไว้ชั่วคราว',
+  ai_daily_limit: 'วันนี้ถามครบจำนวนแล้ว ถามใหม่ได้พรุ่งนี้ (นับตามเวลาไทย)',
+  ai_monthly_budget: 'ใช้งบผู้ช่วย AI ของเดือนนี้ครบแล้ว ติดต่อผู้ดูแล',
+  ai_failed: 'ผู้ช่วย AI ตอบไม่สำเร็จ ลองถามอีกครั้ง',
+  ai_refused: 'คำถามนี้ระบบความปลอดภัยของ Claude ไม่ให้ตอบ ลองถามอีกแบบ',
+  ai_overloaded: 'Claude มีคนใช้มากอยู่ รอสักครู่แล้วลองใหม่',
+  ai_timeout: 'ผู้ช่วย AI ใช้เวลานานเกินไป ลองถามให้สั้นลงแล้วถามใหม่',
+  conversation_not_found: 'ไม่พบบทสนทนานี้ (อาจถูกลบไปแล้ว) เริ่มบทสนทนาใหม่ได้เลย',
+  bad_request: 'คำถามว่างหรือยาวเกินไป (ไม่เกิน 4,000 ตัวอักษร)',
 };
 
 export const THAI_ERRORS = THAI;
@@ -371,6 +385,82 @@ export class SupabaseApi {
   async deleteTradeNote(botId, key) {
     await this.assertOwn(botId);
     unwrap(await this.sb.from('trade_notes').delete().eq('bot_id', botId).eq('trade_key', key));
+  }
+
+  // ---- AI assistant (SPEC 10)
+  async aiQuota() {
+    try { return unwrap(await this.sb.rpc('ai_quota')); } catch (e) {
+      // the RPC itself missing = schema.sql not updated yet
+      if (/ai_quota|PGRST202|could not find the function/i.test(`${e.code || ''} ${e.message || ''}`)) throw new ApiError('not_deployed', e.message);
+      throw e;
+    }
+  }
+  async aiConfig() { return unwrap(await this.sb.from('ai_config').select('*').eq('id', 1).maybeSingle()); }
+  async updateAiConfig(patch) {
+    const keys = ['enabled', 'member_daily_limit', 'admin_daily_limit', 'monthly_budget_usd', 'model'];
+    const row = Object.fromEntries(Object.entries(patch || {}).filter(([k]) => keys.includes(k)));
+    return unwrap(await this.sb.from('ai_config').update(row).eq('id', 1).select().single());
+  }
+  async aiUsage(fromIso) {
+    return unwrap(await this.sb.from('ai_usage').select('user_id,ts,model,status,cost_usd,input_tokens,output_tokens')
+      .gte('ts', fromIso).order('ts', { ascending: false }).limit(5000));
+  }
+  async listConversations() {
+    return unwrap(await this.sb.from('ai_conversations').select('id,title,created_at,updated_at').eq('user_id', this.uid())
+      .order('updated_at', { ascending: false }).limit(50));
+  }
+  async conversationMessages(id) {
+    return unwrap(await this.sb.from('ai_messages').select('id,role,content,context,created_at').eq('conversation_id', id).order('id').limit(200));
+  }
+  async deleteConversation(id) { unwrap(await this.sb.from('ai_conversations').delete().eq('id', id).eq('user_id', this.uid())); }
+  async chat({ conversationId, message, context }, onEvent, signal) {
+    const token = this.session && this.session.access_token;
+    if (!token) throw new ApiError('session_expired');
+    let res;
+    try {
+      res = await fetch(`${SUPABASE_URL}/functions/v1/chat`, {
+        method: 'POST', signal,
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ conversation_id: conversationId || null, message, context: context || {} }),
+      });
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      // no answer at all: offline, or the function is not deployed (the gateway's 404 carries no CORS header)
+      throw new ApiError(navigator.onLine === false ? 'network' : 'ai_not_configured', String(e));
+    }
+    if (!res.ok) {
+      let body = null;
+      try { body = await res.json(); } catch { /* not JSON */ }
+      const code = body && (body.error || body.code);
+      if (code && THAI[code]) throw new ApiError(code, body.message || code);
+      if (res.status === 404) throw new ApiError('ai_not_configured', `chat ${res.status}`);
+      if (res.status === 401) throw new ApiError('session_expired', `chat ${res.status}`);
+      throw new ApiError('ai_failed', `chat ${res.status}`, `ผู้ช่วย AI ตอบไม่สำเร็จ (เซิร์ฟเวอร์ตอบ ${res.status}${body && body.message ? `: ${body.message}` : ''})`);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let finished = false;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) { finished = true; break; }
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i).replace(/\r$/, '');
+          buf = buf.slice(i + 1);
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (!data) continue;
+          let ev;
+          try { ev = JSON.parse(data); } catch { continue; }
+          onEvent(ev);
+        }
+      }
+    } finally {
+      if (!finished) { try { await reader.cancel(); } catch { /* already closed */ } }
+    }
   }
 
   async listDownloads() {
@@ -847,6 +937,78 @@ export class DemoApi {
   async deleteTradeNote(botId, key) {
     await this.wait(); this.ownBot(botId, true);
     this.db.notes = this.db.notes.filter((x) => !(x.bot_id === botId && x.trade_key === key));
+  }
+
+  // ---- AI assistant (SPEC 10.4): a local simulation built from the demo data; no AI is called
+  aiDb() {
+    if (!this.db.ai) {
+      const now = Date.now();
+      const people = this.db.profiles.filter((p) => p.approved);
+      const usage = [];
+      people.forEach((p, k) => {
+        for (let d = 0; d < 6 + k * 3; d++) {
+          usage.push({ user_id: p.id, ts: new Date(now - (d * 19 + k * 7) * 3600e3).toISOString(), model: 'claude-opus-5-5', status: 'ok',
+            cost_usd: Number((0.04 + ((d * 7 + k * 3) % 9) / 100).toFixed(4)), input_tokens: 18000 + d * 900, output_tokens: 900 + k * 120 });
+        }
+      });
+      this.db.ai = { convs: [], msgs: [], usage, seq: 1,
+        config: { id: 1, enabled: true, member_daily_limit: 20, admin_daily_limit: 100, monthly_budget_usd: 30, model: 'claude-opus-5-5', updated_at: new Date(now - 86400e3).toISOString(), updated_by: null } };
+    }
+    return this.db.ai;
+  }
+  aiUsedToday(uid) {
+    const day = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+    return this.aiDb().usage.filter((u) => u.user_id === uid && new Date(Date.parse(u.ts) + 7 * 3600e3).toISOString().slice(0, 10) === day).length;
+  }
+  async aiQuota() {
+    await this.wait(80); this.approvedOrThrow();
+    const ai = this.aiDb(), c = ai.config;
+    const month = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 7);
+    const monthCost = ai.usage.filter((u) => new Date(Date.parse(u.ts) + 7 * 3600e3).toISOString().slice(0, 7) === month).reduce((s, u) => s + Number(u.cost_usd || 0), 0);
+    const q = { enabled: c.enabled, model: c.model, used_today: this.aiUsedToday(this.uidCur),
+      limit_today: this.isAdmin() ? c.admin_daily_limit : c.member_daily_limit, budget_reached: monthCost >= Number(c.monthly_budget_usd) };
+    if (this.isAdmin()) Object.assign(q, { month_cost_usd: Number(monthCost.toFixed(4)), monthly_budget_usd: c.monthly_budget_usd });
+    return q;
+  }
+  async aiConfig() { await this.wait(80); this.approvedOrThrow(); return clone(this.aiDb().config); }
+  async updateAiConfig(patch) {
+    await this.wait(); if (!this.isAdmin()) throw new ApiError('admin_only');
+    const c = this.aiDb().config;
+    const next = { ...c, ...patch };
+    const int = (v, lo, hi) => Number.isInteger(Number(v)) && Number(v) >= lo && Number(v) <= hi;
+    if (!int(next.member_daily_limit, 0, 1000) || !int(next.admin_daily_limit, 0, 5000) || !(Number(next.monthly_budget_usd) >= 0 && Number(next.monthly_budget_usd) <= 100000)
+      || !['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'].includes(next.model)) throw new ApiError('invalid', '', 'ค่าที่ใส่อยู่นอกช่วงที่ตั้งได้');
+    const before = clone(c);
+    Object.assign(c, { enabled: !!next.enabled, member_daily_limit: Number(next.member_daily_limit), admin_daily_limit: Number(next.admin_daily_limit),
+      monthly_budget_usd: Number(next.monthly_budget_usd), model: next.model, updated_at: new Date().toISOString(), updated_by: this.uidCur });
+    this.audit(null, 'ai_config_update', before, clone(c));
+    return clone(c);
+  }
+  async aiUsage(fromIso) {
+    await this.wait(); this.approvedOrThrow();
+    const from = Date.parse(fromIso);
+    return clone(this.aiDb().usage.filter((u) => Date.parse(u.ts) >= from && (this.isAdmin() || u.user_id === this.uidCur)).sort((a, b) => b.ts.localeCompare(a.ts)));
+  }
+  async listConversations() {
+    await this.wait(80); this.approvedOrThrow();
+    return clone(this.aiDb().convs.filter((c) => c.user_id === this.uidCur).sort((a, b) => b.updated_at.localeCompare(a.updated_at)));
+  }
+  async conversationMessages(id) {
+    await this.wait(80); this.approvedOrThrow();
+    const ai = this.aiDb();
+    if (!ai.convs.some((c) => c.id === id && c.user_id === this.uidCur)) throw new ApiError('conversation_not_found');
+    return clone(ai.msgs.filter((m) => m.conversation_id === id).sort((a, b) => a.id - b.id));
+  }
+  async deleteConversation(id) {
+    await this.wait(); this.approvedOrThrow();
+    const ai = this.aiDb();
+    ai.convs = ai.convs.filter((c) => !(c.id === id && c.user_id === this.uidCur));
+    ai.msgs = ai.msgs.filter((m) => m.conversation_id !== id || ai.convs.some((c) => c.id === id));
+  }
+  async chat(req, onEvent, signal) {
+    this.approvedOrThrow();
+    const { demoChat } = await import('./chat-demo.js');
+    return demoChat(this, req, onEvent, signal);
   }
 
   async listDownloads() { await this.wait(); this.approvedOrThrow(); return clone(this.db.downloads); }

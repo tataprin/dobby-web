@@ -1,6 +1,7 @@
 // Shared test helpers: a fresh PGlite database with the Supabase stubs and schema.sql applied (twice),
 // plus a way to run SQL "as a client" exactly like PostgREST does it:
 //   set role authenticated + set_config('request.jwt.claims', '<json>') -> auth.uid() / auth.jwt() work.
+// asService() / asRole('anon') run SQL as the service_role / anon API roles (no user).
 import { PGlite } from '@electric-sql/pglite';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -87,6 +88,27 @@ class Ctx {
     } finally {
       await this.reset();
     }
+  }
+
+  /**
+   * Run SQL as an API role without a signed-in user, like PostgREST does with that key:
+   * 'service_role' (the Edge Function's service key) or 'anon'. auth.uid() is null.
+   */
+  async asRole(role, text, params = []) {
+    if (!['service_role', 'anon'].includes(role)) throw new Error(`asRole: unexpected role ${role}`);
+    await this.reset();
+    await this.db.query(`select set_config('request.jwt.claims', $1, false)`, [JSON.stringify({ role })]);
+    await this.db.exec(`set role ${role}`);
+    try {
+      return (await this.db.query(text, params)).rows;
+    } finally {
+      await this.reset();
+    }
+  }
+
+  /** Run SQL as service_role (see asRole). */
+  asService(text, params = []) {
+    return this.asRole('service_role', text, params);
   }
 
   /** Create an auth user (the profile comes from the trigger). */

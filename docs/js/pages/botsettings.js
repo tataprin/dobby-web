@@ -7,7 +7,8 @@ import { app, currentBot, updateBotRow, on, ownsBot } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, onlineBadge, pendingChip, rejectionsBlock, appliedVersion, isPending, applyProgress } from '../botctl.js';
 import { liveSwitch, appliedLive } from '../liveswitch.js';
 import { panel, pageHead, noBotState, stepper, bigToggle, segmented, progressSteps, helpBtn } from '../views.js';
-import { normalizeParams, presetFromLive, remoteSubset, defaults } from '../params.js';
+import { normalizeParams, presetFromLive, remoteSubset, defaults, PARAM_BY_KEY, coerce } from '../params.js';
+import { PROPOSAL_KEY } from '../chat.js';
 import { buildSet, setFileName } from '../setfile.js';
 import { autoBlackouts } from '../autoblackout.js';
 import { STRATS, ASIA, lockMode, lotsSame, mainLot, currentValues, setLotsAll, syncMaxLots, setLockMode, fixHiddenLocks,
@@ -90,6 +91,7 @@ export async function render(root, ctx) {
   const nowBox = h('section', { class: 'set-sec now-card', id: 'set-now', 'aria-label': 'ค่าที่บอทใช้อยู่ตอนนี้' });
   const liveBox = h('div'), pauseBox = h('div');
   const editorBox = h('section', { class: 'editor', 'aria-label': 'ปรับการตั้งค่าบอท', id: 'edit' });
+  const aiNote = h('div', { class: 'ai-note', hidden: true }); // SPEC 10.5: the AI proposal's note above the editor
   const sidesBox = h('section', { class: 'set-sec', id: 'set-sides', 'aria-label': 'ฝั่งที่เข้าได้' });
   const boBox = h('section', { class: 'set-sec', id: 'set-bo', 'aria-label': 'งดเข้าไม้' });
   // งดเข้าไม้: the automatic part (SPEC 9.3, its own editor that keeps unsent edits) above the windows set by hand
@@ -509,6 +511,7 @@ export async function render(root, ctx) {
     v = clone(baseVals);
     lotMode = lotsSame(v) ? 'same' : 'per';
     writeDraft(null);
+    aiNote.hidden = true;
     onChange();
   }
   function changeList(ch) {
@@ -543,6 +546,7 @@ export async function render(root, ctx) {
       ctl = await patchDesired(bot.id, (d) => { d.params = params; });
       justSent = true;
       writeDraft(null);
+      aiNote.hidden = true;
       B = computeBase();
       baseVals = clone(B.editBase);
       v = clone(B.editBase);
@@ -613,6 +617,31 @@ export async function render(root, ctx) {
         h('div', { class: 'grow' }, h('p', { class: 'pick-name' }, p.name), h('p', { class: 'muted small' }, summaryText(pv, cur()))),
         h('button', { class: 'btn small primary', type: 'button', onclick: () => { applyPreset(p); m.close(); } }, 'ใช้ค่านี้'));
     })));
+  }
+  // A change the AI assistant proposed (SPEC 10.5): loaded as unsent edits, sent only with the normal confirm dialog.
+  function applyAiProposal() {
+    let p = null;
+    try { p = JSON.parse(sessionStorage.getItem(PROPOSAL_KEY) || 'null'); sessionStorage.removeItem(PROPOSAL_KEY); } catch { p = null; }
+    history.replaceState(null, '', '#/bot'); // a reload must not load it again
+    if (!p) return;
+    if (p.bot_id !== bot.id || !(Date.now() - Number(p.ts) < 3600e3)) { toast('ข้อเสนอนี้เก่าเกินไปหรือเป็นของบอทอื่น ถามผู้ช่วยใหม่อีกครั้ง', 'error', 6000); return; }
+    if (!editable()) { toast('บอทนี้ยังรับค่าจากเว็บไม่ได้ จึงใช้ข้อเสนอนี้ไม่ได้', 'error', 6000); return; }
+    const vals = {};
+    for (const c of Array.isArray(p.changes) ? p.changes : []) {
+      const def = PARAM_BY_KEY[c && c.key];
+      if (!def || !def.remote) continue;
+      const x = coerce(def, c.to);
+      if (x !== undefined) vals[c.key] = x;
+    }
+    if (!Object.keys(vals).length) { toast('ข้อเสนอนี้ไม่มีค่าที่เว็บเปลี่ยนให้ได้', 'error'); return; }
+    v = normalizeParams({ ...v, ...vals });
+    lotMode = lotsSame(v) ? 'same' : 'per';
+    onChange();
+    aiNote.replaceChildren(callout('info', 'ค่าที่ผู้ช่วย AI เสนอ',
+      p.summary ? h('p', null, p.summary) : null,
+      h('p', null, 'ยังไม่ได้ส่งให้บอท ตรวจรายการที่เปลี่ยนในแถบด้านล่าง แล้วกด "บันทึกและส่งให้บอท" ถ้าไม่ต้องการ กด "ยกเลิก"')));
+    aiNote.hidden = false;
+    aiNote.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
   function applyPreset(p) {
     v = normalizeParams({ ...v, ...remoteSubset(normalizeParams(p.params)) });
@@ -811,6 +840,8 @@ export async function render(root, ctx) {
   if (presetId && editable()) {
     ctx.api.listPresets().then((list) => { const p = list.find((x) => x.id === presetId); if (p) applyPreset(p); }).catch(() => {});
   }
+  editorBox.before(aiNote);
+  if (!friend && ctx.query.get('ai') === '1') applyAiProposal();
 
   const unsub = ctx.api.subscribeBot(bot.id, {
     status: (row) => { if (!row || !row.status) return; st = row.status; resync(); drawHead(); drawNow(); drawLive(); },

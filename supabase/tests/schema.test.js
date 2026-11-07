@@ -4,14 +4,20 @@ import assert from 'node:assert/strict';
 import { freshDb, SCHEMA_SQL, SEED_SQL, CODE_RE } from './helpers.js';
 
 const TABLES = ['profiles', 'invites', 'bots', 'bot_status', 'journal', 'bot_control', 'presets', 'audit',
-  'news_events', 'bars', 'cash_flows', 'trade_notes'];
-const SEQUENCES = ['journal_id_seq', 'audit_id_seq', 'news_events_id_seq', 'cash_flows_id_seq'];
+  'news_events', 'bars', 'cash_flows', 'trade_notes', 'ai_config', 'ai_conversations', 'ai_messages', 'ai_usage'];
+const SEQUENCES = ['journal_id_seq', 'audit_id_seq', 'news_events_id_seq', 'cash_flows_id_seq',
+  'ai_messages_id_seq', 'ai_usage_id_seq'];
 const RPCS = ['is_approved()', 'is_admin()', 'owns_bot(uuid)', 'live_gate_status()', 'redeem_invite(text)',
   'create_invite(text,integer,text)', 'revoke_invite(text)', 'admin_set_user(uuid,text,boolean,boolean)',
-  'set_display_name(text)', 'admin_overview()', 'register_bot(text,jsonb)'];
+  'set_display_name(text)', 'admin_overview()', 'register_bot(text,jsonb)', 'ai_quota()'];
+// callable by service_role only (the Edge Function `chat`), never by a client
+const SERVICE_RPCS = ['ai_start_turn(uuid,uuid)',
+  'ai_finish_turn(bigint,text,integer,integer,integer,integer,numeric,uuid)'];
 const INTERNAL = ['gen_invite_code()', 'handle_new_user()', 'bot_control_before()', 'bot_control_audit()',
   'presets_before()', 'presets_audit()', 'bots_before()', 'bots_audit_delete()', 'bot_status_before()',
-  'journal_skip_duplicate()', 'cash_flows_before()', 'cash_flows_audit()', 'trade_notes_before()'];
+  'journal_skip_duplicate()', 'cash_flows_before()', 'cash_flows_audit()', 'trade_notes_before()',
+  'ai_used_today(uuid)', 'ai_month_cost()', 'ai_config_before()', 'ai_config_audit()',
+  'ai_messages_touch_conversation()'];
 
 let ctx;
 before(async () => { ctx = await freshDb({ runs: 2 }); });
@@ -40,7 +46,7 @@ test('anon has no privileges on any table, sequence or RPC', async () => {
     const [r] = await ctx.sql(`select has_sequence_privilege('anon', $1, 'USAGE,SELECT,UPDATE') as p`, [`public.${s}`]);
     assert.equal(r.p, false, `anon on ${s}`);
   }
-  for (const f of [...RPCS, ...INTERNAL]) {
+  for (const f of [...RPCS, ...SERVICE_RPCS, ...INTERNAL]) {
     const [r] = await ctx.sql(`select has_function_privilege('anon', $1, 'EXECUTE') as p`, [`public.${f}`]);
     assert.equal(r.p, false, `anon execute ${f}`);
   }
@@ -55,12 +61,27 @@ test('authenticated gets exactly the intended table privileges (no TRUNCATE, no 
     bot_control: ['SELECT', 'UPDATE'],
     bars: ['SELECT', 'INSERT', 'UPDATE'],
     cash_flows: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'], trade_notes: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
+    ai_config: ['SELECT', 'UPDATE'],
+    ai_conversations: ['SELECT', 'INSERT', 'DELETE'],        // + UPDATE on the title column only (below)
+    ai_messages: ['SELECT', 'INSERT', 'DELETE'],
+    ai_usage: ['SELECT'],
   };
+  assert.deepEqual(Object.keys(expected).sort(), [...TABLES].sort(), 'every table has an expectation');
   for (const [t, privs] of Object.entries(expected)) {
     for (const p of ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) {
       const [r] = await ctx.sql(`select has_table_privilege('authenticated', $1, $2) as ok`, [`public.${t}`, p]);
       assert.equal(r.ok, privs.includes(p), `authenticated ${p} on ${t}`);
     }
+  }
+  for (const col of ['id', 'user_id', 'title', 'created_at', 'updated_at']) {
+    const [r] = await ctx.sql(`select has_column_privilege('authenticated', 'public.ai_conversations', $1, 'UPDATE') as ok`, [col]);
+    assert.equal(r.ok, col === 'title', `authenticated UPDATE on ai_conversations.${col}`);
+  }
+  // sequences: only the ones behind client inserts
+  for (const s of SEQUENCES) {
+    const [r] = await ctx.sql(`select has_sequence_privilege('authenticated', $1, 'USAGE') as ok`, [`public.${s}`]);
+    assert.equal(r.ok, ['journal_id_seq', 'news_events_id_seq', 'cash_flows_id_seq', 'ai_messages_id_seq'].includes(s),
+      `authenticated USAGE on ${s}`);
   }
 });
 
@@ -70,6 +91,16 @@ test('RPCs: executable by authenticated, security definer, search_path=public; i
                                       p.prosecdef, p.proconfig
                                from pg_proc p where p.oid = $1::regprocedure`, [`public.${f}`]);
     assert.equal(r.p, true, `authenticated execute ${f}`);
+    assert.equal(r.prosecdef, true, `${f} security definer`);
+    assert.deepEqual(r.proconfig, ['search_path=public'], `${f} search_path`);
+  }
+  for (const f of SERVICE_RPCS) {
+    const [r] = await ctx.sql(`select has_function_privilege('authenticated', $1, 'EXECUTE') as a,
+                                      has_function_privilege('service_role', $1, 'EXECUTE') as s,
+                                      p.prosecdef, p.proconfig
+                               from pg_proc p where p.oid = $1::regprocedure`, [`public.${f}`]);
+    assert.equal(r.a, false, `authenticated must not execute ${f}`);
+    assert.equal(r.s, true, `service_role executes ${f}`);
     assert.equal(r.prosecdef, true, `${f} security definer`);
     assert.deepEqual(r.proconfig, ['search_path=public'], `${f} search_path`);
   }

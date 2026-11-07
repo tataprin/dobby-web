@@ -9,6 +9,7 @@ import { modChip, sideEl, panel, pageHead, noBotState } from '../views.js';
 import { whyOpened, explainEvent, parseOpenDetail } from '../explain.js';
 import { tradeChart, barsFromRows } from '../tradechart.js';
 import { readBars } from '../pricechart.js';
+import { openChat } from '../chat.js';
 
 const HOUR = 3600000, MIN = 60000;
 const TIMELINE = new Set(['SIGNAL', 'ARM', 'ORDER', 'OPEN', 'NEAR1', 'NEARTP', 'LOCK1', 'LOCK', 'SHADOWLOCK1', 'SHADOWLOCK', 'CLOSE', 'CANCEL', 'ERROR', 'SKIP']);
@@ -68,7 +69,9 @@ export async function render(root, ctx) {
   const whyBox = panel('ทำไมบอทเปิดไม้นี้', { cls: 'why' });
   const noteBox = panel('บันทึกของไม้นี้', { cls: 'tnote', sub: ro ? 'ของเจ้าของบอท ดูอย่างเดียว' : 'จดไว้ดูย้อนหลัง แท็กใช้กรองในรายการเทรด' });
   mount(root, back,
-    pageHead(title, h('span', { class: 'row gap wrap' }, chips), null, 'history'),
+    pageHead(title, h('span', { class: 'row gap wrap' }, chips),
+      h('button', { class: 'btn small', type: 'button', onclick: () => openChat('ทำไมไม้นี้ถึงเปิด และเกิดอะไรขึ้นกับไม้นี้บ้าง', { trade_key: trade.key || undefined }) }, icon('chat'), 'ถาม AI เรื่องไม้นี้'),
+      'history'),
     figs(),
     panel('ราคาช่วงที่ถือไม้', { sub: 'ช่วงที่ถือไม้แรเงาไว้ เส้นประจางคือ VWAP' }, chart, legend()),
     h('div', { class: 'dash-cols' }, whyBox, noteBox),
