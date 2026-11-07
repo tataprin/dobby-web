@@ -1,20 +1,30 @@
-// Settings: display name, password, 2FA (TOTP enroll with QR, unenroll), theme, account.
-import { h, icon, fmtThai, toast, errText, confirmDialog, openModal, errorState, loadingState, field, busy, copyText, callout, newId } from '../util.js';
+// ตั้งค่าบัญชี: grouped rows like ตั้งค่าบอท (label left, control right). Display name, password (dialog), 2FA (TOTP enroll
+// with QR, unenroll), theme, account facts and sign out.
+import { h, icon, fmtThai, toast, errText, confirmDialog, openModal, field, busy, copyText, newId, mount } from '../util.js';
 import { app, isAdmin } from '../state.js';
-import { panel, pageHead } from '../views.js';
+import { pageHead } from '../views.js';
 import { themeSegment } from '../app.js';
+
+// one settings row: label (+ hint) left, control right
+const row = (label, hint, ...ctrl) => h('div', { class: 'set-row' },
+  h('div', { class: 'set-row-main' },
+    h('div', { class: 'set-copy' }, h('p', { class: 'set-label' }, label), hint ? h('p', { class: 'hint' }, hint) : null),
+    h('div', { class: 'set-ctrl' }, ...ctrl)));
+const section = (id, title, sub, ...rows) => h('section', { class: 'set-sec', id, 'aria-label': title },
+  h('div', { class: 'set-sec-head' }, h('h2', null, title), sub ? h('p', null, sub) : null),
+  h('div', { class: 'group' }, ...rows));
 
 export async function render(root, ctx) {
   root.append(pageHead('ตั้งค่าบัญชี', ctx.app.user ? ctx.app.user.email : '', null, 'live'));
-  const nameBox = h('div'), pwBox = h('div'), mfaBox = h('div'), themeBox = h('div'), accBox = h('div');
-  root.append(h('div', { class: 'grid-2' }, nameBox, pwBox), mfaBox, h('div', { class: 'grid-2' }, themeBox, accBox));
+  const mfaRow = h('div', { class: 'set-row' });
+  const p = app.profile || {};
 
-  // display name
-  const nameIn = h('input', { class: 'input', type: 'text', maxlength: 60, required: true, value: (app.profile && app.profile.display_name) || '' });
+  // display name (inline form: input + save)
+  const nameIn = h('input', { class: 'input', type: 'text', maxlength: 60, required: true, value: p.display_name || '', 'aria-label': 'ชื่อที่แสดง' });
   const nameErr = h('p', { class: 'field-error', role: 'alert' });
-  const nameBtn = h('button', { class: 'btn primary', type: 'submit' }, 'บันทึกชื่อ');
-  nameBox.append(panel('ชื่อที่แสดง', { sub: 'ผู้ดูแลเห็นชื่อนี้ในหน้าผู้ใช้' }, h('form', {
-    class: 'stack',
+  const nameBtn = h('button', { class: 'btn', type: 'submit' }, 'บันทึก');
+  const nameForm = h('form', {
+    class: 'set-row',
     onsubmit: async (e) => {
       e.preventDefault();
       nameErr.textContent = '';
@@ -24,43 +34,70 @@ export async function render(root, ctx) {
       try { await ctx.api.setDisplayName(n); app.profile = await ctx.api.profile(); toast('บันทึกชื่อแล้ว', 'good'); ctx.route(); }
       catch (ex) { nameErr.textContent = errText(ex); busy(nameBtn, false); }
     },
-  }, field('ชื่อ', nameIn), nameErr, nameBtn)));
+  }, h('div', { class: 'set-row-main' },
+    h('div', { class: 'set-copy' }, h('p', { class: 'set-label' }, 'ชื่อที่แสดง'), h('p', { class: 'hint' }, 'ผู้ดูแลเห็นชื่อนี้ในหน้าผู้ใช้')),
+    h('div', { class: 'set-ctrl acct-name' }, nameIn, nameBtn)), nameErr);
 
-  // password
-  const pw = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minlength: 8, required: true });
-  const pw2 = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minlength: 8, required: true });
-  const pwErr = h('p', { class: 'field-error', role: 'alert' });
-  const pwBtn = h('button', { class: 'btn', type: 'submit' }, icon('key'), 'เปลี่ยนรหัสผ่าน');
-  pwBox.append(panel('รหัสผ่าน', { sub: 'ใช้รหัสผ่านนี้ทั้งที่เว็บและตอน login ของเอเจนต์' }, h('form', {
-    class: 'stack',
-    onsubmit: async (e) => {
-      e.preventDefault();
-      pwErr.textContent = '';
-      if (pw.value.length < 8) { pwErr.textContent = 'รหัสผ่านต้องยาวอย่างน้อย 8 ตัวอักษร'; return; }
-      if (pw.value !== pw2.value) { pwErr.textContent = 'รหัสผ่านสองช่องไม่ตรงกัน'; return; }
-      busy(pwBtn, true);
-      try { await ctx.api.updatePassword(pw.value); pw.value = ''; pw2.value = ''; toast('เปลี่ยนรหัสผ่านแล้ว', 'good'); }
-      catch (ex) { pwErr.textContent = errText(ex); }
-      busy(pwBtn, false);
-    },
-  }, field('รหัสผ่านใหม่', pw, { hint: 'อย่างน้อย 8 ตัวอักษร' }), field('ยืนยันรหัสผ่านใหม่', pw2), pwErr, pwBtn,
-  h('p', { class: 'muted small' }, 'เอเจนต์บนเครื่องที่ล็อกอินไว้แล้วยังทำงานต่อ ถ้าต้องการตัดการเชื่อมต่อของเครื่องเก่า ให้รัน login ใหม่ที่เครื่องนั้น'))));
+  root.append(h('div', { class: 'settings-main' },
+    section('acct-profile', 'โปรไฟล์', null, nameForm),
+    section('acct-security', 'ความปลอดภัย', 'รหัสผ่านใช้ทั้งที่เว็บและแอป Dobby ที่เครื่อง',
+      row('รหัสผ่าน', 'อย่างน้อย 8 ตัวอักษร เครื่องที่ล็อกอินไว้แล้วยังทำงานต่อ',
+        h('button', { class: 'btn', type: 'button', onclick: () => passwordDialog() }, icon('key'), 'เปลี่ยนรหัสผ่าน')),
+      mfaRow),
+    section('acct-display', 'การแสดงผล', null, row('ธีม', 'สว่าง มืด หรือตามการตั้งค่าของเครื่อง', themeSegment())),
+    section('acct-account', 'บัญชี', null,
+      h('dl', { class: 'kv' },
+        h('dt', null, 'อีเมล'), h('dd', null, app.user ? app.user.email : '—'),
+        h('dt', null, 'สิทธิ์'), h('dd', null, isAdmin() ? 'ผู้ดูแล (admin)' : 'สมาชิก (member)'),
+        h('dt', null, 'สมัครเมื่อ'), h('dd', null, p.created_at ? fmtThai(Date.parse(p.created_at), 'date') : '—'),
+        h('dt', null, 'โหมด'), h('dd', null, app.mode === 'demo' ? 'ตัวอย่าง (ข้อมูลสมมติ)' : 'เชื่อมต่อ Supabase')),
+      row('ออกจากระบบ', 'ออกจากเว็บบนเครื่องนี้', h('button', { class: 'btn', type: 'button', onclick: () => ctx.signOut() }, icon('logout'), 'ออกจากระบบ')))));
 
-  // 2FA
+  function passwordDialog() {
+    const pw = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minlength: 8, required: true });
+    const pw2 = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minlength: 8, required: true });
+    const err = h('p', { class: 'field-error', role: 'alert' });
+    const fid = newId('pw');
+    const m = openModal({
+      title: 'เปลี่ยนรหัสผ่าน',
+      body: h('form', {
+        id: fid, class: 'stack',
+        onsubmit: async (e) => {
+          e.preventDefault();
+          err.textContent = '';
+          if (pw.value.length < 8) { err.textContent = 'รหัสผ่านต้องยาวอย่างน้อย 8 ตัวอักษร'; return; }
+          if (pw.value !== pw2.value) { err.textContent = 'รหัสผ่านสองช่องไม่ตรงกัน'; return; }
+          const btn = m.foot.querySelector('button[type=submit]');
+          busy(btn, true);
+          try { await ctx.api.updatePassword(pw.value); m.close(); toast('เปลี่ยนรหัสผ่านแล้ว', 'good'); }
+          catch (ex) { busy(btn, false); err.textContent = errText(ex); }
+        },
+      }, field('รหัสผ่านใหม่', pw, { hint: 'อย่างน้อย 8 ตัวอักษร' }), field('ยืนยันรหัสผ่านใหม่', pw2), err,
+      h('p', { class: 'hint' }, 'แอปที่เครื่องที่ล็อกอินไว้แล้วยังทำงานต่อ ถ้าต้องการตัดการเชื่อมต่อของเครื่องเก่า ให้ล็อกอินใหม่ที่เครื่องนั้น')),
+      actions: [{ label: 'ยกเลิก' }, { label: 'เปลี่ยนรหัสผ่าน', kind: 'primary', submit: true, form: fid, icon: 'key' }],
+    });
+    setTimeout(() => pw.focus(), 50);
+  }
+
+  // 2FA row
   async function drawMfa() {
-    mfaBox.replaceChildren(panel('ยืนยันตัวตนสองขั้น (2FA)', {}, loadingState()));
+    const fill = (hint, ...ctrl) => mount(mfaRow, h('div', { class: 'set-row-main' },
+      h('div', { class: 'set-copy' }, h('p', { class: 'set-label' }, 'ยืนยันตัวตนสองขั้น (2FA)'), h('p', { class: 'hint' }, hint)),
+      h('div', { class: 'set-ctrl' }, ...ctrl)));
+    fill('กำลังโหลด…', h('span', { class: 'spinner', 'aria-hidden': 'true' }));
     let factors = [], aal = null;
     try { [factors, aal] = await Promise.all([ctx.api.mfaFactors(), ctx.api.aal().catch(() => null)]); }
-    catch (e) { mfaBox.replaceChildren(panel('ยืนยันตัวตนสองขั้น (2FA)', {}, errorState(e, drawMfa))); return; }
+    catch (e) { fill(errText(e), h('button', { class: 'btn', type: 'button', onclick: drawMfa }, icon('refresh'), 'ลองอีกครั้ง')); return; }
     const verified = factors.filter((f) => f.status === 'verified');
-    mfaBox.replaceChildren(panel('ยืนยันตัวตนสองขั้น (2FA)', { sub: 'ใช้แอป เช่น Google Authenticator, Microsoft Authenticator หรือ 1Password' },
-      verified.length
-        ? [callout('good', '2FA เปิดอยู่', h('p', null, 'ตอนเข้าสู่ระบบ และทุกครั้งที่เปิดเทรดจริง ต้องใส่รหัส 6 หลักจากแอป')),
-          h('ul', { class: 'plain' }, verified.map((f) => h('li', { class: 'row gap wrap between' },
-            h('span', null, icon('shield'), ' ', f.friendly_name || 'TOTP', f.created_at ? h('span', { class: 'muted small' }, ` ตั้งเมื่อ ${fmtThai(Date.parse(f.created_at), 'date')}`) : null),
-            h('button', { class: 'btn small ghost danger-text', type: 'button', onclick: () => unenroll(f, aal) }, 'ปิด 2FA'))))]
-        : [h('p', null, 'ยังไม่ได้เปิด 2FA แนะนำให้เปิด: ถ้ารหัสผ่านหลุด คนอื่นก็ยังเปิดเทรดจริงบนบอทของคุณไม่ได้'),
-          h('button', { class: 'btn primary', type: 'button', onclick: (e) => enroll(e.currentTarget) }, icon('shield'), 'เปิด 2FA')]));
+    if (verified.length) {
+      const f = verified[0];
+      fill(`เปิดอยู่: ${f.friendly_name || 'TOTP'}${f.created_at ? ` ตั้งเมื่อ ${fmtThai(Date.parse(f.created_at), 'date')}` : ''} ตอนเข้าสู่ระบบและทุกครั้งที่เปิดเทรดจริง ต้องใส่รหัส 6 หลักจากแอป`,
+        h('span', { class: 'chip good' }, icon('shield'), 'เปิดอยู่'),
+        h('button', { class: 'btn ghost danger-text', type: 'button', onclick: () => unenroll(f, aal) }, 'ปิด 2FA'));
+    } else {
+      fill('ยังไม่ได้เปิด แนะนำให้เปิด: ถ้ารหัสผ่านหลุด คนอื่นก็ยังเปิดเทรดจริงบนบอทของคุณไม่ได้ ใช้แอป เช่น Google Authenticator หรือ 1Password',
+        h('button', { class: 'btn primary', type: 'button', onclick: (e) => enroll(e.currentTarget) }, icon('shield'), 'เปิด 2FA'));
+    }
   }
 
   async function enroll(btn) {
@@ -127,14 +164,4 @@ export async function render(root, ctx) {
     }
   }
   drawMfa();
-
-  themeBox.append(panel('ธีม', { sub: 'สว่าง มืด หรือตามการตั้งค่าของเครื่อง' }, themeSegment()));
-  const p = app.profile || {};
-  accBox.append(panel('บัญชี', {},
-    h('dl', { class: 'kv' },
-      h('dt', null, 'อีเมล'), h('dd', null, app.user ? app.user.email : '—'),
-      h('dt', null, 'สิทธิ์'), h('dd', null, isAdmin() ? 'ผู้ดูแล (admin)' : 'สมาชิก (member)'),
-      h('dt', null, 'สมัครเมื่อ'), h('dd', null, p.created_at ? fmtThai(Date.parse(p.created_at), 'date') : '—'),
-      h('dt', null, 'โหมด'), h('dd', null, app.mode === 'demo' ? 'ตัวอย่าง (ข้อมูลสมมติ)' : 'เชื่อมต่อ Supabase')),
-    h('button', { class: 'btn ghost', type: 'button', onclick: () => ctx.signOut() }, icon('logout'), 'ออกจากระบบ')));
 }

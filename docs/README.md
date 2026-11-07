@@ -32,21 +32,24 @@ ticker for the selected bot (`status.market.bid`, change since the first M15 bar
 
 | route | page | what it does |
 |---|---|---|
-| `#/dashboard` | ภาพรวม | hero sheet: hallmark stamp (gold = trading live, slate = paused / not connected, cinnabar = offline / needs attention) + one sentence why + today's P&L, then the last 24 h XAUUSD line from `agent_state.bars` (SPEC 8) with faint VWAP, the current price and Dobby's trades from the journal (OPEN ▲ jade buy / ▼ cinnabar sell, CLOSE ring coloured by P&L; hover / tap shows the trade; without bars: "กราฟราคาจะขึ้นเมื่อแอปเวอร์ชันใหม่ส่งข้อมูล"), the settings summary as one sentence, pause / 2 h blackout; engraved numbers row (balance, equity, today with cap meter, since start); open trade with an SL - entry - price - TP gauge; last 8 closed trades; details collapsed |
+| `#/dashboard` | ภาพรวม | hero sheet: hallmark stamp (gold = trading live, slate = paused / not connected, cinnabar = offline / needs attention) + one sentence why + today's P&L, then the last 24 h XAUUSD line from `agent_state.bars` (SPEC 8) with faint VWAP, the current price and Dobby's trades from the journal (OPEN ▲ jade buy / ▼ cinnabar sell, CLOSE ring coloured by P&L; hover / tap shows the trade; without bars: "กราฟราคาจะขึ้นเมื่อแอปเวอร์ชันใหม่ส่งข้อมูล"), the settings summary as one sentence, pause / 2 h blackout; four equal stat cells (balance, equity, today with cap meter, since start: label, value with smaller decimals, foot line); open trade (summary, SL - entry - price - TP gauge, then price, time open and distance to TP / SL in $ and % with the money at TP / SL) beside the last 6 closed trades + "ดูทั้งหมด", both panels one row height; details collapsed |
 | `#/bot` | ตั้งค่าบอท | SPEC 7, as grouped rows (label left, control right) with section anchors (sticky chips on a phone, a side list on wide screens): "ค่าที่บอทใช้อยู่ตอนนี้" (label / value grid) + 3-step apply progress; live switch + pause rows; the simple editor (balance, auto-from-balance, same/per-strategy lots, strategies incl. ASIA16, lock 0/1/2 stages with a price-ladder diagram, daily loss cap, ขั้นสูง); sticky save bar; save / load preset; .set download; sides; blackouts (2 h, next news, any news, custom); control-file overrides (lots / spread / note) under a details |
-| `#/history` | ประวัติ | journal, trades, equity chart (gold line, right axis), calendar heatmap (jade / cinnabar intensity), module stats, CSV |
+| `#/history` | ประวัติ | view tabs (ภาพรวม / รายการเทรด / บันทึกทั้งหมด), one filter bar (dates, 7 วัน / 30 วัน / ทั้งหมด, สูตร; the event filter sits in the journal panel head), module stats, equity chart (gold line, right axis), calendar heatmap (jade / cinnabar intensity), trades, journal, CSV |
 | `#/news` | ข่าว | unchanged |
-| `#/machines` | เครื่องของฉัน | one hairline-separated row per bot: status, last seen, EA / app version, account, rename, set as default (บอทหลัก), delete from the website (explained confirm + "I understand" tick), add-a-PC row |
+| `#/machines` | เครื่องของฉัน | one identical panel per bot: name, status, last seen, six facts in one strip (EA, live, account, app, symbol, linked; the columns line up from one bot to the next), actions (ดูภาพรวม, ตั้งค่าบอท; เปลี่ยนชื่อ, ตั้งเป็นบอทหลัก, ลบออกจากเว็บ with the explained confirm + "I understand" tick), add-a-PC panel |
 | `#/guide`, `#/guide/<section>` | วิธีใช้ | illustrated sections: start, dashboard, settings, live, news, lock, risk, history, machines, trouble (FAQ ids offline, pending, unchanged, windows, password) |
 
 "เพิ่มเติม": `#/presets` (+ `#/presets/<id>`, `#/calc?balance=&lot=`) พรีเซ็ตที่บันทึกไว้, `#/downloads` ดาวน์โหลดแอป,
-`#/users` ผู้ใช้ (admin), `#/audit` บันทึกการเปลี่ยนแปลง, `#/settings` ตั้งค่าบัญชี.
+`#/users` ผู้ใช้ (admin), `#/audit` บันทึกการเปลี่ยนแปลง, `#/settings` ตั้งค่าบัญชี (grouped rows like ตั้งค่าบอท: display name,
+password change in a dialog, 2FA, theme, account facts, sign out).
 Old / alternative addresses redirect: `control`, `botsettings`, `params` -> `bot`; `bots`, `devices` -> `machines`;
 `help`, `howto` -> `guide`; `account` -> `settings`; `download`, `setup` -> `downloads`; `home` -> `dashboard`.
 Gate pages: `#/login`, `#/invite`, `#/mfa`, `#/reset`, `#/disabled`.
 
-Every page head has a "? วิธีใช้" button to the matching guide section. A 4-step welcome tour opens once after the first
-sign-in (`localStorage` `dobby-tour-done`, read/written through `prefs` with try/catch; "ดูทัวร์แนะนำอีกครั้ง" on the guide).
+Every page head has a "? วิธีใช้" button to the matching guide section. A 4-step welcome tour opens once per browser, demo
+mode included: "seen" is written when it opens (so a reload half-way does not bring it back) to `localStorage`
+`dobby-tour-done` (through `prefs`, try/catch), `sessionStorage` and a `dobby_tour` cookie scoped to the site path; any
+one of them keeps it closed. "ดูทัวร์แนะนำอีกครั้ง" on วิธีใช้ replays it.
 
 ## Structure
 
@@ -76,7 +79,17 @@ js/views.js           shared pieces: page head + help button, teaching empty sta
 js/tour.js            first-login welcome tour
 js/guide-art.js       inline SVG illustrations (theme tokens, 360-wide canvas so text stays readable on phones)
 js/pages/*.js         one module per page, `render(root, ctx)` returns an optional cleanup function
+dev/layout-audit.js   dev only (never loaded by the app): layout audit run in the page, see dev/audit-report.md
 ```
+
+## Layout audit (dev)
+
+`DESIGN.md` "Layout system" is checked by `dev/layout-audit.js`. In demo mode open DevTools (or any tool that runs JS in
+the page) and run `await import('./dev/layout-audit.js'); (await window.__layoutAudit()).summary` at each width (1440,
+1280, 1024, 768, 390, 360). It visits every route (plus the no-bot state, dialogs, a toast and the sign-in page) in
+light and dark and reports unequal heights in a row, edges off the content column / 12-column grid, text below 13 px,
+non-standard control heights, horizontal overflow, contrast below 4.5:1 and clipped text. Last results:
+`dev/audit-report.md`.
 
 ## Demo mode
 

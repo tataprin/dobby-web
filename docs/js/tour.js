@@ -1,9 +1,23 @@
-// First-login welcome tour: 4 short dismissible steps, remembered in localStorage (prefs uses try/catch).
+// First-login welcome tour: 4 short dismissible steps. It opens once per browser, demo mode included: "seen" is written
+// the moment it opens (so a reload half-way does not bring it back) to localStorage (prefs, try/catch), sessionStorage and
+// a cookie, any one of which is enough (private windows and storage-blocking browsers keep at least one), plus memory.
+// วิธีใช้ has "ดูทัวร์แนะนำอีกครั้ง" to replay it.
 import { h, icon, mount } from './util.js';
 import { prefs } from './state.js';
 import { ART_WELCOME, ART_DASHBOARD, ART_SETTINGS, ART_HELP } from './guide-art.js';
 
 const KEY = 'tour-done';
+const COOKIE = 'dobby_tour';
+let seenNow = false;
+const cookiePath = () => { try { return location.pathname.replace(/[^/]*$/, '') || '/'; } catch { return '/'; } };
+function readCookie() { try { return document.cookie.split(';').some((c) => c.trim() === `${COOKIE}=1`); } catch { return false; } }
+function readSession() { try { return sessionStorage.getItem(`dobby-${KEY}`) === '1'; } catch { return false; } }
+function markSeen() {
+  seenNow = true;
+  prefs.set(KEY, '1');
+  try { sessionStorage.setItem(`dobby-${KEY}`, '1'); } catch { /* blocked */ }
+  try { document.cookie = `${COOKIE}=1; max-age=31536000; path=${cookiePath()}; SameSite=Lax`; } catch { /* blocked */ }
+}
 const STEPS = [
   {
     title: 'ยินดีต้อนรับสู่ Dobby', art: ART_WELCOME,
@@ -27,7 +41,7 @@ const STEPS = [
   },
 ];
 
-export const tourDone = () => prefs.get(KEY, '') === '1';
+export const tourDone = () => seenNow || prefs.get(KEY, '') === '1' || readSession() || readCookie();
 
 export function maybeStartTour() {
   if (tourDone() || document.querySelector('dialog.tour')) return;
@@ -35,8 +49,10 @@ export function maybeStartTour() {
 }
 
 export function startTour() {
+  if (document.querySelector('dialog.tour')) return;
+  markSeen();
   let i = 0;
-  const finish = () => { prefs.set(KEY, '1'); try { dlg.close(); } catch { /* closed */ } dlg.remove(); };
+  const finish = () => { markSeen(); try { dlg.close(); } catch { /* closed */ } dlg.remove(); };
   const body = h('div', { class: 'tour-body' });
   const dlg = h('dialog', { class: 'modal tour', 'aria-label': 'แนะนำการใช้งาน' }, body);
   dlg.addEventListener('cancel', (e) => { e.preventDefault(); finish(); });

@@ -46,7 +46,7 @@ function signInForm(ctx) {
   const email = h('input', { class: 'input', type: 'email', autocomplete: 'email', required: true });
   const pw = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', required: true });
   const err = h('p', { class: 'field-error', role: 'alert' });
-  const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'เข้าสู่ระบบ');
+  const btn = h('button', { class: 'btn primary big block', type: 'submit' }, 'เข้าสู่ระบบ');
   return h('form', {
     class: 'stack',
     onsubmit: async (e) => {
@@ -75,7 +75,7 @@ function signUpForm(ctx) {
   const code = h('input', { class: 'input code', type: 'text', autocomplete: 'off', autocapitalize: 'characters', spellcheck: false, required: true, placeholder: 'เช่น 7FKEKYJUVZ' });
   const err = h('p', { class: 'field-error', role: 'alert' });
   const done = h('div');
-  const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'สมัครสมาชิก');
+  const btn = h('button', { class: 'btn primary big block', type: 'submit' }, 'สมัครสมาชิก');
   const form = h('form', {
     class: 'stack',
     onsubmit: async (e) => {
@@ -114,7 +114,7 @@ function signUpForm(ctx) {
 function forgotForm(ctx) {
   const email = h('input', { class: 'input', type: 'email', autocomplete: 'email', required: true });
   const err = h('p', { class: 'field-error', role: 'alert' });
-  const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'ส่งลิงก์ตั้งรหัสผ่านใหม่');
+  const btn = h('button', { class: 'btn primary big block', type: 'submit' }, 'ส่งลิงก์ตั้งรหัสผ่านใหม่');
   const form = h('form', {
     class: 'stack',
     onsubmit: async (e) => {

@@ -6,7 +6,7 @@ export function renderSetup() {
   const sample = 'export const SUPABASE_URL = "https://abcdefghijkl.supabase.co";\nexport const SUPABASE_ANON_KEY = "sb_publishable_...";';
   const site = location.origin + location.pathname;
   return h('div', { class: 'bare-wrap' },
-    h('header', { class: 'bare-head' }, h('span', { class: 'brand' }, brandMark(), h('span', { class: 'brand-word' }, 'Dobby'))),
+    h('header', { class: 'bare-head wrap-col' }, h('span', { class: 'brand' }, brandMark(), h('span', { class: 'brand-word' }, 'Dobby'))),
     h('main', { id: 'main', class: 'bare wide' },
       h('section', { class: 'auth-card setup' },
         h('h1', null, 'เว็บนี้ยังไม่ได้เชื่อมกับฐานข้อมูล'),

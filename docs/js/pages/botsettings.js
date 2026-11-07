@@ -120,7 +120,7 @@ export async function render(root, ctx) {
   function drawHead() {
     mount(headBox, pageHead('ตั้งค่าบอท',
       h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name), onlineBadge(onlineInfo(bot, st)),
-        eaVer() ? h('span', { class: 'chip' }, `EA ${eaVer()}`) : null),
+        eaVer() ? h('span', { class: 'chip hide-sm' }, `EA ${eaVer()}`) : null),
       null, 'settings'));
   }
 
@@ -685,12 +685,15 @@ export async function render(root, ctx) {
     fromIn.addEventListener('input', updHint); toIn.addEventListener('input', updHint); updHint();
     mount(boBox,
       h('div', { class: 'set-sec-head' }, h('h2', null, 'งดเข้าไม้ช่วงข่าว'), helpBtn('news', 'วิธีใช้'), h('p', null, 'ช่วงนี้บอทไม่เปิดไม้ใหม่ ไม้ที่เปิดอยู่ยังวิ่งต่อ')),
-      h('div', { class: 'group' }, h('div', { class: 'set-row bo-quick' },
-        h('button', { class: 'btn', type: 'button', onclick: (e) => addBo(Date.now(), Date.now() + 2 * 3600e3, 'งดเข้าไม้ 2 ชม.', e.currentTarget) }, icon('clock'), 'งด 2 ชม. จากตอนนี้'),
-        nextNews ? h('button', {
-          class: 'btn wrap', type: 'button',
-          onclick: (e) => addBo(Date.parse(nextNews.ts_utc) - 30 * MIN, Date.parse(nextNews.ts_utc) + 90 * MIN, nextNews.name, e.currentTarget),
-        }, icon('news'), `งดข่าวถัดไป ${nextNews.name.replace(/\s*\(.*\)/, '')} ${fmtThai(Date.parse(nextNews.ts_utc), 'short')} น.`) : null),
+      h('div', { class: 'group' },
+        setRow(h('p', { class: 'set-label' }, 'งดทันที'), [h('span', { class: 'hint' }, 'บอทไม่เปิดไม้ใหม่ 2 ชั่วโมงนับจากตอนนี้')],
+          h('button', { class: 'btn', type: 'button', onclick: (e) => addBo(Date.now(), Date.now() + 2 * 3600e3, 'งดเข้าไม้ 2 ชม.', e.currentTarget) }, icon('clock'), 'งด 2 ชม.')),
+        nextNews ? setRow(h('p', { class: 'set-label' }, 'ข่าวถัดไป'),
+          [h('span', { class: 'hint' }, `${nextNews.name.replace(/\s*\(.*\)/, '')} ${fmtThai(Date.parse(nextNews.ts_utc), 'short')} น. งด 30 นาทีก่อนถึง 90 นาทีหลัง`)],
+          h('button', {
+            class: 'btn', type: 'button',
+            onclick: (e) => addBo(Date.parse(nextNews.ts_utc) - 30 * MIN, Date.parse(nextNews.ts_utc) + 90 * MIN, nextNews.name, e.currentTarget),
+          }, icon('news'), 'งดช่วงข่าวนี้')) : null,
       list.length ? h('ul', { class: 'bo-list' }, list.map(item)) : h('p', { class: 'muted group-note' }, 'ยังไม่มีช่วงงดเข้าไม้'),
       past.length ? h('div', { class: 'group-note' }, h('button', { class: 'btn small ghost', type: 'button', onclick: () => clearPast() }, icon('trash'), `ล้างช่วงที่ผ่านไปแล้ว (${past.length})`)) : null,
       h('details', { class: 'subpanel' }, h('summary', null, 'เลือกข่าวอื่น หรือกำหนดเวลาเอง'),

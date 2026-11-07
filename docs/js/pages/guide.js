@@ -36,17 +36,20 @@ function faq(id, q, ...a) {
 
 export function render(root, ctx) {
   const target = ctx.parts[0] || '';
-  root.append(pageHead('วิธีใช้', 'อ่านทีละหัวข้อ สั้น ๆ พร้อมรูป', h('button', { class: 'btn small', type: 'button', onclick: () => startTour() }, icon('play'), 'ดูทัวร์แนะนำอีกครั้ง')));
+  root.append(pageHead('วิธีใช้', 'อ่านทีละหัวข้อ สั้น ๆ พร้อมรูป', h('button', { class: 'btn', type: 'button', onclick: () => startTour() }, icon('play'), 'ดูทัวร์แนะนำอีกครั้ง')));
 
-  root.append(h('nav', { class: 'g-toc', 'aria-label': 'หัวข้อ' }, SECTIONS.map((s) => h('a', {
+  // two columns on wide screens (sections + a sticky list of topics, like ตั้งค่าบอท); one column with the topics first below
+  const main = h('div', { class: 'guide-main' });
+  const toc = h('nav', { class: 'g-toc', 'aria-label': 'หัวข้อ' }, SECTIONS.map((s) => h('a', {
     href: `#/guide/${s.id}`,
     onclick: (e) => { e.preventDefault(); history.replaceState(null, '', `#/guide/${s.id}`); go(s.id); },
-  }, h('span', { class: 'g-toc-n', 'aria-hidden': 'true' }, String(SECTIONS.indexOf(s) + 1)), h('span', { class: 'g-toc-copy' }, h('strong', null, s.title), h('span', { class: 'muted small' }, s.short))))));
+  }, h('span', { class: 'g-toc-n', 'aria-hidden': 'true' }, String(SECTIONS.indexOf(s) + 1)), h('span', { class: 'g-toc-copy' }, h('strong', null, s.title), h('span', { class: 'muted small' }, s.short)))));
+  root.append(h('div', { class: 'guide-layout' }, main, toc));
 
   const r = calculate(300, 0.03);
   const demo = app.mode === 'demo';
 
-  root.append(
+  main.append(
     section('start',
       h('p', null, 'ทำครั้งเดียวราว 15 นาที หลังจากนั้นใช้แค่เว็บนี้ ดูสด สั่งงาน และดูประวัติได้จากมือถือ'),
       h('div', { class: 'g-flow' },

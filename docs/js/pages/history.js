@@ -1,6 +1,6 @@
 // History: journal table, paired trades, equity curve, daily calendar heatmap, per-module stats, CSV export.
 import { h, mount, icon, fmtNum, fmtSigned, fmtPct, pnl, fmtThai, timeEl, utcToServer, thaiDayKey, thaiDateInputToUtc,
-  duration, downloadCsv, errorState, loadingState, emptyState, debounce, toneOf } from '../util.js';
+  duration, downloadCsv, errorState, loadingState, emptyState, debounce, toneOf, field } from '../util.js';
 import { app, currentBot, on } from '../state.js';
 import { prepareRows, pairTrades, moduleStats, dailyPnl, equitySeries, journalCsvRows, JOURNAL_HEADER, MODULES,
   EVENT_LABELS, REASON_LABELS } from '../journal.js';
@@ -31,10 +31,11 @@ export async function render(root, ctx) {
   let journalShown = 100;
 
   root.append(pageHead('ประวัติ', h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name), h('span', null, 'ทุกไม้ กราฟพอร์ต และปฏิทินกำไรรายวัน')), null, 'history'));
-  const filterBox = h('div', { class: 'filters panel', role: 'group', 'aria-label': 'ตัวกรอง' });
-  const tabsBox = h('div', { class: 'segmented wide', role: 'tablist', 'aria-label': 'มุมมอง' });
+  // view tabs, then one filter bar (labelled 44 px controls on the 12-column grid), then the view
+  const filterBox = h('div', { class: 'filters', role: 'group', 'aria-label': 'ตัวกรอง' });
+  const tabsBox = h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'มุมมอง' });
   const body = h('div', { class: 'stack-lg' });
-  root.append(filterBox, tabsBox, body);
+  root.append(h('div', { class: 'view-tabs' }, tabsBox), filterBox, body);
   body.append(loadingState('กำลังโหลดบันทึก…'));
 
   async function load(all) {
@@ -47,17 +48,19 @@ export async function render(root, ctx) {
   try { await load(false); } catch (e) { body.replaceChildren(errorState(e, () => ctx.route())); return; }
 
   // ---------------- filters
-  const fromIn = h('input', { class: 'input', type: 'date', value: f.from, 'aria-label': 'ตั้งแต่วันที่' });
-  const toIn = h('input', { class: 'input', type: 'date', value: f.to, 'aria-label': 'ถึงวันที่' });
-  const modSel = h('select', { class: 'input select', 'aria-label': 'สูตร' }, h('option', { value: '' }, 'ทุกสูตร'), MODULES.map((m) => h('option', { value: m }, m)));
-  const evSel = h('select', { class: 'input select', 'aria-label': 'เหตุการณ์' }, h('option', { value: '' }, 'ทุกเหตุการณ์'));
+  const fromIn = h('input', { class: 'input', type: 'date', value: f.from });
+  const toIn = h('input', { class: 'input', type: 'date', value: f.to });
+  const modSel = h('select', { class: 'input select' }, h('option', { value: '' }, 'ทุกสูตร'), MODULES.map((m) => h('option', { value: m }, m)));
+  // the event filter only applies to "บันทึกทั้งหมด", so it sits in that panel's head
+  const evSel = h('select', { class: 'input select ev-sel', 'aria-label': 'เหตุการณ์' }, h('option', { value: '' }, 'ทุกเหตุการณ์'));
   const fillEvents = () => {
     const evs = [...new Set(rows.map((r) => r.event))].sort();
     mount(evSel, h('option', { value: '' }, 'ทุกเหตุการณ์'), evs.map((e) => h('option', { value: e, selected: e === f.event }, `${EVENT_LABELS[e] || e} (${e})`)));
   };
   fillEvents();
-  const quick = (label, days) => h('button', {
-    class: 'btn small', type: 'button',
+  const quickBtns = [];
+  const quick = (label, days) => { const b = h('button', {
+    type: 'button', role: 'radio', dataset: { days: String(days) },
     onclick: async () => {
       f.to = today; f.serverDay = '';
       f.from = days ? ago(days - 1) : '';
@@ -65,7 +68,13 @@ export async function render(root, ctx) {
       if (!days && !loadedAll) { body.replaceChildren(loadingState()); await safeLoad(true); }
       draw();
     },
-  }, label);
+  }, label); quickBtns.push(b); return b; };
+  // the quick range that matches the dates (none when the dates were typed)
+  const markQuick = () => quickBtns.forEach((b) => {
+    const d = Number(b.dataset.days);
+    const on = f.to === today && (d ? f.from === ago(d - 1) : !f.from);
+    b.className = on ? 'on' : ''; b.setAttribute('aria-checked', on ? 'true' : 'false');
+  });
   async function safeLoad(all) {
     try { await load(all); fillEvents(); } catch (e) { body.replaceChildren(errorState(e, () => ctx.route())); throw e; }
   }
@@ -76,10 +85,13 @@ export async function render(root, ctx) {
     draw();
   }, 200);
   [fromIn, toIn, modSel, evSel].forEach((el) => el.addEventListener('change', onFilter));
+  const fld = (label, ctrl, cls) => { const w = field(label, ctrl, { cls }); return w; };
+  const modField = fld('สูตร', modSel, 'f-sel');
   filterBox.append(
-    h('div', { class: 'filter-dates' }, h('label', null, h('span', null, 'ตั้งแต่'), fromIn), h('label', null, h('span', null, 'ถึง'), toIn)),
-    h('div', { class: 'row gap wrap' }, quick('7 วัน', 7), quick('30 วัน', 30), quick('ทั้งหมด', 0)),
-    h('div', { class: 'row gap wrap' }, modSel, evSel));
+    fld('ตั้งแต่', fromIn, 'f-date f-half'), fld('ถึง', toIn, 'f-date f-half'),
+    h('div', { class: 'field f-range' }, h('span', { class: 'label' }, 'ช่วงเวลา'),
+      h('div', { class: 'segmented wide', role: 'radiogroup', 'aria-label': 'ช่วงเวลา' }, quick('7 วัน', 7), quick('30 วัน', 30), quick('ทั้งหมด', 0))),
+    modField);
 
   const drawTabs = () => tabsBox.replaceChildren(...TABS.map((t) => h('button', {
     type: 'button', role: 'tab', 'aria-selected': tab === t.id ? 'true' : 'false', class: tab === t.id ? 'on' : '',
@@ -111,6 +123,7 @@ export async function render(root, ctx) {
 
   function draw() {
     if (chart) { chart.destroy(); chart = null; }
+    markQuick();
     const all = filtered(false);
     const trades = tradesInRange();
     if (!rows.length) {
@@ -134,7 +147,7 @@ export async function render(root, ctx) {
     const series = equitySeries(all);
     body.replaceChildren(
       statsPanel(stats),
-      panel('กราฟพอร์ตจำลอง', { sub: 'ยอดพอร์ตจำลองหลังปิดแต่ละไม้ (v_balance ของแถว CLOSE)' }, chartBox,
+      panel('กราฟพอร์ตจำลอง', { sub: 'ยอดพอร์ตที่บอทนับเอง หลังปิดแต่ละไม้' }, chartBox,
         h('details', { class: 'table-view' }, h('summary', null, 'ดูเป็นตาราง'),
           h('div', { class: 'table-wrap' }, h('table', { class: 'rtable compact' },
             h('thead', null, h('tr', null, ['เวลา', 'สูตร', 'กำไร', 'พอร์ตจำลอง'].map((t) => h('th', { scope: 'col' }, t)))),
@@ -173,14 +186,23 @@ export async function render(root, ctx) {
     if (!box.isConnected) return;
     const dayLabel = new Intl.DateTimeFormat('th-TH-u-ca-gregory', { timeZone: 'Asia/Bangkok', day: 'numeric', month: 'short' });
     const narrow = box.clientWidth < 520;
-    // resolve tokens (some are color-mix()) to plain rgb() for the canvas
-    const probe = h('span', { style: { position: 'absolute', visibility: 'hidden' } });
-    document.body.append(probe);
-    const col = (n) => { probe.style.color = `var(${n})`; return getComputedStyle(probe).color; };
+    // resolve tokens (some are color-mix()) to plain rgba() for the canvas: a fresh probe element per token (a reused one
+    // can return a stale computed colour), then a 1x1 canvas turns any CSS colour syntax into rgba()
     const font = getComputedStyle(document.documentElement).getPropertyValue('--font-ui').trim();
     const numFont = getComputedStyle(document.documentElement).getPropertyValue('--font-num').trim();
+    const col = (n) => {
+      const probe = h('span', { style: { position: 'absolute', visibility: 'hidden', color: `var(${n})` } });
+      document.body.append(probe);
+      const c = getComputedStyle(probe).color;
+      probe.remove();
+      const cv = document.createElement('canvas'); cv.width = cv.height = 1;
+      const cx = cv.getContext('2d', { willReadFrequently: true });
+      if (!cx) return c;
+      cx.fillStyle = c; cx.fillRect(0, 0, 1, 1);
+      const [r, g, b, a] = cx.getImageData(0, 0, 1, 1).data;
+      return `rgba(${r}, ${g}, ${b}, ${Math.round((a / 255) * 100) / 100})`;
+    };
     const C = { line: col('--gold-ink'), ink: col('--ink'), slate: col('--slate'), hair: col('--hair'), sheet: col('--inverse'), onSheet: col('--on-inverse') };
-    probe.remove();
     const canvas = h('canvas', { role: 'img', 'aria-label': `กราฟพอร์ตจำลอง จาก ${fmtNum(series[0].v)} ถึง ${fmtNum(series[series.length - 1].v)}` });
     box.replaceChildren(canvas);
     if (chart) chart.destroy();
@@ -295,9 +317,9 @@ export async function render(root, ctx) {
       class: 'btn small', type: 'button', disabled: !desc.length,
       onclick: () => downloadCsv(`dobby_journal_${safe(bot.name)}_${f.from || 'all'}_${f.to || 'all'}.csv`, JOURNAL_HEADER, journalCsvRows(list)),
     }, icon('download'), 'ส่งออก CSV');
-    if (!desc.length) { body.replaceChildren(panel('บันทึกทั้งหมด', { actions: csvBtn }, h('p', { class: 'muted' }, 'ไม่มีบันทึกตามตัวกรองนี้'))); return; }
+    if (!desc.length) { body.replaceChildren(panel('บันทึกทั้งหมด', { actions: h('div', { class: 'panel-actions' }, evSel, csvBtn) }, h('p', { class: 'muted' }, 'ไม่มีบันทึกตามตัวกรองนี้'))); return; }
     const shown = desc.slice(0, journalShown);
-    body.replaceChildren(panel('บันทึกทั้งหมด', { actions: csvBtn, sub: `${desc.length} แถว เวลาไทย (ชี้ที่เวลาเพื่อดูเวลาเซิร์ฟเวอร์)` },
+    body.replaceChildren(panel('บันทึกทั้งหมด', { actions: h('div', { class: 'panel-actions' }, evSel, csvBtn), sub: `${desc.length} แถว เวลาไทย (ชี้ที่เวลาเพื่อดูเวลาเซิร์ฟเวอร์)` },
       h('div', { class: 'table-wrap' }, h('table', { class: 'rtable journal' },
         h('thead', null, h('tr', null, ['เวลา', 'เหตุการณ์', 'สูตร', 'ฝั่ง', 'ล็อต', 'ราคา', 'SL', 'TP', 'กำไร', 'พอร์ตจำลอง', 'รายละเอียด'].map((t) => h('th', { scope: 'col' }, t)))),
         h('tbody', null, shown.map((r) => h('tr', { class: `ev-${r.event.toLowerCase()}` },

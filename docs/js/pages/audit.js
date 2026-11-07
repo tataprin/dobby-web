@@ -1,5 +1,5 @@
 // Audit: who changed what, when (control, presets, bot deletes, invites, admin actions).
-import { h, icon, fmtThai, errorState, loadingState, emptyState, callout } from '../util.js';
+import { h, icon, fmtThai, errorState, loadingState, emptyState, callout, field } from '../util.js';
 import { app, isAdmin } from '../state.js';
 import { panel, pageHead } from '../views.js';
 
@@ -20,7 +20,7 @@ export async function render(root, ctx) {
   if (isAdmin()) {
     root.append(callout('info', null, h('p', null, 'ในฐานะผู้ดูแล คุณเห็นรายการของตัวเองทั้งหมด และเห็นเฉพาะรายการผู้ใช้/รหัสเชิญของคนอื่น คำสั่งบอทและพรีเซ็ตของเพื่อนเป็นข้อมูลส่วนตัว จึงไม่แสดงที่นี่')));
   }
-  const filterBox = h('div', { class: 'filters' });
+  const filterBox = h('div', { class: 'audit-filters', role: 'group', 'aria-label': 'ตัวกรอง' });
   const listBox = h('div');
   root.append(filterBox, listBox);
   listBox.append(loadingState());
@@ -35,12 +35,12 @@ export async function render(root, ctx) {
   const actor = (id) => (!id ? 'ระบบ' : app.user && id === app.user.id ? 'คุณ' : names[id] || `ผู้ใช้ ${String(id).slice(0, 8)}`);
 
   let group = '', bot = '', shown = 100;
-  const groupSel = h('select', { class: 'input select', 'aria-label': 'ประเภท', onchange: (e) => { group = e.target.value; shown = 100; draw(); } },
+  const groupSel = h('select', { class: 'input select', onchange: (e) => { group = e.target.value; shown = 100; draw(); } },
     FILTERS.map(([v, t]) => h('option', { value: v }, t)));
   const botIds = [...new Set(rows.map((r) => r.bot_id).filter(Boolean))];
-  const botSel = h('select', { class: 'input select', 'aria-label': 'บอท', onchange: (e) => { bot = e.target.value; shown = 100; draw(); } },
+  const botSel = h('select', { class: 'input select', onchange: (e) => { bot = e.target.value; shown = 100; draw(); } },
     h('option', { value: '' }, 'ทุกบอท'), botIds.map((id) => h('option', { value: id }, botName(id))));
-  filterBox.append(h('div', { class: 'row gap wrap' }, groupSel, botIds.length > 1 ? botSel : null));
+  filterBox.append(field('ประเภท', groupSel), botIds.length > 1 ? field('บอท', botSel) : null);
 
   function draw() {
     const list = rows.filter((r) => (!group || GROUP(r.action) === group) && (!bot || r.bot_id === bot));

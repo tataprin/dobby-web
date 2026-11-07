@@ -200,7 +200,9 @@ export async function signOut() {
 function demoBanner() {
   if (app.mode !== 'demo') return null;
   const box = h('div', { class: 'demo-banner', role: 'note' });
-  const draw = () => mount(box, 
+  const inner = h('div', { class: 'demo-in wrap-col' });
+  box.append(inner);
+  const draw = () => mount(inner,
     h('strong', null, 'โหมดตัวอย่าง'),
     h('span', null, app.api && app.api.noBots ? 'กำลังแสดงบัญชีที่ยังไม่มีบอท' : 'ข้อมูลสมมติทั้งหมด ทุกปุ่มกดได้ และหายเมื่อโหลดหน้าใหม่'),
     app.api && app.api.noBots ? h('a', { href: '#/dashboard', onclick: async (e) => { e.preventDefault(); app.api.setDemoNoBots(false); await loadBots(); nav('#/dashboard'); } }, 'แสดงบอทตัวอย่างอีกครั้ง') : null,
@@ -222,8 +224,8 @@ function buildShell() {
       h('div', { class: 'grow' },
         h('div', { class: 'side-user-name' }, (app.profile && app.profile.display_name) || (app.user && app.user.email) || ''),
         h('div', { class: 'muted small side-user-mail', title: isAdmin() ? 'ผู้ดูแลระบบ' : null }, app.user ? app.user.email : ''))),
-    h('div', { class: 'row gap between' }, themeSegment(() => {}, true),
-      h('button', { class: 'btn ghost small', type: 'button', onclick: signOut }, icon('logout'), 'ออกจากระบบ')));
+    h('div', { class: 'side-user-tools' }, themeSegment(() => {}, true),
+      h('button', { class: 'icon-btn', type: 'button', onclick: signOut, 'aria-label': 'ออกจากระบบ', title: 'ออกจากระบบ' }, icon('logout'))));
   drawUser();
   const sideNav = h('nav', { class: 'side-nav', 'aria-label': 'เมนูหลัก' });
   const drawNav = () => mount(sideNav, 
@@ -240,13 +242,13 @@ function buildShell() {
       h('a', { class: 'brand', href: '#/dashboard' }, brandMark(), h('span', { class: 'brand-word' }, 'Dobby')),
       sideNav, userBox),
     h('div', { class: 'col' },
-      h('header', { class: 'topbar' },
+      h('header', { class: 'topbar' }, h('div', { class: 'topbar-in wrap-col' },
         h('a', { class: 'brand brand-top', href: '#/dashboard', 'aria-label': 'Dobby หน้าแรก' }, brandMark(), h('span', { class: 'brand-word' }, 'Dobby')),
         ticker(),
         botPicker(),
         h('div', { class: 'top-actions' },
           h('a', { class: 'icon-btn top-help', href: '#/guide', 'aria-label': 'วิธีใช้', title: 'วิธีใช้' }, icon('help')),
-          themeButton())),
+          themeButton()))),
       demoBanner(),
       main),
     tabbar);
@@ -268,7 +270,7 @@ function bareRoot() {
   shell = null;
   const root = h('main', { id: 'main', class: 'bare', tabindex: '-1' });
   const page = h('div', { class: 'bare-wrap' },
-    h('header', { class: 'bare-head' }, h('span', { class: 'brand' }, brandMark(), h('span', { class: 'brand-word' }, 'Dobby')), themeButton()),
+    h('header', { class: 'bare-head wrap-col' }, h('span', { class: 'brand' }, brandMark(), h('span', { class: 'brand-word' }, 'Dobby')), themeButton()),
     demoBanner(), root);
   mount(document.getElementById('app'), page);
   return root;

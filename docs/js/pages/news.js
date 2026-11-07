@@ -11,7 +11,7 @@ const TIER = { 1: ['สำคัญมาก', 'tier1'], 2: ['สำคัญ', 
 export async function render(root, ctx) {
   const bot = currentBot();
   root.append(pageHead('ข่าว', 'ข่าวเศรษฐกิจที่มีผลกับราคาทอง (เวลาไทย) กดปุ่มข้างข่าวเพื่อให้บอทงดเข้าไม้ช่วงนั้น', null, 'news'));
-  const ctrlBox = h('div'), listBox = h('div'), adminBox = h('div');
+  const ctrlBox = h('div'), listBox = h('div', { class: 'stack-lg' }), adminBox = h('div');
   root.append(ctrlBox, listBox, adminBox);
   listBox.append(loadingState());
   let news = [], ctl = null;
@@ -27,8 +27,8 @@ export async function render(root, ctx) {
   const beforeIn = h('input', { class: 'input', type: 'number', min: '0', max: '600', step: '5', value: '30', inputmode: 'numeric' });
   const afterIn = h('input', { class: 'input', type: 'number', min: '0', max: '600', step: '5', value: '90', inputmode: 'numeric' });
   [beforeIn, afterIn].forEach((el) => el.addEventListener('change', () => drawList()));
-  ctrlBox.append(panel(null, { cls: 'news-ctrl' },
-    h('div', { class: 'row gap wrap end' },
+  ctrlBox.append(panel(null, {},
+    h('div', { class: 'news-ctrl' },
       h('p', { class: 'grow' }, bot ? ['งดเข้าไม้สำหรับ ', h('strong', null, bot.name), app.bots.length > 1 ? h('span', { class: 'muted small' }, ' (เปลี่ยนบอทได้ที่ด้านบน)') : null] : h('span', { class: 'muted' }, 'ยังไม่มีบอท ปุ่มงดเข้าไม้จะใช้ได้เมื่อมีบอท')),
       field('ก่อนข่าว (นาที)', beforeIn, { cls: 'narrow' }), field('หลังข่าว (นาที)', afterIn, { cls: 'narrow' }))));
 
@@ -55,7 +55,7 @@ export async function render(root, ctx) {
       upcoming.length ? h('div', { class: 'news-days' }, [...groups.entries()].map(([k, list]) => h('section', { class: 'news-day' },
         h('h2', null, fmtThai(Date.parse(list[0].ts_utc), 'longday')),
         h('ul', { class: 'news-list' }, list.map(item))))) : emptyState('ไม่มีข่าวที่จะถึง', null),
-      past.length ? h('details', { class: 'panel' }, h('summary', null, `ข่าวที่ผ่านไปใน 24 ชั่วโมง (${past.length})`), h('ul', { class: 'news-list' }, past.map(item))) : null);
+      past.length ? h('details', { class: 'panel past-news' }, h('summary', null, `ข่าวที่ผ่านไปใน 24 ชั่วโมง (${past.length})`), h('ul', { class: 'news-list' }, past.map(item))) : null);
   }
 
   function item(n) {

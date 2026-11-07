@@ -12,7 +12,7 @@ export function renderInvite(root, ctx) {
   const code = h('input', { class: 'input code', type: 'text', autocomplete: 'off', autocapitalize: 'characters', spellcheck: false, required: true, placeholder: 'เช่น 7FKEKYJUVZ' });
   const pre = ctx.query.get('err');
   const err = h('p', { class: 'field-error', role: 'alert' }, pre ? (THAI_ERRORS[pre] || 'ใช้รหัสเชิญไม่สำเร็จ') : '');
-  const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'ใช้รหัสเชิญ');
+  const btn = h('button', { class: 'btn primary big block', type: 'submit' }, 'ใช้รหัสเชิญ');
   root.append(card('ใส่รหัสเชิญ', 'บัญชีนี้สมัครแล้ว แต่ยังไม่ได้รับอนุมัติ ขอรหัสเชิญ 10 ตัวจากผู้ดูแลบอท แล้วใส่ด้านล่าง',
     h('p', { class: 'muted' }, 'อีเมล: ', ctx.app.user ? ctx.app.user.email : ''),
     h('form', {
@@ -45,7 +45,7 @@ export async function renderMfa(root, ctx) {
   if (!factor) { ctx.app.needMfa = false; await ctx.refreshSession(); ctx.nav('#/dashboard', true); return; }
   const input = h('input', { class: 'input otp', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9]{6}', maxlength: 6, required: true, placeholder: '000000' });
   const err = h('p', { class: 'field-error', role: 'alert' });
-  const btn = h('button', { class: 'btn primary block', type: 'submit' }, icon('shield'), 'ยืนยัน');
+  const btn = h('button', { class: 'btn primary big block', type: 'submit' }, icon('shield'), 'ยืนยัน');
   root.append(card('ยืนยัน 2FA', 'บัญชีนี้เปิดการยืนยันสองขั้นไว้ ใส่รหัส 6 หลักจากแอปยืนยันตัวตน',
     h('form', {
       class: 'stack',
@@ -72,13 +72,13 @@ export async function renderMfa(root, ctx) {
 export function renderReset(root, ctx) {
   if (!ctx.app.user) {
     root.append(card('ลิงก์หมดอายุหรือใช้ไปแล้ว', 'ขอลิงก์ตั้งรหัสผ่านใหม่อีกครั้งที่หน้าเข้าสู่ระบบ',
-      h('a', { class: 'btn primary block', href: '#/login?tab=forgot' }, 'ขอลิงก์ใหม่')));
+      h('a', { class: 'btn primary big block', href: '#/login?tab=forgot' }, 'ขอลิงก์ใหม่')));
     return;
   }
   const pw = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minlength: 8, required: true });
   const pw2 = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minlength: 8, required: true });
   const err = h('p', { class: 'field-error', role: 'alert' });
-  const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'บันทึกรหัสผ่านใหม่');
+  const btn = h('button', { class: 'btn primary big block', type: 'submit' }, 'บันทึกรหัสผ่านใหม่');
   root.append(card('ตั้งรหัสผ่านใหม่', `สำหรับ ${ctx.app.user.email}`,
     h('form', {
       class: 'stack',

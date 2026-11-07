@@ -122,6 +122,16 @@ export function pnl(n, d = 2, extra = '') {
   return h('span', { class: `num pnl ${toneOf(Number(n))} ${extra}`.trim() }, fmtSigned(n, d));
 }
 export const fmtLots = (n) => fmtNum(n, 2);
+// Money / price, engraved: the decimals smaller, the unit smaller and lighter (DESIGN.md "Numbers").
+// <span class="money"><span class="num pos"><span class="int">+59</span><span class="dec">.61</span></span><span class="unit">USD</span></span>
+export function money(n, { d = 2, signed = false, tone = signed, unit = '', cls = '' } = {}) {
+  const s = signed ? fmtSigned(n, d) : fmtNum(n, d);
+  const i = s.lastIndexOf('.');
+  const parts = i > 0 && s !== '—' ? [h('span', { class: 'int' }, s.slice(0, i)), h('span', { class: 'dec' }, s.slice(i))] : [s];
+  return h('span', { class: `money ${cls}`.trim() },
+    h('span', { class: `num ${tone ? toneOf(Number(n)) : ''}`.trim() }, parts),
+    unit ? h('span', { class: 'unit' }, unit) : null);
+}
 export function fmtBytes(b) {
   if (!Number.isFinite(b)) return '—';
   if (b < 1024) return `${b} B`;

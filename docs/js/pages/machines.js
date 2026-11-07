@@ -1,6 +1,6 @@
 // เครื่องของฉัน: one card per bot (status, last seen, EA version, rename, delete from the website, set as default).
 // bots.name update and bots delete are allowed to the owner by RLS (delete cascades bot_status/journal/bot_control).
-import { h, mount, icon, fmtNum, fmtThai, ago, toast, errText, openModal, errorState, loadingState, field, busy, callout, newId } from '../util.js';
+import { h, mount, icon, fmtNum, fmtThai, ago, money, toast, errText, openModal, errorState, loadingState, field, busy, callout, newId } from '../util.js';
 import { app, loadBots, selectBot, updateBotRow, defaultBotId, setDefaultBot } from '../state.js';
 import { onlineInfo, normDesired } from '../botctl.js';
 import { pageHead, noBotState } from '../views.js';
@@ -30,7 +30,7 @@ export async function render(root, ctx) {
         h('span', { class: 'add-ico' }, icon('plus')),
         h('div', { class: 'grow' }, h('h2', null, 'เพิ่มเครื่องใหม่'),
           h('p', { class: 'muted' }, 'โหลดแอป Dobby ไปเปิดที่คอมเครื่องใหม่ เข้าสู่ระบบด้วยบัญชีนี้ แล้วทำตามตัวช่วย เครื่องจะขึ้นที่นี่เอง')),
-        h('a', { class: 'btn small', href: '#/downloads' }, icon('download'), 'ดาวน์โหลดแอป')));
+        h('a', { class: 'btn', href: '#/downloads' }, icon('download'), 'ดาวน์โหลดแอป')));
   }
 
   function card(b, isDefault) {
@@ -43,9 +43,10 @@ export async function render(root, ctx) {
     const tone = info.online ? 'good' : info.agentOnline ? 'warn' : Number.isFinite(info.seenAge) ? 'off' : 'new';
     const statusText = info.online ? 'ออนไลน์' : info.agentOnline ? 'MT5 ไม่ตอบ' : Number.isFinite(info.seenAge) ? 'ออฟไลน์' : 'ยังไม่เคยเชื่อมต่อ';
     const live = !!d.live && d.control.mode !== 'pause';
+    // every machine is the same panel: head (name, status, บอทหลัก), six facts in one strip (columns line up from one
+    // machine to the next), then actions (primary left, quiet right)
     return h('article', { class: `machine tone-${tone}${b.id === app.botId ? ' current' : ''}` },
       h('div', { class: 'machine-head' },
-        h('span', { class: 'machine-ico' }, icon('monitor')),
         h('div', { class: 'grow' },
           h('h2', { class: 'machine-name' }, b.name),
           h('p', { class: 'machine-status' }, h('span', { class: 'dot', 'aria-hidden': 'true' }), h('span', { class: 'st' }, statusText),
@@ -54,17 +55,18 @@ export async function render(root, ctx) {
       h('dl', { class: 'machine-facts' },
         h('div', null, h('dt', null, 'รุ่น EA'), h('dd', null, ver ? `v${ver}` : '—', old ? h('span', { class: 'chip warn' }, 'อัปเดตได้') : null)),
         h('div', null, h('dt', null, 'เทรดจริง'), h('dd', null, live ? h('span', { class: 'chip live' }, 'เปิดอยู่') : 'ปิด')),
-        h('div', null, h('dt', null, acc.mode === 'REAL' ? 'บัญชีจริง' : acc.mode ? `บัญชี ${acc.mode}` : 'บัญชี'), h('dd', null, acc.balance != null ? [h('span', { class: 'num' }, fmtNum(acc.balance)), ` ${acc.currency || ''}`] : '—')),
+        h('div', null, h('dt', null, acc.mode === 'REAL' ? 'บัญชีจริง' : acc.mode ? `บัญชี ${acc.mode}` : 'บัญชี'), h('dd', null, acc.balance != null ? money(acc.balance, { unit: acc.currency || '' }) : '—')),
         h('div', null, h('dt', null, 'แอป Dobby'), h('dd', null, b.agent_version ? `v${b.agent_version}` : '—')),
         h('div', null, h('dt', null, 'สัญลักษณ์'), h('dd', null, (st && st.symbol) || b.symbol || '—')),
         h('div', null, h('dt', null, 'เชื่อมเมื่อ'), h('dd', null, b.created_at ? fmtThai(Date.parse(b.created_at), 'date') : '—'))),
-      old ? h('p', { class: 'hint' }, 'รุ่นนี้เปลี่ยนค่าจากเว็บไม่ได้ อัปเดตเป็น 3.04 ได้จากหน้า ', h('a', { href: '#/bot' , onclick: (e) => { e.preventDefault(); openBot(b, '#/bot'); } }, 'ตั้งค่าบอท')) : null,
+      old ? h('p', { class: 'hint' }, 'รุ่นนี้เปลี่ยนค่าจากเว็บไม่ได้ อัปเดตเป็น 3.04 ได้จากหน้า ', h('a', { href: '#/bot', onclick: (e) => { e.preventDefault(); openBot(b, '#/bot'); } }, 'ตั้งค่าบอท')) : null,
       h('div', { class: 'machine-actions' },
-        h('button', { class: 'btn small', type: 'button', onclick: () => openBot(b, '#/dashboard') }, icon('home'), 'ดูภาพรวม'),
-        h('button', { class: 'btn small', type: 'button', onclick: () => openBot(b, '#/bot') }, icon('sliders'), 'ตั้งค่าบอท'),
-        h('button', { class: 'btn small ghost', type: 'button', onclick: () => renameDialog(b) }, icon('edit'), 'เปลี่ยนชื่อ'),
-        isDefault ? null : h('button', { class: 'btn small ghost', type: 'button', onclick: () => { setDefaultBot(b.id); selectBot(b.id); toast(`ตั้ง "${b.name}" เป็นบอทหลักแล้ว เปิดเว็บครั้งหน้าจะเห็นบอทนี้ก่อน`, 'good'); draw(); } }, icon('star'), 'ตั้งเป็นบอทหลัก'),
-        h('button', { class: 'btn small ghost danger-text', type: 'button', onclick: () => deleteDialog(b, live) }, icon('trash'), 'ลบออกจากเว็บ')));
+        h('button', { class: 'btn', type: 'button', onclick: () => openBot(b, '#/dashboard') }, icon('home'), 'ดูภาพรวม'),
+        h('button', { class: 'btn', type: 'button', onclick: () => openBot(b, '#/bot') }, icon('sliders'), 'ตั้งค่าบอท'),
+        h('span', { class: 'spacer', 'aria-hidden': 'true' }),
+        h('button', { class: 'btn ghost', type: 'button', onclick: () => renameDialog(b) }, icon('edit'), 'เปลี่ยนชื่อ'),
+        isDefault ? null : h('button', { class: 'btn ghost', type: 'button', onclick: () => { setDefaultBot(b.id); selectBot(b.id); toast(`ตั้ง "${b.name}" เป็นบอทหลักแล้ว เปิดเว็บครั้งหน้าจะเห็นบอทนี้ก่อน`, 'good'); draw(); } }, icon('star'), 'ตั้งเป็นบอทหลัก'),
+        h('button', { class: 'btn ghost danger-text', type: 'button', onclick: () => deleteDialog(b, live) }, icon('trash'), 'ลบออกจากเว็บ')));
   }
 
   function openBot(b, hash) {

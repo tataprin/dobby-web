@@ -11,9 +11,9 @@ import { calculate, tableForBalance, HORIZON30, DAILY_BASE, BASE_BALANCE, BASE_L
 import { panel, pageHead } from '../views.js';
 
 function tabs(active) {
-  return h('nav', { class: 'segmented wide', 'aria-label': 'พรีเซ็ตและเครื่องคำนวณ' },
+  return h('div', { class: 'view-tabs' }, h('nav', { class: 'segmented', 'aria-label': 'พรีเซ็ตและเครื่องคำนวณ' },
     h('a', { href: '#/presets', class: active === 'presets' ? 'on' : '', 'aria-current': active === 'presets' ? 'page' : null }, icon('doc'), 'พรีเซ็ตที่บันทึกไว้'),
-    h('a', { href: '#/calc', class: active === 'calc' ? 'on' : '', 'aria-current': active === 'calc' ? 'page' : null }, icon('calc'), 'คำนวณล็อต'));
+    h('a', { href: '#/calc', class: active === 'calc' ? 'on' : '', 'aria-current': active === 'calc' ? 'page' : null }, icon('calc'), 'คำนวณล็อต')));
 }
 
 async function botStatus(ctx) {
