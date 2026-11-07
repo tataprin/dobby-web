@@ -19,6 +19,15 @@ http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[2])), functools.parti
 ```
 Open http://localhost:8765/?demo=1 (demo) or http://localhost:8765/ (login with the real config in `js/config.js`).
 
+## Before every commit that touches docs/
+
+```
+python tools/stamp_versions.py
+```
+It gives every module and the stylesheet an address with a hash of its content (an import map in `index.html`), so a
+browser never mixes a new file with an old cached one after an update. `python tools/stamp_versions.py --check` exits 1
+when `index.html` is out of date. Do not edit the block between the stamp markers by hand.
+
 ## Configure
 
 `js/config.js` exports `SUPABASE_URL` and `SUPABASE_ANON_KEY` (Project URL + Publishable key `sb_publishable_...` or the

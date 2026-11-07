@@ -14,12 +14,85 @@
        used for money, prices, lots and percentages (text=), so Thai inside a number span still falls back to Anuphan. -->
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anuphan:wght@300;400;500;600;700&display=swap&subset=thai">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&display=swap&text=0123456789.%2C%2B-%E2%88%92%25%24%3A%2F%C3%97()%E2%88%9EABCDEFGHIJKLMNOPQRSTUVWXYZ">
-  <link rel="stylesheet" href="css/app.css">
   <script>
     // apply the saved theme before first paint (no flash)
     try { var t = localStorage.getItem('dobby-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
   </script>
-  <script type="module" src="js/app.js"></script>
+  <script>
+    // If the browser mixes an old cached file with new ones right after an update, reload once from a fresh address:
+    // a new address fetches a fresh index.html, whose import map points at the new files. Automatic at most once a minute.
+    window.dobbyFreshReload = function (auto) {
+      var now = Date.now();
+      if (auto) {
+        try {
+          var last = +sessionStorage.getItem('dobby-fresh') || 0;
+          if (now - last < 60000) return false;
+          sessionStorage.setItem('dobby-fresh', String(now));
+        } catch (e) { return false; }
+      }
+      var u = new URL(location.href);
+      u.searchParams.set('_r', String(now));
+      location.replace(u.href);
+      return true;
+    };
+    (function () {
+      var u = new URL(location.href);
+      if (u.searchParams.has('_r')) {
+        u.searchParams.delete('_r');
+        history.replaceState(history.state, '', u.pathname + u.search + u.hash);
+      }
+      // the app's own files failed to load or fit together before it started
+      window.addEventListener('error', function (ev) {
+        if (document.documentElement.dataset.booted) return;
+        var t = ev.target, msg = String(ev.message || '');
+        var moduleFailed = t && t.tagName === 'SCRIPT' && t.type === 'module';
+        if (moduleFailed || /requested module|export named|imported module|module script failed/i.test(msg)) {
+          if (navigator.onLine !== false) window.dobbyFreshReload(true);
+        }
+      }, true);
+    })();
+  </script>
+  <!-- stamp:begin (written by tools/stamp_versions.py: do not edit by hand) -->
+  <link rel="stylesheet" href="css/app.css?v=2e5bf006a8">
+  <script type="importmap">
+  { "imports": {
+    "./js/api.js": "./js/api.js?v=f6bdf1dd27",
+    "./js/app.js": "./js/app.js?v=4ae3f1c9d1",
+    "./js/botctl.js": "./js/botctl.js?v=7167a72a17",
+    "./js/config.js": "./js/config.js?v=88b47d3500",
+    "./js/demo.js": "./js/demo.js?v=526e7084f9",
+    "./js/guide-art.js": "./js/guide-art.js?v=9922c8ba57",
+    "./js/hallmark.js": "./js/hallmark.js?v=520fe6dbb0",
+    "./js/journal.js": "./js/journal.js?v=534f162efb",
+    "./js/liveswitch.js": "./js/liveswitch.js?v=ea43f211cd",
+    "./js/lotcalc.js": "./js/lotcalc.js?v=3235ed0f9c",
+    "./js/pages/audit.js": "./js/pages/audit.js?v=4b206fa3ff",
+    "./js/pages/botsettings.js": "./js/pages/botsettings.js?v=9c4454a710",
+    "./js/pages/dashboard.js": "./js/pages/dashboard.js?v=c474a4cfd4",
+    "./js/pages/downloads.js": "./js/pages/downloads.js?v=27f4efcf95",
+    "./js/pages/gate.js": "./js/pages/gate.js?v=a2f2c7eae1",
+    "./js/pages/guide.js": "./js/pages/guide.js?v=fc1bd09536",
+    "./js/pages/history.js": "./js/pages/history.js?v=c65020cf22",
+    "./js/pages/login.js": "./js/pages/login.js?v=94f9801643",
+    "./js/pages/machines.js": "./js/pages/machines.js?v=597db1d1b4",
+    "./js/pages/news.js": "./js/pages/news.js?v=14769df9f5",
+    "./js/pages/presets.js": "./js/pages/presets.js?v=1e0ff451d4",
+    "./js/pages/settings.js": "./js/pages/settings.js?v=d42d09b2d7",
+    "./js/pages/setup.js": "./js/pages/setup.js?v=662372cf9e",
+    "./js/pages/users.js": "./js/pages/users.js?v=b0aee04c41",
+    "./js/params.js": "./js/params.js?v=9afc90bd74",
+    "./js/pricechart.js": "./js/pricechart.js?v=528aeb7ba7",
+    "./js/setfile.js": "./js/setfile.js?v=3163952df7",
+    "./js/simple.js": "./js/simple.js?v=b35dc66cbd",
+    "./js/state.js": "./js/state.js?v=9771a72aef",
+    "./js/ticker.js": "./js/ticker.js?v=6a5e291891",
+    "./js/tour.js": "./js/tour.js?v=557db83062",
+    "./js/util.js": "./js/util.js?v=fe4cbe66f6",
+    "./js/views.js": "./js/views.js?v=88bf307d72"
+  } }
+  </script>
+  <script type="module">import './js/app.js';</script>
+  <!-- stamp:end -->
 </head>
 <body>
   <div id="app">

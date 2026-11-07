@@ -31,6 +31,8 @@ docs/                     the website (GitHub Pages source = main /docs). No bui
   css/app.css
   js/config.js            SUPABASE_URL / SUPABASE_ANON_KEY (empty -> setup screen + demo)
   js/*.js                 app code
+tools/
+  stamp_versions.py       writes the content-hash import map into docs/index.html (run after every docs/ change)
 supabase/
   schema.sql              ONE file the owner pastes into the Supabase SQL editor (idempotent, re-runnable)
   seed_news.sql           news calendar seed (also included at the end of schema.sql)
@@ -277,6 +279,14 @@ it in the `apikey` header only, never as `Authorization: Bearer`; user calls car
 Vanilla JS ES modules, no build. Pinned CDN: `https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm`,
 `https://cdn.jsdelivr.net/npm/chart.js@4.4.1/+esm`. Thai UI (English labels for EA keys). Mobile-first, dark/light.
 Times shown in Thai time (Asia/Bangkok) with server time on hover where relevant.
+
+Caching (added 2026-11-07): GitHub Pages lets browsers keep each file for 10 minutes, so a new page module could meet an
+old cached `util.js` ("does not provide an export named ..."). `docs/index.html` therefore carries an import map that
+sends every `js/**/*.js` to `?v=<sha256 of its content>`, the stylesheet link has the same, and the app starts from an
+inline module so `app.js` also goes through the map. `tools/stamp_versions.py` writes that block (`--check` fails when it
+is stale); run it before every commit that touches docs/. Safety net: when a page's files fail to load, the page reloads
+once from a fresh address (`?_r=<time>`, removed again on load), at most once a minute; otherwise it shows "เว็บเพิ่ง
+อัปเดต" with a reload button.
 
 `js/api.js` exports one interface implemented twice: `SupabaseApi` (real) and `DemoApi` (in-memory synthetic data,
 generated in js/demo.js; NO real account data in the repo). Demo mode when config is empty or `?demo=1`.

@@ -314,8 +314,13 @@ export async function route() {
   mount(root, loadingState());
   window.scrollTo(0, 0);
   if (def.admin && !isAdmin()) { mount(root, emptyState('สำหรับผู้ดูแลระบบเท่านั้น', 'บัญชีนี้ไม่มีสิทธิ์เปิดหน้านี้')); return; }
+  let mod;
+  try { mod = await def.load(); } catch (e) {
+    console.error(e);
+    if (my === seq) pageFilesFailed(root, e);
+    return;
+  }
   try {
-    const mod = await def.load();
     if (my !== seq) return;
     mount(root);
     const ctx = { app, api: app.api, parts: parsed.parts, query: parsed.query, nav, refreshSession, route, signOut };
@@ -330,8 +335,30 @@ export async function route() {
   }
 }
 
+// A page's files did not load. Right after an update this is usually the browser mixing an old cached file with new
+// ones: reload once from a fresh address (index.html's dobbyFreshReload), or offer a button that does it.
+function freshReload(auto) {
+  if (window.dobbyFreshReload) return window.dobbyFreshReload(auto);
+  if (auto) return false;
+  const u = new URL(location.href);
+  u.searchParams.set('_r', String(Date.now()));
+  location.replace(u.href);
+  return true;
+}
+function pageFilesFailed(root, e) {
+  if (navigator.onLine === false) { mount(root, errorState({ thai: 'ไม่มีอินเทอร์เน็ต ต่อเน็ตแล้วกดลองอีกครั้ง' }, () => route())); return; }
+  if (freshReload(true)) return;
+  mount(root, h('div', { class: 'state error', role: 'alert' },
+    icon('refresh'),
+    h('p', { class: 'state-title' }, 'เว็บเพิ่งอัปเดต'),
+    h('p', { class: 'muted' }, 'เบราว์เซอร์ยังเก็บไฟล์รุ่นเก่าไว้บางส่วน กดโหลดใหม่เพื่อใช้รุ่นล่าสุด'),
+    h('button', { class: 'btn primary', type: 'button', onclick: () => freshReload(false) }, icon('refresh'), 'โหลดใหม่')));
+  console.warn('page files failed to load', e);
+}
+
 // ------------------------------------------------------------------ boot
 async function boot() {
+  document.documentElement.dataset.booted = '1';
   applyTheme();
   const appEl = document.getElementById('app');
   if (!wantsDemo() && !isConfigured()) {
