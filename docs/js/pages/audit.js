@@ -12,8 +12,9 @@ const ACTIONS = {
   profile_display_name: 'เปลี่ยนชื่อที่แสดง',
   admin_create_invite: 'สร้างรหัสเชิญ', admin_revoke_invite: 'ยกเลิกรหัสเชิญ', admin_set_user: 'แก้สิทธิ์ผู้ใช้',
   admin_bootstrap_invite: 'รหัสเชิญแอดมินเริ่มต้น',
+  cash_flow_insert: 'เพิ่มเงินฝาก-ถอน', cash_flow_update: 'แก้เงินฝาก-ถอน', cash_flow_delete: 'ลบเงินฝาก-ถอน',
 };
-const GROUP = (a) => (a === 'control' || a === 'bot_delete' ? 'bot' : a.startsWith('preset_') ? 'preset' : a.startsWith('admin_') || a.startsWith('invite_') ? 'admin' : 'other');
+const GROUP = (a) => (a === 'control' || a === 'bot_delete' || a.startsWith('cash_flow_') ? 'bot' : a.startsWith('preset_') ? 'preset' : a.startsWith('admin_') || a.startsWith('invite_') ? 'admin' : 'other');
 const FILTERS = [['', 'ทั้งหมด'], ['bot', 'คำสั่งบอท'], ['preset', 'พรีเซ็ต'], ['admin', 'ผู้ใช้และรหัสเชิญ'], ['other', 'อื่น ๆ']];
 
 export async function render(root, ctx) {
@@ -134,6 +135,10 @@ function controlDiff(a, b) {
   const aSet = new Set(ab.map(key)), bSet = new Set(bb.map(key));
   for (const x of bb) if (!aSet.has(key(x))) out.push(`เพิ่มช่วงงดเข้าไม้ ${fmtThai(Date.parse(x.from_utc), 'short')} ถึง ${fmtThai(Date.parse(x.to_utc), 'time')}${x.label ? ` (${x.label})` : ''}`);
   for (const x of ab) if (!bSet.has(key(x))) out.push(`ลบช่วงงดเข้าไม้ ${fmtThai(Date.parse(x.from_utc), 'short')}${x.label ? ` (${x.label})` : ''}`);
+  const autoLine = (x) => (x && x.enabled ? `เปิด ก่อน ${x.before_min ?? 0} หลัง ${x.after_min ?? 0} นาที` : 'ปิด');
+  if (JSON.stringify(a.auto_news || null) !== JSON.stringify(b.auto_news || null)) out.push(`งดช่วงข่าวอัตโนมัติ: ${autoLine(a.auto_news)} → ${autoLine(b.auto_news)}`);
+  const schLine = (x) => (x && x.enabled ? `เปิด ${(x.weekly || []).length} ช่วงต่อสัปดาห์${x.us_holidays ? ' และวันหยุดสหรัฐ' : ''}` : 'ปิด');
+  if (JSON.stringify(a.schedule || null) !== JSON.stringify(b.schedule || null)) out.push(`ตารางเวลา: ${schLine(a.schedule)} → ${schLine(b.schedule)}`);
   const ap = a.params || null, bp = b.params || null;
   if (JSON.stringify(ap) !== JSON.stringify(bp)) {
     if (!bp) out.push('หยุดส่งค่าพรีเซ็ตจากเว็บ');

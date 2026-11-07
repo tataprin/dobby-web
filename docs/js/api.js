@@ -23,6 +23,14 @@
 //   Writes to a bot are for its owner only: renameBot / deleteBot / updateDesired on someone else's bot throw
 //   ApiError('read_only') before anything is sent (RLS would refuse them anyway: 0 rows).
 //   listDownloads() -> [{name,size,updated_at}], downloadUrl(name) -> url|null, uploadDownload(file), deleteDownload(name)
+// Feature batch (SPEC 9; the same owner-only rule for every write, the admin reads):
+//   bars(botId, fromIso, toIso) -> [{t, close, vwap}] ascending                                   (9.1)
+//   listCashFlows(botId) -> rows (desc), addCashFlow(botId, {ts, amount, note}),
+//   updateCashFlow(botId, id, patch), deleteCashFlow(botId, id)                                    (9.2)
+//   listTradeNotes(botId) -> rows, saveTradeNote(botId, key, {note, tags}), deleteTradeNote(botId, key)   (9.6)
+//   listPushSubscriptions() -> my rows, savePushSubscription({endpoint, p256dh, auth, ua, events}) (RPC register_push_subscription),
+//   updatePushSubscription(endpoint, patch), deletePushSubscription(endpoint), sendTestPush() -> {ok}      (9.7)
+//   A table that is not in the database yet raises ApiError('not_deployed') (schema.sql not updated).
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { createDemoDb, DEMO_OFFSET_MIN } from './demo.js';
 import { sleep, utcToServer } from './util.js';
@@ -73,6 +81,10 @@ const THAI = {
   same_password: 'รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสเดิม',
   storage: 'จัดการไฟล์ไม่สำเร็จ',
   read_only: 'บอทนี้เป็นของสมาชิกคนอื่น ผู้ดูแลดูได้อย่างเดียว สั่งงานไม่ได้',
+  not_deployed: 'ส่วนนี้ยังไม่พร้อมในฐานข้อมูล ผู้ดูแลต้องรัน supabase/schema.sql รุ่นใหม่ก่อน',
+  push_not_ready: 'ฝั่งเซิร์ฟเวอร์ยังไม่ได้ตั้งค่าการแจ้งเตือน (ผู้ดูแลต้องติดตั้งฟังก์ชัน notify ตามคู่มือใน supabase/README.md)',
+  subscription_invalid: 'ข้อมูลการสมัครรับแจ้งเตือนของเบราว์เซอร์นี้ไม่ถูกต้อง ลองปิดแล้วเปิดใหม่',
+  events_invalid: 'เรื่องที่จะแจ้งไม่ถูกต้อง',
 };
 
 export const THAI_ERRORS = THAI;
@@ -90,6 +102,7 @@ export function thaiError(e) {
     'not_approved', 'cannot_demote_self', 'cannot_disable_self', 'desired_invalid', 'name_invalid']) {
     if (low.includes(c)) return pick(c);
   }
+  if (code === 'PGRST205' || code === '42P01' || low.includes('could not find the table') || (low.includes('relation') && low.includes('does not exist'))) return pick('not_deployed');
   if (low.includes('duplicate key') || code === '23505') return new ApiError('duplicate', msg, 'มีรายการนี้อยู่แล้ว');
   if (code === 'reauthentication_needed' || low.includes('reauthentication')) {
     return new ApiError('reauthentication_needed', msg, 'ต้องยืนยันตัวตนใหม่ก่อนเปลี่ยนรหัสผ่าน ออกจากระบบแล้วเข้าใหม่ แล้วลองอีกครั้ง');
@@ -330,6 +343,71 @@ export class SupabaseApi {
   async revokeInvite(code) { unwrap(await this.sb.rpc('revoke_invite', { p_code: code })); }
   async adminSetUser(userId, role, approved, disabled) {
     unwrap(await this.sb.rpc('admin_set_user', { p_user: userId, p_role: role, p_approved: approved, p_disabled: disabled }));
+  }
+
+  // ---- feature batch (SPEC 9)
+  async bars(botId, fromIso, toIso) {
+    return unwrap(await this.sb.from('bars').select('t,close,vwap').eq('bot_id', botId).gte('t', fromIso).lte('t', toIso).order('t').limit(3000));
+  }
+  async listCashFlows(botId) {
+    return unwrap(await this.sb.from('cash_flows').select('*').eq('bot_id', botId).order('ts', { ascending: false }).limit(500));
+  }
+  async addCashFlow(botId, { ts, amount, note }) {
+    await this.assertOwn(botId);
+    return unwrap(await this.sb.from('cash_flows').insert({ bot_id: botId, ts, amount, note: note || null, source: 'manual', status: 'confirmed' }).select().single());
+  }
+  async updateCashFlow(botId, id, patch) {
+    await this.assertOwn(botId);
+    const body = { ...patch, updated_at: new Date().toISOString() };
+    return unwrap(await this.sb.from('cash_flows').update(body).eq('id', id).eq('bot_id', botId).select().single());
+  }
+  async deleteCashFlow(botId, id) {
+    await this.assertOwn(botId);
+    unwrap(await this.sb.from('cash_flows').delete().eq('id', id).eq('bot_id', botId));
+  }
+  async listTradeNotes(botId) {
+    return unwrap(await this.sb.from('trade_notes').select('*').eq('bot_id', botId).limit(5000));
+  }
+  async saveTradeNote(botId, key, { note, tags }) {
+    await this.assertOwn(botId);
+    const row = { bot_id: botId, trade_key: key, note: note || null, tags: tags || [], updated_at: new Date().toISOString(), updated_by: this.uid() };
+    return unwrap(await this.sb.from('trade_notes').upsert(row, { onConflict: 'bot_id,trade_key' }).select().single());
+  }
+  async deleteTradeNote(botId, key) {
+    await this.assertOwn(botId);
+    unwrap(await this.sb.from('trade_notes').delete().eq('bot_id', botId).eq('trade_key', key));
+  }
+  async listPushSubscriptions() {
+    return unwrap(await this.sb.from('push_subscriptions').select('*').eq('user_id', this.uid()).order('created_at'));
+  }
+  // RPC, not an upsert: a browser endpoint subscribed earlier by another account is taken over (RLS would refuse it)
+  async savePushSubscription({ endpoint, p256dh, auth, ua, events }) {
+    return unwrap(await this.sb.rpc('register_push_subscription', { p_endpoint: endpoint, p_p256dh: p256dh, p_auth: auth, p_ua: ua || null, p_events: events }));
+  }
+  async updatePushSubscription(endpoint, patch) {
+    return unwrap(await this.sb.from('push_subscriptions').update(patch).eq('endpoint', endpoint).select().maybeSingle());
+  }
+  async deletePushSubscription(endpoint) {
+    unwrap(await this.sb.from('push_subscriptions').delete().eq('endpoint', endpoint));
+  }
+  // The Edge Function `notify` (SPEC 9.7) with {event: "test"}: the apikey header and the user's access token.
+  async sendTestPush() {
+    const token = this.session && this.session.access_token;
+    if (!token) throw new ApiError('session_expired');
+    let res;
+    try {
+      res = await fetch(`${SUPABASE_URL}/functions/v1/notify`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ event: 'test' }),
+      });
+    } catch { throw new ApiError('push_not_ready'); } // not deployed (no CORS answer) or offline
+    if (res.status === 404) throw new ApiError('push_not_ready');
+    let body = null;
+    try { body = await res.json(); } catch { /* not JSON */ }
+    if (body && body.error === 'vapid_secrets_missing') throw new ApiError('push_not_ready', 'vapid_secrets_missing', 'ฝั่งเซิร์ฟเวอร์ตั้งค่าการแจ้งเตือนยังไม่ครบ (ยังไม่ได้ใส่คีย์ VAPID ใน Supabase secrets)');
+    if (body && THAI[body.error]) throw new ApiError(body.error);
+    if (!res.ok) throw new ApiError('push_failed', `notify ${res.status}`, `ส่งทดสอบไม่สำเร็จ (เซิร์ฟเวอร์ตอบ ${res.status}${body && (body.error || body.message) ? `: ${body.error || body.message}` : ''})`);
+    return { ok: true, ...(body && typeof body === 'object' ? body : {}) };
   }
 
   async listDownloads() {
@@ -750,6 +828,90 @@ export class DemoApi {
     const before = { role: p.role, approved: p.approved, disabled: p.disabled };
     Object.assign(p, { role, approved, disabled });
     this.audit(null, 'admin_set_user', { user: p.display_name, ...before }, { user: p.display_name, role, approved, disabled });
+  }
+
+  // ---- feature batch (SPEC 9), same rules as the RLS policies: the owner writes, the admin reads
+  async bars(botId, fromIso, toIso) {
+    await this.wait(120);
+    this.readBot(botId);
+    const sim = this.db.sims[botId];
+    if (!sim) return [];
+    // demo: a window that starts 3 h before a trade (the trade page) follows that trade's own prices
+    const from = Date.parse(fromIso), to = Date.parse(toIso);
+    return clone(sim.barsBetween(from, to, Date.now(), sim.anchorsFor(from + 3 * 3600000)));
+  }
+  async listCashFlows(botId) {
+    await this.wait(); this.readBot(botId);
+    return clone(this.db.flows.filter((f) => f.bot_id === botId).sort((a, b) => b.ts.localeCompare(a.ts)));
+  }
+  async addCashFlow(botId, { ts, amount, note }) {
+    await this.wait(); this.ownBot(botId, true);
+    const a = Number(amount);
+    if (!Number.isFinite(a) || a === 0) throw new ApiError('amount_invalid', 'amount', 'จำนวนเงินต้องไม่เป็น 0');
+    const now = new Date().toISOString();
+    const row = { id: Math.max(0, ...this.db.flows.map((f) => f.id)) + 1, bot_id: botId, ts, amount: a, source: 'manual', status: 'confirmed', balance_after: null, note: note || null, created_at: now, updated_at: now };
+    this.db.flows.push(row);
+    this.audit(botId, 'cash_flow_insert', null, { amount: a, ts, note: row.note });
+    return clone(row);
+  }
+  async updateCashFlow(botId, id, patch) {
+    await this.wait(); this.ownBot(botId, true);
+    const row = this.db.flows.find((f) => f.id === id && f.bot_id === botId);
+    if (!row) throw new ApiError('not_found');
+    if (patch.amount !== undefined && (!Number.isFinite(Number(patch.amount)) || Number(patch.amount) === 0)) throw new ApiError('amount_invalid', 'amount', 'จำนวนเงินต้องไม่เป็น 0');
+    const before = { amount: row.amount, status: row.status, ts: row.ts, note: row.note };
+    Object.assign(row, clone(patch), { updated_at: new Date().toISOString() });
+    this.audit(botId, 'cash_flow_update', before, { amount: row.amount, status: row.status, ts: row.ts, note: row.note });
+    return clone(row);
+  }
+  async deleteCashFlow(botId, id) {
+    await this.wait(); this.ownBot(botId, true);
+    const row = this.db.flows.find((f) => f.id === id && f.bot_id === botId);
+    this.db.flows = this.db.flows.filter((f) => !(f.id === id && f.bot_id === botId));
+    if (row) this.audit(botId, 'cash_flow_delete', { amount: row.amount, ts: row.ts, note: row.note }, null);
+  }
+  async listTradeNotes(botId) {
+    await this.wait(80); this.readBot(botId);
+    return clone(this.db.notes.filter((x) => x.bot_id === botId));
+  }
+  async saveTradeNote(botId, key, { note, tags }) {
+    await this.wait(); this.ownBot(botId, true);
+    let row = this.db.notes.find((x) => x.bot_id === botId && x.trade_key === key);
+    if (!row) { row = { bot_id: botId, trade_key: key }; this.db.notes.push(row); }
+    Object.assign(row, { note: note || null, tags: [...(tags || [])], updated_at: new Date().toISOString(), updated_by: this.uidCur });
+    return clone(row);
+  }
+  async deleteTradeNote(botId, key) {
+    await this.wait(); this.ownBot(botId, true);
+    this.db.notes = this.db.notes.filter((x) => !(x.bot_id === botId && x.trade_key === key));
+  }
+  // push: own rows only (no admin read). The demo "device" is this browser tab.
+  async listPushSubscriptions() { await this.wait(80); this.approvedOrThrow(); return clone(this.db.push.filter((x) => x.user_id === this.uidCur)); }
+  // like the RPC register_push_subscription: validates, and an endpoint of another account is taken over
+  async savePushSubscription({ endpoint, p256dh, auth, ua, events }) {
+    await this.wait(); this.approvedOrThrow();
+    if (!/^https:\/\//.test(endpoint || '') || !p256dh || !auth) throw new ApiError('subscription_invalid');
+    if (events && !events.every((e) => ['open', 'close', 'daycap', 'offline'].includes(e))) throw new ApiError('events_invalid');
+    let row = this.db.push.find((x) => x.endpoint === endpoint);
+    if (row) row.user_id = this.uidCur;
+    if (!row) { row = { id: Math.max(0, ...this.db.push.map((x) => x.id)) + 1, user_id: this.uidCur, endpoint, created_at: new Date().toISOString() }; this.db.push.push(row); }
+    Object.assign(row, { p256dh, auth, ua: ua ? String(ua).slice(0, 500) : null, events: [...(events || ['open', 'close', 'daycap', 'offline'])] });
+    return row.id;
+  }
+  async updatePushSubscription(endpoint, patch) {
+    await this.wait(); this.approvedOrThrow();
+    const row = this.db.push.find((x) => x.endpoint === endpoint && x.user_id === this.uidCur);
+    if (row) Object.assign(row, clone(patch));
+    return clone(row || null);
+  }
+  async deletePushSubscription(endpoint) {
+    await this.wait(); this.approvedOrThrow();
+    this.db.push = this.db.push.filter((x) => !(x.endpoint === endpoint && x.user_id === this.uidCur));
+  }
+  async sendTestPush() {
+    await this.wait(500); this.approvedOrThrow();
+    const n = this.db.push.filter((x) => x.user_id === this.uidCur).length;
+    return { ok: true, sent: n, removed: 0, failed: 0, demo: true };
   }
 
   async listDownloads() { await this.wait(); this.approvedOrThrow(); return clone(this.db.downloads); }

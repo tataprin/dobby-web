@@ -16,7 +16,9 @@
 //   gaps        neighbours in one row of a CSS grid that are not exactly one column-gap apart
 // Special routes: 'login' (signs the demo out and back in), 'nobot' (demo account without bots), 'dialogs'
 // (welcome tour, a confirm dialog, a sheet with a form, a toast), 'friend' (admin: ภาพรวม / ประวัติ / ตั้งค่าบอท of the
-// first other user's bot, view only), 'friendpreset' (admin: the first other user's preset, read only).
+// first other user's bot, view only), 'friendpreset' (admin: the first other user's preset, read only), 'trade' (the trade
+// page of a closed trade with lock steps), 'friendtrade' (the same on a member's bot, view only), 'flowdialogs' (the cash
+// flow form and the "ปรับทุนตั้งต้นของบอท" offer).
 (() => {
   const TOL = 1.5;
   const BOX = ['.panel', '.fig', '.machine', '.group', '.hero', '.g-sec', '.g-toc', '.news-day', '.filters', '.audit-filters', '.dl-hero',
@@ -254,7 +256,7 @@
         const fb = app.app.friendBots[0];
         if (!fb) return;
         app.selectBot(fb.id);
-        for (const r of ['dashboard', 'history', 'bot']) {
+        for (const r of ['dashboard', 'history', 'history?tab=flows', 'history?tab=summary', 'bot']) {
           await goto(r, wait);
           for (const t of themes) { await setTheme(t); results.push(...checkPage(`friend ${r} ${t}`)); }
         }
@@ -264,6 +266,37 @@
         if (!list.length) return;
         await goto(`presets/${encodeURIComponent(list[0].id)}`, wait);
         for (const t of themes) { await setTheme(t); results.push(...checkPage(`friendpreset ${t}`)); }
+      }
+      return;
+    }
+    if (name === 'trade' || name === 'friendtrade') {
+      if (name === 'friendtrade') { const fb = app.app.friendBots[0]; if (!fb) return; app.selectBot(fb.id); await sleep(wait); }
+      await goto('history?tab=trades', wait);
+      const rows = [...document.querySelectorAll('tr.click-row')];
+      const pick = rows.find((r) => /มีล็อก/.test(r.textContent)) || rows[1] || rows[0];
+      const a = pick && pick.querySelector('a.trade-open');
+      if (a) {
+        location.hash = a.getAttribute('href'); await sleep(wait + 600);
+        for (const t of themes) {
+          await setTheme(t); results.push(...checkPage(`${name} ${t}`));
+          const closed = [...document.querySelectorAll('main details:not([open])')];
+          if (closed.length) { closed.forEach((d) => { d.open = true; }); await sleep(250); results.push(...checkPage(`${name} ${t} (details open)`)); closed.forEach((d) => { d.open = false; }); }
+        }
+      }
+      if (name === 'friendtrade') { app.backToMyBot(); await goto('dashboard', wait); }
+      return;
+    }
+    if (name === 'flowdialogs') {
+      await goto('history?tab=flows', wait);
+      for (const t of themes) {
+        await setTheme(t);
+        const add = [...document.querySelectorAll('main .btn')].find((b) => /เพิ่มรายการ/.test(b.textContent));
+        if (add) { add.click(); await sleep(500); results.push(...checkPage(`flow form ${t}`)); const d = document.querySelector('dialog[open]'); if (d) { d.close(); d.remove(); } }
+        const ok = [...document.querySelectorAll('main .flow.sug .btn.primary')][0];
+        if (ok) {
+          ok.click(); await sleep(1800); results.push(...checkPage(`adjust capital ${t}`));
+          const d = document.querySelector('dialog[open]'); if (d) { d.close(); d.remove(); }
+        }
       }
       return;
     }
@@ -302,14 +335,15 @@
   }
 
   window.__layoutAudit = async function (opts = {}) {
-    const routes = opts.routes || ['dashboard', 'bot', 'history', 'history?tab=trades', 'history?tab=journal', 'news', 'machines', 'guide', 'presets', 'calc',
-      'downloads', 'users', 'users?tab=people', 'audit', 'settings', 'friend', 'friendpreset', 'nobot', 'dialogs', 'login'];
+    const routes = opts.routes || ['dashboard', 'bot', 'history', 'history?tab=trades', 'history?tab=summary', 'history?tab=flows', 'history?tab=journal', 'trade',
+      'news', 'machines', 'guide', 'presets', 'calc', 'downloads', 'users', 'users?tab=people', 'audit', 'settings', 'friend', 'friendpreset', 'friendtrade',
+      'nobot', 'dialogs', 'flowdialogs', 'login'];
     const themes = opts.themes || ['light', 'dark'];
     const wait = opts.wait || 1400;
     const before = document.documentElement.dataset.theme;
     const results = [];
     for (const r of routes) {
-      if (['nobot', 'dialogs', 'login', 'friend', 'friendpreset'].includes(r)) { await special(r, wait, themes, results); continue; }
+      if (['nobot', 'dialogs', 'login', 'friend', 'friendpreset', 'trade', 'friendtrade', 'flowdialogs'].includes(r)) { await special(r, wait, themes, results); continue; }
       await goto(r, wait);
       for (const t of themes) {
         await setTheme(t);

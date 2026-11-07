@@ -79,6 +79,8 @@ audit      id bigserial pk, ts timestamptz not null default now(), actor uuid, b
 news_events id bigserial pk, ts_utc timestamptz not null, name text not null, tier int not null default 1, note text,
            unique (ts_utc, name)
 ```
+Feature batch 2026-11-07 (definitions in 9.1 / 9.2 / 9.6 / 9.7): tables `bars`, `cash_flows`, `trade_notes`,
+`push_subscriptions`, and `bots.offline_notified_at timestamptz` (set only by the push job, see 2.4).
 
 ### 2.2 Functions (RPC, callable by `authenticated`)
 - `is_approved() returns boolean` — caller has a profile with approved and not disabled.
@@ -96,6 +98,11 @@ news_events id bigserial pk, ts_utc timestamptz not null, name text not null, ti
   — admin only (friends' bot details come from the admin select policies, see 2.3).
 - `register_bot(p_name text, p_desired jsonb) returns uuid` — approved caller; inserts bots + bot_control
   (version 1, desired = p_desired). Used by the agent on first setup.
+- `register_push_subscription(p_endpoint text, p_p256dh text, p_auth text, p_ua text default null,
+  p_events text[] default null) returns bigint` (added 2026-11-07, SPEC 9.7) — approved caller; upsert by endpoint for
+  the caller. A browser that another account subscribed before moves to the caller (a plain upsert would be refused by
+  RLS). p_events null keeps the caller's earlier choice (new rows: all four). Errors `not_approved`,
+  `subscription_invalid` (endpoint must be https, keys 1..300 chars), `events_invalid`.
 
 ### 2.3 Row Level Security
 - profiles: select own row; admin selects all. No direct insert/update/delete (RPCs only).
@@ -108,6 +115,11 @@ news_events id bigserial pk, ts_utc timestamptz not null, name text not null, ti
 - The admin reads every friend's bot but writes only their own (2026-11-07, site owner's request): the website shows
   friends' bots to the admin as view-only. The website shows members no notice about it (site owner's decision).
 - news_events: approved select; admin insert/update/delete.
+- bars: approved owner of the bot select / insert / update (update only for PostgREST upserts); admin select. No
+  client delete (cascade only).
+- cash_flows, trade_notes: approved owner of the bot select / insert / update / delete; admin select.
+- push_subscriptions: own rows only (user_id = auth.uid(), approved, not disabled) for every command; no admin read.
+- Unapproved and disabled users see nothing in any of the four batch tables (not even their own rows).
 - Storage bucket `downloads` (private): approved users read; admin insert/update/delete.
 
 ### 2.4 Triggers
@@ -122,6 +134,13 @@ news_events id bigserial pk, ts_utc timestamptz not null, name text not null, ti
 - `bot_control` after insert/update -> audit row (action 'control', before = old.desired, after = new.desired).
 - `presets` after insert/update/delete -> audit row (action 'preset_*', bot_id null).
 - `invites` / `profiles` changes through admin RPCs -> audit row (action 'admin_*').
+- `cash_flows` before insert/update: created_at = now() on insert and kept on update, updated_at = now(); after
+  insert/update/delete -> audit row (action 'cash_flow_insert|update|delete', bot_id = the row's bot, before/after =
+  the row). The owner and the admin read these rows through the existing audit policy (bot_id of an owned bot).
+- `trade_notes` before insert/update: updated_at = now(), updated_by = auth.uid() (client values are ignored).
+- `bots` before insert/update (bots_before): besides the last_seen stamp, `offline_notified_at` is cleared whenever
+  last_seen moves; client roles can never set it (it keeps its old value; null on insert). Only postgres (the pg_cron
+  job of push.sql) sets it.
 
 ### 2.5 Realtime
 `alter publication supabase_realtime add table bot_status, bot_control, bots, journal;` (guarded, idempotent).
@@ -134,9 +153,14 @@ and `select` it so the SQL editor shows the code. The owner signs up on the webs
 
 ### 3.1 Files on the PC
 - Agent folder (where the script lives): `agent_config.json` (0600-ish, never uploaded), `agent_state.json`
-  (seen journal hashes, last applied version, alert state), `agent.log` (rotating), `agent_decisions.log`.
+  (seen journal hashes, last applied version, alert state; since 1.2.0 also `bars_upload` {pos, last_t}, `cash`
+  {balance, pnl, pending} and `control.auto_lines`), `agent.log` (rotating), `agent_decisions.log`, and (1.2.0, only
+  while auto_news is on) `news_cache.json` = the last good ForexFactory week {fetched_at, source, events}.
 - EA common folder: default `%APPDATA%\MetaQuotes\Terminal\Common\Files\Dobby` (override in config / env `DOBBY_COMMON`).
-  Reads `dobby2_status.json`, `dobby2_journal.csv`. Writes ONLY `dobby2_control.txt` and `dobby3_remote.txt`.
+  Reads `dobby2_status.json`, `dobby2_journal.csv`, `dobby2_bars.csv`. Writes ONLY `dobby2_control.txt` and
+  `dobby3_remote.txt`.
+- Network (1.2.0): Supabase, Telegram (when configured) and, only while desired.auto_news.enabled is true,
+  `https://nfs.faireconomy.media/ff_calendar_thisweek.json` (GET, nothing is sent).
 
 ### 3.2 Config (agent_config.json)
 ```json
@@ -181,6 +205,13 @@ and `select` it so the SQL editor shows the code. The owner signs up on the webs
    (virtual.day_cap_hit false->true), EA offline (heartbeat older than 120 s while the agent runs) and back online,
    live switched on/off (applied), daily summary at server 23:30. Thai text. One message per event, rate-limited.
 
+Agent 1.2.0 additions (SPEC 9), in this order inside the online part of the cycle: step 4 also builds the automatic
+blackouts (9.3) and writes them into the control file with the manual ones; step 5 never adopts the agent's own
+automatic lines; then 7. bars upload (9.1); 8. deposit / withdrawal suggestion (9.2); then the bots row. Steps 7 and 8
+come after the control step, so they can never delay or block it: a 4xx answer (e.g. the table does not exist because
+schema.sql was not re-run yet) only adds a warning (`bars_upload_failed` / `cash_flow_failed`) and that upload is
+retried after 10 minutes; a network error backs off like every other network error.
+
 ### 3.5 Validation against local limits
 - `allow_remote_control=false` -> nothing is written.
 - live: if desired.live is true and `allow_remote_live=false` -> treat as live=false? NO: keep the last applied live value
@@ -211,7 +242,12 @@ note=web: <note>
   (to < now) dropped; end on another server day written as a full datetime.
 - `id=W<version zero-padded 3>`.
 - agent_state reported to `bots.agent_state`: {agent_version, applied_version, applied_at, limits, rejected: [codes],
-  last_error, ea_heartbeat_age_s, control_file_id, remote_file_version}.
+  last_error, ea_heartbeat_age_s, control_file_id, remote_file_version}. Also present: reject_details, warnings
+  (codes: offset_unconfirmed, offset_unknown, bad_blackout; 1.2.0: auto_news_invalid, schedule_invalid,
+  bars_upload_failed, cash_flow_failed), offset_source, bars (SPEC 8), and the 9.3 keys (auto_blackouts, news,
+  news_fetched_at, news_error).
+- Since 1.2.0 the blackout lines are the manual desired.blackouts plus the automatic windows of 9.3 (sorted by start,
+  at most 100 lines, manual lines first when the limit is reached).
 
 ### 3.7 Remote file `dobby3_remote.txt` (read only by EA v3.04)
 Written when `allow_remote_live` or `allow_remote_params` is true. UTF-8, CRLF, atomic:
@@ -379,3 +415,184 @@ The agent adds the EA's recent M15 bars to `bots.agent_state.bars` (no DB change
 `dobby2_bars.csv` (columns bar_time (server time), decision_time, close, ..., vwap at index 14 when present). Bar times
 are converted with the confirmed server offset; while the offset is unknown, `bars` is omitted. The website draws the
 price line and places the journal's OPEN / CLOSE rows on it. Demo mode generates synthetic bars.
+
+## 9. Feature batch 2026-11-07 (trade detail, cash flows, auto blackouts, health, summary, risk, notes, push)
+No EA change. Agent 1.2.0 + DobbyApp rebuild, new tables in schema.sql (idempotent, same RLS pattern: the approved owner
+writes, the admin reads everything, members read only their own), website pages. Push notifications need a one-time
+Supabase step by the owner (9.7).
+
+### 9.1 Price history: table `bars`
+```
+bars  bot_id uuid -> bots on delete cascade, t timestamptz not null (bar open time, UTC), close numeric not null,
+      vwap numeric, primary key (bot_id, t)
+```
+RLS: select = approved owner of the bot or admin; insert (and update, for upsert) = approved owner of the bot. No
+client delete (cascade only). Not in realtime.
+Agent: uploads `dobby2_bars.csv` rows (column 0 bar_time server time -> UTC with the confirmed / configured server
+offset; column 2 close; column 14 vwap when present and > 0) incrementally, like the journal: remembers the newest
+uploaded t in agent state; first run backfills at most the last 45 days; batches of <= 500 rows, `on conflict do
+nothing` (Prefer: resolution=ignore-duplicates). Skipped entirely while the offset is unknown (same rule as SPEC 8).
+`agent_state.bars` (SPEC 8) stays as it is.
+Implementation (agent 1.2.0): incremental by byte position in the file (agent_state.json `bars_upload.pos`, like the
+journal: a half-written last line waits, a file that shrank is read again from the start) plus the newest uploaded t
+(only rows with last_t < t <= now + 1 h are sent). Rows: `{bot_id, t: "YYYY-MM-DDTHH:MM:SSZ", close, vwap | null}`.
+Each row is converted with the offset in force when it is uploaded, so live uploads are exact; the first 45-day
+backfill converts every row with the current offset (rows from before a server DST switch can be 1 h off).
+Website: the trade page reads `bars` for [open - 3 h, close + 1 h] (fallback: agent_state.bars when the window is in
+the last 24 h).
+
+### 9.2 Deposits and withdrawals: table `cash_flows`
+```
+cash_flows  id bigserial pk, bot_id uuid -> bots on delete cascade, ts timestamptz not null,
+            amount numeric not null check (amount <> 0)            -- + deposit, - withdrawal (account currency)
+            source text not null check (source in ('auto','manual')),
+            status text not null default 'confirmed' check (status in ('suggested','confirmed','dismissed')),
+            balance_after numeric, note text, created_at timestamptz default now(), updated_at timestamptz default now()
+```
+RLS: approved owner of the bot select / insert / update / delete; admin select. Audited like presets
+(`cash_flow_insert/update/delete`).
+Agent detection (suggestions only; the owner confirms on the website): it keeps the last account balance from the
+status file and the sum of Dobby CLOSE pnl ingested since. On a balance change, unexplained = new - old - sum(pnl). If
+|unexplained| >= max(10, 0.5 % of old) AND it is still unexplained one cycle later (the CLOSE row can arrive a cycle
+after the balance), insert {ts: now, amount: round(unexplained, 2), source: 'auto', status: 'suggested',
+balance_after: new, note: 'balance change not explained by Dobby trades'}. Then reset the baseline. Manual trades by
+the owner also produce suggestions; the website lets the owner dismiss them ("เทรดมือ / ไม่ใช่เงินฝาก").
+Implementation (agent 1.2.0): only a fresh (heartbeat <= 120 s), connected status counts; the baseline is the first
+such balance; CLOSE pnl is summed for journal rows read after the baseline (never the first-run history). "One cycle
+later" = the next cycle AND at least 15 s after the change was first seen; the amount inserted is the unexplained value
+at that moment. A change below the threshold just moves the baseline. A refused insert keeps the suggestion and is
+retried after 10 minutes (warning `cash_flow_failed`); `--dry-run` inserts nothing. DB: note <= 1000 characters;
+created_at / updated_at are set by the server.
+Website: "เงินฝาก-ถอน" list (confirm / dismiss suggestions, add / edit / delete manual rows). Since-start P&L and
+monthly return exclude confirmed flows (trading P&L = equity change - net flows; monthly % by modified Dietz). After a
+confirmed flow it offers, owner only: "ปรับทุนตั้งต้นของบอท" = PATCH desired.params.InpVirtualStart += amount (EA
+v3.04 remote params, normal version check), and shows the SPEC 7.3 lot for the new balance as a suggestion.
+
+### 9.3 Automatic blackouts: `desired.auto_news` and `desired.schedule`
+New optional keys of bot_control.desired (owner PATCH with the version check; they never touch `live`, so no live gate):
+```
+"auto_news": {"enabled": true, "before_min": 30, "after_min": 60, "currencies": ["USD"], "impact": ["High"]}
+"schedule":  {"enabled": true, "us_holidays": true,
+              "weekly": [{"dow": 5, "from": "21:00", "to": "24:00"}]}   -- Thai time (UTC+7), dow 1 = Monday .. 7 = Sunday,
+                                                                          -- "24:00" = end of day; no new entries inside
+```
+Bounds: before/after 0..240 min; weekly <= 14 windows, from < to. Missing / enabled=false = off (default off).
+Agent: fetches `https://nfs.faireconomy.media/ff_calendar_thisweek.json` at most every 4 h (cached in the agent folder;
+keep the last good copy on errors; User-Agent "DobbyAgent/1.2"), keeps events whose country is in `currencies` and
+impact in `impact`, makes windows [t - before, t + after]; adds schedule windows for the next 7 days and whole US
+market holidays (NYSE closed days, 00:00-24:00 New York time; table for 2026-2027 in the agent); merges overlaps; drops
+past windows. These AUTO windows are written to the control file together with the manual desired.blackouts, but the
+agent remembers which lines it generated and NEVER syncs them back into desired.blackouts (SPEC 3.4 back-sync applies to
+manual lines only). Reports in agent_state:
+- `news`: this week's matching events `[{"title", "ts_utc", "currency", "impact", "forecast", "previous"}]`
+- `auto_blackouts`: next 7 days `[{"from_utc", "to_utc", "reason"}]` (reason = event title(s), "ตารางเวลา", or the
+  holiday name)
+- `news_fetched_at` (UTC ISO) or `news_error`
+
+Implementation (agent 1.2.0):
+- The calendar is fetched only while auto_news is enabled (no third-party request otherwise). After a failed fetch the
+  next try is 30 min later; when every event of the cached week is over, every 2 h (the new week appears on Sunday).
+  Timeout 15 s, at most 2 MB, it must be a JSON list of events (ForexFactory's HTML "Request Denied" page is an error).
+- Validation: `enabled` must be JSON true; before_min / after_min integers 0..240; currencies a list of 1..20 three-
+  letter codes; impact a list of High / Medium / Low / Holiday (any case). An invalid field is ignored (the value of
+  the example above is used) with the warning `auto_news_invalid`. An invalid weekly window (dow 1..7, "HH:MM",
+  from < to, "24:00" only as `to`) is skipped, windows after the 14th are dropped, a non-boolean `us_holidays` counts as
+  false -> warning `schedule_invalid`. A non-object value or a non-boolean `enabled` = off + the warning.
+- News windows are [t - before, t + after] (zero-length ones skipped). Schedule windows are built for the Thai dates
+  today .. today + 8 and kept when they overlap [now, now + 7 days]; holiday windows come from the NYSE 2026-2027 table
+  (New York EDT from the day after the second Sunday of March through the first Sunday of November). Overlapping or
+  touching windows are merged, reasons joined with ", ". Whole windows are written (never trimmed to the horizon), so
+  the file only changes when a window appears or ends.
+- auto_blackouts items also carry `kinds`: a list of "news" | "schedule" | "holiday". `news` = this week's matching
+  events, past ones included, at most 60. `news_fetched_at` = the time of the copy in use; `news_error` is present when
+  the last fetch failed or there is no copy yet (both keys can be present). While auto_news is off, news /
+  news_fetched_at / news_error are absent; while both features are off, auto_blackouts is absent too.
+- The agent keeps its own automatic lines in agent_state.json (`control.auto_lines`, until a day after they end). When a
+  local tool edits the control file, those windows (compared as time windows, not as text) are removed before the
+  adoption of SPEC 3.4 step 5, except one that equals a manual desired.blackouts window. `register` and the app's
+  new-bot registration never seed them either.
+- While the server offset is unknown no blackout line is written (warning `offset_unknown`); auto_blackouts is still
+  reported (UTC).
+- Dobby App 1.2.0 (same agent code): the main screen shows the running or next automatic window ("งดเข้าไม้อัตโนมัติ
+  ครั้งถัดไป พรุ่งนี้ 20:00–21:30 (CPI m/m)") and the activity list notes when the windows change.
+
+Website: in ตั้งค่าบอท > งดเข้าไม้: the two switches with their settings (steppers for before/after; presets "ไม่เทรด
+คืนวันศุกร์" = Fri 21:00-24:00, custom weekly rows, US holidays), and the list of upcoming auto windows from
+agent_state.auto_blackouts. ข่าว shows agent_state.news when present (merged with news_events, de-duplicated).
+
+### 9.4 Strategy health (website only)
+Baseline = EA tester run 2026-07-15 .. 2026-10-22 (v3.04, 209 closed trades), per 0.01 lot:
+| strategy | trades | win rate | avg win | avg loss | profit factor | trades / week | expectancy |
+|---|---|---|---|---|---|---|---|
+| A_new | 37 | 51.4 % | +8.78 | -6.00 | 1.54 | 2.64 | +1.59 |
+| NY | 76 | 60.5 % | +7.88 | -8.00 | 1.51 | 5.43 | +1.61 |
+| C5G | 96 | 47.9 % | +10.68 | -7.23 | 1.36 | 6.86 | +1.35 |
+Live, per strategy, from the journal's CLOSE rows (pnl / lots x 0.01): the last 20 trades (or all if fewer; nothing
+judged below 8). Status:
+- "ปกติ" when the live win count is plausible (binomial P(X <= wins | n, baseline) >= 0.10) and live PF >= 1.0
+- "จับตา" when P < 0.10 or PF < 1.0
+- "ผิดปกติ" when P < 0.02 or PF < 0.7 (the website suggests pausing that strategy; it never changes anything itself)
+Shown with plain sentences, the baseline next to the live numbers and the "past simulation, not a forecast" note.
+
+### 9.5 Summary, risk, schedule view (website only)
+- สรุป (week / month): trading P&L (flows excluded), trades, win rate, best / worst trade, per strategy, vs the previous
+  period; printable (print stylesheet -> the browser's "Save as PDF"). No e-mail (needs a mail service; not built).
+- Risk panel: drawdown from the peak of v_balance (current and max in the period), current losing streak and the
+  longest, today's loss budget used = -day_pnl / (cap % x day_start) from status.virtual.
+
+### 9.6 Trade notes: table `trade_notes`
+```
+trade_notes  bot_id uuid -> bots on delete cascade, trade_key text not null, note text,
+             tags text[] not null default '{}', updated_at timestamptz default now(), updated_by uuid default auth.uid(),
+             primary key (bot_id, trade_key)
+```
+trade_key = `<tag>|<open ts_server as YYYY-MM-DD HH:MM:SS>` of the trade's OPEN journal row. RLS: approved owner of the
+bot all; admin select. Website: note + tags on the trade page, tag filter in ประวัติ > รายการเทรด. Suggested tags:
+ช่วงข่าว, ปิดเอง, เลื่อน SL เอง, ตลาดผันผวน.
+DB (2026-11-07): trade_key 1..200 characters, note <= 5000, at most 30 tags; updated_at / updated_by are set by the
+server on every insert / update (upsert with on_conflict=bot_id,trade_key works). Not audited.
+
+### 9.7 Push notifications (installable website)
+- Website: `manifest.webmanifest` + PNG icons + `sw.js` at docs/ root (scope = the site). The service worker handles
+  ONLY `push` and `notificationclick`; it must not intercept `fetch` or cache anything (the import-map versioning in
+  SPEC 5 stays the only cache rule). ตั้งค่าบัญชี > การแจ้งเตือน: turn on for this device (Notification permission +
+  PushManager.subscribe with `VAPID_PUBLIC_KEY` from js/config.js), choose events, send a test; iPhone needs the site
+  added to the home screen first (iOS 16.4+), explained in one sentence.
+- Table:
+```
+push_subscriptions  id bigserial pk, user_id uuid not null default auth.uid() -> profiles on delete cascade,
+                    endpoint text not null unique, p256dh text not null, auth text not null, ua text,
+                    events text[] not null default '{open,close,daycap,offline}', created_at timestamptz default now()
+```
+  RLS: own rows only (select / insert / update / delete); no admin read.
+- Server (owner deploys once, steps in supabase/README.md): Edge Function `notify` (supabase/functions/notify/index.ts,
+  Deno, npm:web-push, secrets VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT, called with a shared secret header)
+  and `supabase/push.sql` (NOT in schema.sql: needs pg_net + pg_cron): an after-insert trigger on journal for OPEN /
+  CLOSE / DAYCAP that posts {bot_id, event, row} to the function; a pg_cron job every 5 min for bots whose last_seen is
+  5-60 min old and not yet notified (column bots.offline_notified_at, cleared when last_seen moves). The function sends to
+  the bot owner's subscriptions that include the event, Thai text, and deletes subscriptions that answer 404 / 410.
+- Implementation (2026-11-07):
+  - push.sql keeps the function URL and the shared secret in `dobby_private.push_settings` (a schema no client can
+    reach), not in the trigger source. Trigger `dobby_journal_push` pushes only rows whose ts_server, converted with
+    bots.server_utc_offset_min, is at most 30 minutes old (nothing while the offset is unknown, never an agent's
+    history upload), only when the owner is approved, not disabled and has a subscription with the event; it never
+    blocks the insert. Cron job `dobby-push-offline` runs `dobby_private.push_offline_bots()` every 5 minutes. The
+    clearing of offline_notified_at is done by schema.sql's bots_before trigger (2.4).
+  - Edge Function, deployed with "Verify JWT" off. DB call: header `x-notify-secret`, body {bot_id, event, row} (row =
+    the journal row without line_hash; offline: {name, last_seen}). User call: `Authorization: Bearer <access token>`
+    (+ apikey), body {"event": "test", "endpoint"?: <only this browser>}; checked with auth.getUser, caller must be
+    approved. CORS: https://tataprin.github.io (+ optional secret NOTIFY_ALLOWED_ORIGINS, comma separated). Answers:
+    200 {ok, sent, removed, failed}; 400 bad_request / bad_json / event_invalid; 401 bad_secret / not_authenticated;
+    403 not_approved; 404 bot_not_found; 500 vapid_secrets_missing / internal.
+  - Push payload (JSON): {title: the bot name ("Dobby" for the test), body: Thai text, tag: "<event>:<bot_id>:<journal
+    id>" (offline / daycap "<event>:<bot_id>", test "dobby-test"), url: "https://tataprin.github.io/dobby-web/#/dashboard",
+    event, bot_id, ts}. Texts: OPEN "เปิดไม้ C5G ซื้อ 0.10 ล็อต ที่ 4,121.78"; CLOSE "ปิดไม้ C5G +83.20 USD (ล็อกกำไร)"
+    (currency from bot_status account.currency; reason TP ถึงเป้ากำไร, SL ตัดขาดทุน, LOCK ล็อกกำไร, MANUAL ปิดเอง,
+    STOPOUT โบรกตัดไม้ (stop out), other EA codes as they are, OTHER / none omitted); DAYCAP "ชนจุดหยุดรายวัน
+    วันนี้ไม่เปิดไม้ใหม่"; offline "บอท <name> ขาดการติดต่อ"; test "ทดสอบการแจ้งเตือนจาก Dobby". TTL 6 h (daycap 12 h,
+    test 5 min), urgency high.
+  - push_subscriptions checks: endpoint https and <= 2048 characters, p256dh / auth 1..300, ua <= 500, events a subset
+    of {open, close, daycap, offline}. A plain upsert (on_conflict=endpoint) works for the caller's own row; for a
+    browser that another account subscribed before, use rpc `register_push_subscription` (2.2).
+- VAPID keys are generated locally; the private key never enters the repo (stored at D:\Dobby\secrets\vapid.json for the
+  owner to paste into the Supabase secrets).

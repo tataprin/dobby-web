@@ -1,5 +1,5 @@
 -- =====================================================================================================
--- Dobby Web - database schema for Supabase (contract: SPEC.md section 2)
+-- Dobby Web - database schema for Supabase (contract: SPEC.md sections 2 and 9)
 --
 -- HOW TO USE: Supabase dashboard -> SQL Editor -> New query -> paste this WHOLE file -> Run.
 -- The last result shows the bootstrap admin invite code (first run only; see README.md).
@@ -56,6 +56,8 @@ create table if not exists public.bots (
   agent_state           jsonb not null default '{}'::jsonb
 );
 create index if not exists bots_owner_idx on public.bots (owner);
+-- SPEC 9.7: set by the push job (push.sql) when it sent "bot offline"; cleared by bots_before when last_seen moves.
+alter table public.bots add column if not exists offline_notified_at timestamptz;
 
 create table if not exists public.bot_status (
   bot_id     uuid primary key references public.bots(id) on delete cascade,
@@ -127,6 +129,55 @@ create table if not exists public.news_events (
   unique (ts_utc, name)
 );
 
+-- SPEC 9.1: the EA's M15 bars (uploaded by the agent, read by the trade page). Not in realtime.
+create table if not exists public.bars (
+  bot_id uuid    not null references public.bots(id) on delete cascade,
+  t      timestamptz not null,                     -- bar open time, UTC
+  close  numeric not null,
+  vwap   numeric,
+  primary key (bot_id, t)
+);
+
+-- SPEC 9.2: deposits (+) and withdrawals (-); the agent inserts 'auto' suggestions, the owner confirms / dismisses.
+create table if not exists public.cash_flows (
+  id            bigserial primary key,
+  bot_id        uuid not null references public.bots(id) on delete cascade,
+  ts            timestamptz not null,
+  amount        numeric not null check (amount <> 0),
+  source        text not null check (source in ('auto', 'manual')),
+  status        text not null default 'confirmed' check (status in ('suggested', 'confirmed', 'dismissed')),
+  balance_after numeric,
+  note          text check (note is null or char_length(note) <= 1000),
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+create index if not exists cash_flows_bot_ts_idx on public.cash_flows (bot_id, ts desc);
+
+-- SPEC 9.6: a note + tags per trade; trade_key = '<tag>|<open ts_server YYYY-MM-DD HH:MM:SS>'.
+create table if not exists public.trade_notes (
+  bot_id     uuid not null references public.bots(id) on delete cascade,
+  trade_key  text not null check (char_length(trade_key) between 1 and 200),
+  note       text check (note is null or char_length(note) <= 5000),
+  tags       text[] not null default '{}' check (cardinality(tags) <= 30),
+  updated_at timestamptz not null default now(),
+  updated_by uuid default auth.uid(),
+  primary key (bot_id, trade_key)
+);
+
+-- SPEC 9.7: Web Push subscriptions, one row per browser (endpoint). Own rows only, no admin read.
+create table if not exists public.push_subscriptions (
+  id         bigserial primary key,
+  user_id    uuid not null default auth.uid() references public.profiles(id) on delete cascade,
+  endpoint   text not null unique check (endpoint ~ '^https://' and char_length(endpoint) <= 2048),
+  p256dh     text not null check (char_length(p256dh) between 1 and 300),
+  auth       text not null check (char_length(auth) between 1 and 300),
+  ua         text check (ua is null or char_length(ua) <= 500),
+  events     text[] not null default '{open,close,daycap,offline}'
+             check (events <@ array['open', 'close', 'daycap', 'offline']::text[]),
+  created_at timestamptz not null default now()
+);
+create index if not exists push_subscriptions_user_idx on public.push_subscriptions (user_id);
+
 alter table public.profiles    enable row level security;
 alter table public.invites     enable row level security;
 alter table public.bots        enable row level security;
@@ -136,6 +187,10 @@ alter table public.bot_control enable row level security;
 alter table public.presets     enable row level security;
 alter table public.audit       enable row level security;
 alter table public.news_events enable row level security;
+alter table public.bars               enable row level security;
+alter table public.cash_flows         enable row level security;
+alter table public.trade_notes        enable row level security;
+alter table public.push_subscriptions enable row level security;
 
 
 -- -----------------------------------------------------------------------------------------------------
@@ -449,6 +504,41 @@ begin
 end;
 $$;
 
+-- Spec addition (SPEC 9.7): save this browser's push subscription for the caller. One browser = one endpoint
+-- (unique), so when another account had subscribed the same browser before, the row moves to the caller (only the
+-- browser itself knows its endpoint and keys). p_events null keeps the caller's earlier choice (default: all four).
+create or replace function public.register_push_subscription(p_endpoint text, p_p256dh text, p_auth text,
+                                                             p_ua text default null, p_events text[] default null)
+returns bigint
+language plpgsql volatile security definer set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_id  bigint;
+begin
+  if v_uid is null or not public.is_approved() then
+    raise exception 'not_approved';
+  end if;
+  if p_endpoint is null or p_endpoint !~ '^https://' or char_length(p_endpoint) > 2048
+     or coalesce(char_length(p_p256dh), 0) not between 1 and 300
+     or coalesce(char_length(p_auth), 0) not between 1 and 300 then
+    raise exception 'subscription_invalid';
+  end if;
+  if p_events is not null and not (p_events <@ array['open', 'close', 'daycap', 'offline']::text[]) then
+    raise exception 'events_invalid';
+  end if;
+  insert into public.push_subscriptions as s (user_id, endpoint, p256dh, auth, ua, events)
+    values (v_uid, p_endpoint, p_p256dh, p_auth, left(p_ua, 500),
+            coalesce(p_events, '{open,close,daycap,offline}'::text[]))
+    on conflict (endpoint) do update
+      set user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, ua = excluded.ua,
+          events  = case when p_events is null and s.user_id = excluded.user_id then s.events
+                         else excluded.events end
+    returning s.id into v_id;
+  return v_id;
+end;
+$$;
+
 
 -- -----------------------------------------------------------------------------------------------------
 -- 4. Trigger functions and triggers (SPEC 2.4)
@@ -585,7 +675,9 @@ create trigger presets_audit
   after insert or update or delete on public.presets
   for each row execute function public.presets_audit();
 
--- bots: last_seen is stamped with the SERVER clock whenever the agent reports it (PC clocks drift)
+-- bots: last_seen is stamped with the SERVER clock whenever the agent reports it (PC clocks drift).
+-- offline_notified_at (SPEC 9.7) belongs to the push job: clients cannot set it, and it is cleared whenever last_seen
+-- moves (the bot is back), so the next outage is notified again. SECURITY INVOKER: current_user = the caller.
 create or replace function public.bots_before()
 returns trigger
 language plpgsql security invoker set search_path = public
@@ -593,6 +685,15 @@ as $$
 begin
   if new.last_seen is not null and (tg_op = 'INSERT' or new.last_seen is distinct from old.last_seen) then
     new.last_seen := now();
+  end if;
+  if tg_op = 'INSERT' then
+    if current_user in ('authenticated', 'anon') then
+      new.offline_notified_at := null;
+    end if;
+  elsif new.last_seen is distinct from old.last_seen then
+    new.offline_notified_at := null;
+  elsif current_user in ('authenticated', 'anon') then
+    new.offline_notified_at := old.offline_notified_at;
   end if;
   return new;
 end;
@@ -656,22 +757,85 @@ create trigger journal_skip_duplicate
   before insert on public.journal
   for each row execute function public.journal_skip_duplicate();
 
+-- cash_flows (SPEC 9.2): keep created_at / updated_at honest; audit every change like presets
+create or replace function public.cash_flows_before()
+returns trigger
+language plpgsql security invoker set search_path = public
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.created_at := now();
+  else
+    new.created_at := old.created_at;
+  end if;
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists cash_flows_before on public.cash_flows;
+create trigger cash_flows_before
+  before insert or update on public.cash_flows
+  for each row execute function public.cash_flows_before();
+
+create or replace function public.cash_flows_audit()
+returns trigger
+language plpgsql security definer set search_path = public
+as $$
+begin
+  insert into public.audit (actor, bot_id, action, before, after)
+    values (auth.uid(), case when tg_op = 'DELETE' then old.bot_id else new.bot_id end,
+            'cash_flow_' || lower(tg_op),
+            case when tg_op in ('UPDATE', 'DELETE') then to_jsonb(old) else null end,
+            case when tg_op in ('INSERT', 'UPDATE') then to_jsonb(new) else null end);
+  return null;
+end;
+$$;
+
+drop trigger if exists cash_flows_audit on public.cash_flows;
+create trigger cash_flows_audit
+  after insert or update or delete on public.cash_flows
+  for each row execute function public.cash_flows_audit();
+
+-- trade_notes (SPEC 9.6): updated_at / updated_by are the server's (client values are ignored)
+create or replace function public.trade_notes_before()
+returns trigger
+language plpgsql security invoker set search_path = public
+as $$
+begin
+  new.updated_at := now();
+  new.updated_by := auth.uid();
+  return new;
+end;
+$$;
+
+drop trigger if exists trade_notes_before on public.trade_notes;
+create trigger trade_notes_before
+  before insert or update on public.trade_notes
+  for each row execute function public.trade_notes_before();
+
 
 -- -----------------------------------------------------------------------------------------------------
 -- 5. Privileges. anon: nothing. authenticated: only what the policies below allow. (Supabase's default
 --    privileges grant ALL, incl. TRUNCATE, to anon/authenticated on new objects, so revoke everything first.)
 -- -----------------------------------------------------------------------------------------------------
 revoke all on table public.profiles, public.invites, public.bots, public.bot_status, public.journal,
-                    public.bot_control, public.presets, public.audit, public.news_events
+                    public.bot_control, public.presets, public.audit, public.news_events,
+                    public.bars, public.cash_flows, public.trade_notes, public.push_subscriptions
   from anon, authenticated;
-revoke all on sequence public.journal_id_seq, public.audit_id_seq, public.news_events_id_seq
+revoke all on sequence public.journal_id_seq, public.audit_id_seq, public.news_events_id_seq,
+                       public.cash_flows_id_seq, public.push_subscriptions_id_seq
   from anon, authenticated;
 
 grant select                         on table public.profiles, public.invites, public.audit to authenticated;
 grant select, insert, update, delete on table public.bots, public.presets, public.news_events to authenticated;
 grant select, insert, update         on table public.bot_status, public.journal to authenticated;
 grant select, update                 on table public.bot_control to authenticated;  -- NO insert: register_bot only
-grant usage, select on sequence public.journal_id_seq, public.news_events_id_seq to authenticated;
+grant select, insert, update         on table public.bars to authenticated;         -- no delete: cascade only
+grant select, insert, update, delete on table public.cash_flows, public.trade_notes, public.push_subscriptions
+  to authenticated;
+grant usage, select on sequence public.journal_id_seq, public.news_events_id_seq, public.cash_flows_id_seq,
+                                public.push_subscriptions_id_seq to authenticated;
 
 -- RPCs and helpers used by policies: authenticated only
 revoke execute on function public.is_approved()                               from public, anon;
@@ -685,6 +849,7 @@ revoke execute on function public.admin_set_user(uuid, text, boolean, boolean) f
 revoke execute on function public.set_display_name(text)                      from public, anon;
 revoke execute on function public.admin_overview()                            from public, anon;
 revoke execute on function public.register_bot(text, jsonb)                   from public, anon;
+revoke execute on function public.register_push_subscription(text, text, text, text, text[]) from public, anon;
 
 grant execute on function public.is_approved()                               to authenticated, service_role;
 grant execute on function public.is_admin()                                  to authenticated, service_role;
@@ -697,6 +862,7 @@ grant execute on function public.admin_set_user(uuid, text, boolean, boolean) to
 grant execute on function public.set_display_name(text)                      to authenticated, service_role;
 grant execute on function public.admin_overview()                            to authenticated, service_role;
 grant execute on function public.register_bot(text, jsonb)                   to authenticated, service_role;
+grant execute on function public.register_push_subscription(text, text, text, text, text[]) to authenticated, service_role;
 
 -- internal functions: nobody but the owner (triggers fire regardless of EXECUTE rights)
 revoke execute on function public.gen_invite_code()        from public, anon, authenticated;
@@ -709,6 +875,9 @@ revoke execute on function public.bots_before()            from public, anon, au
 revoke execute on function public.bots_audit_delete()      from public, anon, authenticated;
 revoke execute on function public.bot_status_before()      from public, anon, authenticated;
 revoke execute on function public.journal_skip_duplicate() from public, anon, authenticated;
+revoke execute on function public.cash_flows_before()      from public, anon, authenticated;
+revoke execute on function public.cash_flows_audit()       from public, anon, authenticated;
+revoke execute on function public.trade_notes_before()     from public, anon, authenticated;
 
 
 -- -----------------------------------------------------------------------------------------------------
@@ -828,6 +997,79 @@ create policy news_update on public.news_events for update to authenticated
 drop policy if exists news_delete on public.news_events;
 create policy news_delete on public.news_events for delete to authenticated
   using ((select public.is_admin()));
+
+-- bars / cash_flows / trade_notes (SPEC 9): the approved owner of the bot writes, the admin reads every row.
+-- bars: no client delete (cascade only); update exists for PostgREST upserts.
+drop policy if exists bars_select on public.bars;
+create policy bars_select on public.bars for select to authenticated
+  using (((select public.is_approved())
+          and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+         or (select public.is_admin()));
+drop policy if exists bars_insert on public.bars;
+create policy bars_insert on public.bars for insert to authenticated
+  with check ((select public.is_approved())
+              and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+drop policy if exists bars_update on public.bars;
+create policy bars_update on public.bars for update to authenticated
+  using ((select public.is_approved())
+         and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+  with check ((select public.is_approved())
+              and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+
+drop policy if exists cash_flows_select on public.cash_flows;
+create policy cash_flows_select on public.cash_flows for select to authenticated
+  using (((select public.is_approved())
+          and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+         or (select public.is_admin()));
+drop policy if exists cash_flows_insert on public.cash_flows;
+create policy cash_flows_insert on public.cash_flows for insert to authenticated
+  with check ((select public.is_approved())
+              and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+drop policy if exists cash_flows_update on public.cash_flows;
+create policy cash_flows_update on public.cash_flows for update to authenticated
+  using ((select public.is_approved())
+         and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+  with check ((select public.is_approved())
+              and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+drop policy if exists cash_flows_delete on public.cash_flows;
+create policy cash_flows_delete on public.cash_flows for delete to authenticated
+  using ((select public.is_approved())
+         and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+
+drop policy if exists trade_notes_select on public.trade_notes;
+create policy trade_notes_select on public.trade_notes for select to authenticated
+  using (((select public.is_approved())
+          and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+         or (select public.is_admin()));
+drop policy if exists trade_notes_insert on public.trade_notes;
+create policy trade_notes_insert on public.trade_notes for insert to authenticated
+  with check ((select public.is_approved())
+              and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+drop policy if exists trade_notes_update on public.trade_notes;
+create policy trade_notes_update on public.trade_notes for update to authenticated
+  using ((select public.is_approved())
+         and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+  with check ((select public.is_approved())
+              and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+drop policy if exists trade_notes_delete on public.trade_notes;
+create policy trade_notes_delete on public.trade_notes for delete to authenticated
+  using ((select public.is_approved())
+         and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+
+-- push_subscriptions (SPEC 9.7): own rows only (approved, not disabled); the admin does NOT read them.
+drop policy if exists push_subscriptions_select on public.push_subscriptions;
+create policy push_subscriptions_select on public.push_subscriptions for select to authenticated
+  using (user_id = (select auth.uid()) and (select public.is_approved()));
+drop policy if exists push_subscriptions_insert on public.push_subscriptions;
+create policy push_subscriptions_insert on public.push_subscriptions for insert to authenticated
+  with check (user_id = (select auth.uid()) and (select public.is_approved()));
+drop policy if exists push_subscriptions_update on public.push_subscriptions;
+create policy push_subscriptions_update on public.push_subscriptions for update to authenticated
+  using (user_id = (select auth.uid()) and (select public.is_approved()))
+  with check (user_id = (select auth.uid()) and (select public.is_approved()));
+drop policy if exists push_subscriptions_delete on public.push_subscriptions;
+create policy push_subscriptions_delete on public.push_subscriptions for delete to authenticated
+  using (user_id = (select auth.uid()) and (select public.is_approved()));
 
 
 -- -----------------------------------------------------------------------------------------------------

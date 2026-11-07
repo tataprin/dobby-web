@@ -3,9 +3,11 @@
 """Dobby Web PC agent.
 
 The only program on a PC that talks to Supabase for Dobby Web (contract: SPEC.md section 3, tables in section 2,
-remote allow-list in 4.2). It reads the EA's files in Common\\Files\\Dobby (dobby2_status.json, dobby2_journal.csv),
-uploads them, and writes ONLY dobby2_control.txt and dobby3_remote.txt from the website's desired state after checking
-the local limits in agent_config.json. It never trades, never imports MetaTrader5 and never touches MT5 settings.
+remote allow-list in 4.2, feature batch in 9). It reads the EA's files in Common\\Files\\Dobby (dobby2_status.json,
+dobby2_journal.csv, dobby2_bars.csv), uploads them, and writes ONLY dobby2_control.txt and dobby3_remote.txt from the
+website's desired state after checking the local limits in agent_config.json. Since 1.2.0 it also suggests deposits /
+withdrawals (cash_flows) and adds automatic blackouts (ForexFactory news, a weekly schedule, NYSE holidays) to the
+control file. It never trades, never imports MetaTrader5 and never touches MT5 settings.
 
   python dobby_agent.py setup                       Supabase URL + publishable key, EA folder check, Telegram
   python dobby_agent.py login                       email + password (typed by you; only a refresh token is stored)
@@ -43,7 +45,7 @@ try:
 except ImportError:  # only the real HTTP transport needs it; the tests inject a fake transport
     requests = None
 
-AGENT_VERSION = "1.1.0"
+AGENT_VERSION = "1.2.0"
 
 LOG = logging.getLogger("dobby_agent")
 LOG.addHandler(logging.NullHandler())
@@ -78,6 +80,42 @@ OFFSET_TOLERANCE_S = 450       # half of the 15-minute offset grid
 MAX_BLACKOUT_LINES = 100
 
 EXIT_OK, EXIT_CRASH, EXIT_CONFIG, EXIT_RUNNING = 0, 1, 2, 3
+
+# Feature batch 2026-11-07 (SPEC 9)
+BARS_BATCH = 500                    # 9.1 bars upload: rows per POST
+BARS_BACKFILL_S = 45 * 86400        # 9.1 first upload: at most the last 45 days
+API_RETRY_S = 600                   # a refused optional upload (e.g. schema.sql not re-run yet) is retried after 10 min
+CASH_MIN_ABS = 10.0                 # 9.2 a balance change is a deposit / withdrawal suggestion from max(10, 0.5 % of old)
+CASH_MIN_PCT = 0.5
+CASH_CONFIRM_S = 15                 # ... and only when it is still unexplained one cycle (and >= 15 s) later
+CASH_NOTE = "balance change not explained by Dobby trades"
+NEWS_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+NEWS_CACHE_NAME = "news_cache.json"
+NEWS_USER_AGENT = "DobbyAgent/1.2"
+NEWS_REFRESH_S = 4 * 3600           # 9.3 fetch the ForexFactory week at most every 4 h
+NEWS_RETRY_S = 30 * 60              # after a failed fetch (the last good copy stays in use)
+NEWS_WEEK_OVER_REFRESH_S = 2 * 3600 # the cached week is over: look for the new week every 2 h
+NEWS_TIMEOUT_S = 15
+NEWS_MAX_BYTES = 2 * 1024 * 1024
+NEWS_REPORT_MAX = 60
+AUTO_HORIZON_S = 7 * 86400          # automatic blackouts: the next 7 days
+THAI_OFFSET_S = 7 * 3600            # schedule windows are Thai time (UTC+7, no DST)
+AUTO_NEWS_DEFAULTS = {"before_min": 30, "after_min": 60, "currencies": ["USD"], "impact": ["High"]}
+NEWS_IMPACTS = ("High", "Medium", "Low", "Holiday")
+SCHEDULE_REASON = "ตารางเวลา"
+WEEKLY_MAX = 14
+# NYSE full-day closures 2026-2027 (New York dates; Saturday holidays observed on Friday, Sunday ones on Monday;
+# New Year 2028 falls on a Saturday and is not observed on 2027-12-31)
+NYSE_HOLIDAYS = [
+    ("2026-01-01", "New Year's Day"), ("2026-01-19", "Martin Luther King Jr. Day"),
+    ("2026-02-16", "Washington's Birthday"), ("2026-04-03", "Good Friday"), ("2026-05-25", "Memorial Day"),
+    ("2026-06-19", "Juneteenth"), ("2026-07-03", "Independence Day (observed)"), ("2026-09-07", "Labor Day"),
+    ("2026-11-26", "Thanksgiving Day"), ("2026-12-25", "Christmas Day"),
+    ("2027-01-01", "New Year's Day"), ("2027-01-18", "Martin Luther King Jr. Day"),
+    ("2027-02-15", "Washington's Birthday"), ("2027-03-26", "Good Friday"), ("2027-05-31", "Memorial Day"),
+    ("2027-06-18", "Juneteenth (observed)"), ("2027-07-05", "Independence Day (observed)"),
+    ("2027-09-06", "Labor Day"), ("2027-11-25", "Thanksgiving Day"), ("2027-12-24", "Christmas Day (observed)"),
+]
 
 TELEGRAM_EVENTS = ["open", "close", "lock", "cap", "offline", "live", "error", "daily"]
 DEFAULT_LIMITS = {
@@ -374,14 +412,14 @@ def naive_to_epoch(dt):
     return calendar.timegm(dt.timetuple())
 
 
-def parse_bars_text(text, offset_min, keep=BARS_KEEP):
-    """SPEC 8: the EA's dobby2_bars.csv -> {"tf": "M15", "t": [utc], "c": [close], "vwap": [vwap|None]} for the last
-    `keep` bars. Column 0 = bar_time (server time), 2 = close, 14 = vwap (newer EA rows only). None when nothing usable
-    or the server offset is unknown."""
+def parse_bar_rows(text, offset_min, skip_first=True):
+    """The EA's dobby2_bars.csv -> [(utc_epoch, close, vwap or None)] sorted by time, one row per bar (a later line for
+    the same bar wins). Column 0 = bar_time (server time), 2 = close, 14 = vwap (newer EA rows only, used when > 0).
+    skip_first: the first line is a header or the partial line of a tail read. [] when the offset is unknown."""
     if text is None or offset_min is None:
-        return None
-    rows = []
-    for line in text.splitlines()[1:]:
+        return []
+    dedup = {}
+    for line in text.splitlines()[1 if skip_first else 0:]:
         parts = line.split(",")
         if len(parts) < 3:
             continue
@@ -390,16 +428,49 @@ def parse_bars_text(text, offset_min, keep=BARS_KEEP):
         if dt is None or close is None or close <= 0:
             continue
         vwap = to_num(parts[14]) if len(parts) > 14 else None
-        rows.append((naive_to_epoch(dt) - int(offset_min) * 60, round(close, 2),
-                     round(vwap, 3) if vwap is not None and vwap > 0 else None))
+        t = naive_to_epoch(dt) - int(offset_min) * 60
+        dedup[t] = (t, round(close, 2), round(vwap, 3) if vwap is not None and vwap > 0 else None)
+    return [dedup[k] for k in sorted(dedup)]
+
+
+def parse_bars_text(text, offset_min, keep=BARS_KEEP):
+    """SPEC 8: the EA's dobby2_bars.csv -> {"tf": "M15", "t": [utc], "c": [close], "vwap": [vwap|None]} for the last
+    `keep` bars. None when nothing usable or the server offset is unknown."""
+    rows = parse_bar_rows(text, offset_min)[-keep:]
     if not rows:
         return None
-    rows.sort(key=lambda r: r[0])
-    dedup = {}
-    for r in rows:
-        dedup[r[0]] = r
-    rows = [dedup[k] for k in sorted(dedup)][-keep:]
     return {"tf": "M15", "t": [r[0] for r in rows], "c": [r[1] for r in rows], "vwap": [r[2] for r in rows]}
+
+
+def read_appended(path, pos, sleep=time.sleep):
+    """Complete lines after byte `pos` (like the journal: a half-written last line waits for the next read).
+    Returns (text or None, new_pos, reset); reset = the file shrank (rewritten), so it was read from the start."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None, pos, False
+    reset = size < pos
+    if reset:
+        pos = 0
+    if size == pos:
+        return None, pos, reset
+    data = None
+    for i in range(3):
+        try:
+            with open(path, "rb") as f:
+                f.seek(pos)
+                data = f.read(size - pos)
+            break
+        except PermissionError:
+            sleep(0.2 * (i + 1))
+        except OSError:
+            break
+    if not data:
+        return None, pos, reset
+    last_nl = data.rfind(b"\n")
+    if last_nl < 0:
+        return None, pos, reset
+    return data[:last_nl + 1].decode("utf-8-sig" if pos == 0 else "utf-8", "replace"), pos + last_nl + 1, reset
 
 
 def epoch_to_naive(t):
@@ -864,6 +935,376 @@ def file_body(text):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# Deposits / withdrawals (SPEC 9.2)
+# ---------------------------------------------------------------------------------------------------------------------
+def cash_threshold(old_balance):
+    """A balance change counts as a deposit / withdrawal suggestion from max(10, 0.5 % of the old balance)."""
+    return max(CASH_MIN_ABS, abs(old_balance or 0.0) * CASH_MIN_PCT / 100.0)
+
+
+def cash_step(cash, balance, now):
+    """One cycle of the deposit / withdrawal detector. `cash` (agent state) = {"balance": baseline or None,
+    "pnl": Dobby CLOSE pnl ingested since the baseline, "pending": {"amount", "since"} or None}; it is updated in
+    place. unexplained = new - old - pnl. Returns the suggested amount (to insert) or None. The caller resets the
+    baseline with cash_reset() once the suggestion is stored."""
+    if balance is None:
+        return None
+    if cash.get("balance") is None:
+        cash_reset(cash, balance)
+        return None
+    old = float(cash["balance"])
+    unexplained = round(balance - old - float(cash.get("pnl") or 0.0), 2)
+    if abs(unexplained) < cash_threshold(old):
+        cash_reset(cash, balance)          # explained by Dobby's trades (or too small to matter): new baseline
+        return None
+    p = cash.get("pending")
+    if not isinstance(p, dict):
+        cash["pending"] = {"amount": unexplained, "since": now}
+        return None                        # the CLOSE row may still be on its way: wait one cycle
+    since = to_num(p.get("since"))
+    if now - (now if since is None else since) < CASH_CONFIRM_S:
+        p["amount"] = unexplained
+        return None
+    return unexplained
+
+
+def cash_reset(cash, balance):
+    cash["balance"] = None if balance is None else round(float(balance), 2)
+    cash["pnl"] = 0.0
+    cash["pending"] = None
+
+
+def status_balance(status, now):
+    """The account balance of a fresh, connected EA status, else None."""
+    if not isinstance(status, dict):
+        return None
+    hb = status.get("heartbeat_gmt_unix")
+    if isinstance(hb, bool) or not isinstance(hb, (int, float)) or now - hb > OFFLINE_AFTER_S:
+        return None
+    acc = status.get("account") if isinstance(status.get("account"), dict) else {}
+    if acc.get("connected") is False:
+        return None
+    return to_num(acc.get("balance"))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Automatic blackouts (SPEC 9.3): ForexFactory news, weekly schedule (Thai time), NYSE holidays (New York time)
+# ---------------------------------------------------------------------------------------------------------------------
+_HHMM = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+
+
+def parse_hhmm(v, allow_24=False):
+    """'21:00' -> 1260 minutes; '24:00' only with allow_24 (end of day). None when invalid."""
+    m = _HHMM.match(v) if isinstance(v, str) else None
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    if mi > 59 or h > 24 or (h == 24 and (mi or not allow_24)):
+        return None
+    return h * 60 + mi
+
+
+def _int_in(v, lo, hi):
+    """An integer-valued number in lo..hi (bools refused), else None."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        return None
+    if abs(v - round(v)) > 1e-9 or not lo <= v <= hi:
+        return None
+    return int(round(v))
+
+
+def validate_auto_news(raw):
+    """desired.auto_news -> (config or None when off, warnings). Missing / enabled != true = off. An invalid field is
+    ignored (its default is used) and reported as the warning auto_news_invalid."""
+    if raw is None:
+        return None, []
+    if not isinstance(raw, dict):
+        return None, ["auto_news_invalid"]
+    en = raw.get("enabled")
+    if en is not True:
+        return None, ([] if en in (False, None) else ["auto_news_invalid"])
+    cfg = copy.deepcopy(AUTO_NEWS_DEFAULTS)
+    bad = False
+    for k in ("before_min", "after_min"):
+        if raw.get(k) is not None:
+            x = _int_in(raw[k], 0, 240)
+            if x is None:
+                bad = True
+            else:
+                cfg[k] = x
+    cur = raw.get("currencies")
+    if cur is not None:
+        ok = isinstance(cur, list) and 0 < len(cur) <= 20 and all(
+            isinstance(c, str) and re.match(r"^[A-Za-z]{3}$", c.strip()) for c in cur)
+        if ok:
+            cfg["currencies"] = sorted(set(c.strip().upper() for c in cur))
+        else:
+            bad = True
+    imp = raw.get("impact")
+    if imp is not None:
+        canon = dict((x.lower(), x) for x in NEWS_IMPACTS)
+        ok = isinstance(imp, list) and 0 < len(imp) <= len(NEWS_IMPACTS) and all(
+            isinstance(i, str) and i.strip().lower() in canon for i in imp)
+        if ok:
+            cfg["impact"] = [x for x in NEWS_IMPACTS if x.lower() in set(i.strip().lower() for i in imp)]
+        else:
+            bad = True
+    return cfg, (["auto_news_invalid"] if bad else [])
+
+
+def validate_schedule(raw):
+    """desired.schedule -> (config or None when off, warnings). weekly: <= 14 windows {dow 1..7 (Monday = 1),
+    from 'HH:MM' < to 'HH:MM' | '24:00'} in Thai time. Invalid windows are skipped (warning schedule_invalid)."""
+    if raw is None:
+        return None, []
+    if not isinstance(raw, dict):
+        return None, ["schedule_invalid"]
+    en = raw.get("enabled")
+    if en is not True:
+        return None, ([] if en in (False, None) else ["schedule_invalid"])
+    bad = False
+    hol = raw.get("us_holidays")
+    if hol is not None and not isinstance(hol, bool):
+        bad, hol = True, False
+    weekly = []
+    items = raw.get("weekly")
+    if items is not None and not isinstance(items, list):
+        bad, items = True, []
+    for w in items or []:
+        if len(weekly) >= WEEKLY_MAX:
+            bad = True
+            break
+        if not isinstance(w, dict):
+            bad = True
+            continue
+        dow = _int_in(w.get("dow"), 1, 7)
+        f, t = parse_hhmm(w.get("from")), parse_hhmm(w.get("to"), allow_24=True)
+        if dow is None or f is None or t is None or f >= t:
+            bad = True
+            continue
+        weekly.append({"dow": dow, "from": f, "to": t})
+    return {"us_holidays": hol is True, "weekly": weekly}, (["schedule_invalid"] if bad else [])
+
+
+def normalize_ff_events(data):
+    """The ForexFactory weekly JSON -> [{"title", "ts_utc", "currency", "impact", "forecast", "previous"}] sorted by
+    time (unusable items skipped). ValueError when it is not a list of events."""
+    if not isinstance(data, list):
+        raise ValueError("calendar is not a JSON list")
+    out = []
+    for e in data:
+        if not isinstance(e, dict):
+            continue
+        t = parse_utc(e.get("date"))
+        title = clean_note(e.get("title"), 120)
+        cur = str(e.get("country") or "").strip().upper()
+        if t is None or not title or not re.match(r"^[A-Z]{3}$", cur):
+            continue
+        out.append({"title": title, "ts_utc": iso_z(t), "currency": cur,
+                    "impact": clean_note(e.get("impact"), 20).capitalize(),
+                    "forecast": clean_note(e.get("forecast"), 30) or None,
+                    "previous": clean_note(e.get("previous"), 30) or None})
+    if data and not out:
+        raise ValueError("no usable events in the calendar")
+    out.sort(key=lambda x: (x["ts_utc"], x["title"]))
+    return out
+
+
+def matching_news(events, cfg):
+    """Events of the configured currencies and impacts."""
+    if not cfg:
+        return []
+    return [e for e in events or [] if e.get("currency") in cfg["currencies"] and e.get("impact") in cfg["impact"]]
+
+
+def news_windows(events, cfg, now, horizon_s=AUTO_HORIZON_S):
+    """[(from, to, reason, kind)] = [t - before, t + after] of the matching events that are not over yet."""
+    out = []
+    for e in matching_news(events, cfg):
+        t = parse_utc(e.get("ts_utc"))
+        if t is None:
+            continue
+        f, to = t - cfg["before_min"] * 60, t + cfg["after_min"] * 60
+        if to <= f or to < now or f >= now + horizon_s:
+            continue
+        out.append((f, to, e["title"], "news"))
+    return out
+
+
+def schedule_windows(cfg, now, horizon_s=AUTO_HORIZON_S):
+    """The weekly windows (Thai time, UTC+7) that overlap [now, now + horizon]."""
+    out = []
+    if not cfg:
+        return out
+    today = epoch_to_naive(now + THAI_OFFSET_S).date()
+    for d in range(0, 9):
+        day = today + timedelta(days=d)
+        base = naive_to_epoch(datetime(day.year, day.month, day.day)) - THAI_OFFSET_S
+        for w in cfg["weekly"]:
+            if w["dow"] != day.isoweekday():
+                continue
+            f, t = base + w["from"] * 60, base + w["to"] * 60
+            if t < now or f >= now + horizon_s:
+                continue
+            out.append((f, t, SCHEDULE_REASON, "schedule"))
+    return out
+
+
+def _nth_sunday(year, month, n):
+    first = datetime(year, month, 1)
+    return (first + timedelta(days=(6 - first.weekday()) % 7 + 7 * (n - 1))).date()
+
+
+def ny_utc_offset_min(day):
+    """New York's UTC offset (minutes) at 00:00 of a date: EDT (-240) from the day after the second Sunday of March
+    through the first Sunday of November (the switches happen at 02:00), else EST (-300)."""
+    start, end = _nth_sunday(day.year, 3, 2), _nth_sunday(day.year, 11, 1)
+    return -240 if start < day <= end else -300
+
+
+def holiday_windows(now, horizon_s=AUTO_HORIZON_S):
+    """NYSE closed days 00:00-24:00 New York time (DST aware) that overlap [now, now + horizon]."""
+    out = []
+    for d, name in NYSE_HOLIDAYS:
+        day = datetime.strptime(d, "%Y-%m-%d").date()
+        nxt = day + timedelta(days=1)
+        f = naive_to_epoch(datetime(day.year, day.month, day.day)) - ny_utc_offset_min(day) * 60
+        t = naive_to_epoch(datetime(nxt.year, nxt.month, nxt.day)) - ny_utc_offset_min(nxt) * 60
+        if t < now or f >= now + horizon_s:
+            continue
+        out.append((f, t, name, "holiday"))
+    return out
+
+
+def merge_windows(windows):
+    """[(from, to, reason, kind)] -> [{"from_utc", "to_utc", "reason", "kinds"}], overlapping or touching windows
+    joined (reasons in time order, without repeats)."""
+    out = []
+    for f, t, reason, kind in sorted(windows, key=lambda w: (w[0], w[1])):
+        if out and f <= out[-1][1]:
+            cur = out[-1]
+            cur[1] = max(cur[1], t)
+            if reason not in cur[2]:
+                cur[2].append(reason)
+            if kind not in cur[3]:
+                cur[3].append(kind)
+        else:
+            out.append([f, t, [reason], [kind]])
+    return [{"from_utc": iso_z(f), "to_utc": iso_z(t), "reason": clean_note(", ".join(r), 200), "kinds": k}
+            for f, t, r, k in out]
+
+
+def auto_blackouts(desired, events, now):
+    """SPEC 9.3: the automatic windows of the next 7 days from desired.auto_news / desired.schedule.
+    Returns (windows, news_cfg, schedule_cfg, warnings); a config is None when that feature is off."""
+    d = desired if isinstance(desired, dict) else {}
+    news_cfg, w1 = validate_auto_news(d.get("auto_news"))
+    sched_cfg, w2 = validate_schedule(d.get("schedule"))
+    raw = []
+    if news_cfg:
+        raw += news_windows(events, news_cfg, now)
+    if sched_cfg:
+        raw += schedule_windows(sched_cfg, now)
+        if sched_cfg["us_holidays"]:
+            raw += holiday_windows(now)
+    return merge_windows(raw), news_cfg, sched_cfg, w1 + w2
+
+
+def blackout_key(value):
+    """A control-file blackout value -> (from, to) server datetimes (format independent), or None."""
+    return parse_blackout_value(value)
+
+
+def strip_auto_values(values, auto_values, keep_values=()):
+    """Control-file blackout values without the agent's own automatic lines (a manual line that happens to be equal
+    to an automatic one is kept)."""
+    auto = set(k for k in (blackout_key(v) for v in auto_values or []) if k)
+    keep = set(k for k in (blackout_key(v) for v in keep_values or []) if k)
+    out = []
+    for v in values:
+        k = blackout_key(v)
+        if k is not None and k in auto and k not in keep:
+            continue
+        out.append(v)
+    return out
+
+
+class NewsFeed(object):
+    """The ForexFactory weekly calendar: fetched at most every 4 h, the last good copy cached in the agent folder
+    (news_cache.json) and used while fetches fail. Never raises."""
+
+    def __init__(self, cache_path, transport, dry_run=False):
+        self.cache_path = cache_path
+        self.transport = transport
+        self.dry_run = dry_run
+        self.error = None
+        self.next_try = 0.0
+        self.cache = self._load()
+
+    def _load(self):
+        try:
+            with open(self.cache_path, "rb") as f:
+                data = json.loads(f.read().decode("utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("events"), list) and \
+                    to_num(data.get("fetched_at")) is not None:
+                return {"fetched_at": float(data["fetched_at"]), "events": data["events"]}
+        except (OSError, ValueError):
+            pass
+        return None
+
+    @property
+    def events(self):
+        return self.cache["events"] if self.cache else []
+
+    @property
+    def fetched_at(self):
+        return self.cache["fetched_at"] if self.cache else None
+
+    def due(self, now):
+        if now < self.next_try:
+            return False
+        if not self.cache:
+            return True
+        age = now - self.cache["fetched_at"]
+        if age < -60:                                   # the PC clock went back: fetch again
+            return True
+        last = max([parse_utc(e.get("ts_utc")) or 0 for e in self.cache["events"]] or [0])
+        return age >= (NEWS_WEEK_OVER_REFRESH_S if last < now else NEWS_REFRESH_S)
+
+    def refresh(self, now):
+        """Fetch when due. Returns True when a new copy was stored."""
+        if not self.due(now):
+            return False
+        try:
+            r = self.transport.request("GET", NEWS_URL, headers={"User-Agent": NEWS_USER_AGENT,
+                                                                 "Accept": "application/json"},
+                                       timeout=NEWS_TIMEOUT_S)
+            if r.status != 200:
+                raise ValueError("HTTP %d" % r.status)
+            body = r.content or b""
+            if len(body) > NEWS_MAX_BYTES:
+                raise ValueError("calendar too large (%d bytes)" % len(body))
+            events = normalize_ff_events(json.loads(body.decode("utf-8-sig")))
+        except Exception as e:  # network, HTTP, bad JSON, a fake transport's assertion: keep the last good copy
+            self.error = clean_note(redact("%s: %s" % (type(e).__name__, e)), 200)
+            self.next_try = now + NEWS_RETRY_S
+            LOG.warning("news calendar not fetched (%s)%s; next try in %d min", self.error,
+                        ", using the copy from %s" % iso_z(self.cache["fetched_at"]) if self.cache else "",
+                        NEWS_RETRY_S // 60)
+            return False
+        self.cache = {"fetched_at": float(now), "events": events}
+        self.error = None
+        self.next_try = 0.0
+        LOG.info("news calendar fetched: %d event(s) this week", len(events))
+        if not self.dry_run:
+            try:
+                write_json_atomic(self.cache_path, {"fetched_at": now, "source": NEWS_URL, "events": events})
+            except OSError as e:
+                LOG.warning("cannot save %s: %s", os.path.basename(self.cache_path), e)
+        return True
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # Remote file (SPEC 3.7, read by EA v3.04 only)
 # ---------------------------------------------------------------------------------------------------------------------
 def fmt_param(key, value):
@@ -937,8 +1378,9 @@ def file_blackouts_to_utc(values, offset_min, now, old=None):
     return out
 
 
-def desired_from_files(status, parsed_ctl, offset_min, now, note="registered by dobby_agent"):
-    """`register`: desired from the EA's current state. live = not live_locked and control mode run."""
+def desired_from_files(status, parsed_ctl, offset_min, now, note="registered by dobby_agent", exclude_blackouts=None):
+    """`register`: desired from the EA's current state. live = not live_locked and control mode run.
+    exclude_blackouts: this PC's own automatic lines (SPEC 9.3), never copied into desired.blackouts."""
     status = status if isinstance(status, dict) else {}
     st_ctl = status.get("control") if isinstance(status.get("control"), dict) else {}
     flags = status.get("flags") if isinstance(status.get("flags"), dict) else {}
@@ -949,7 +1391,8 @@ def desired_from_files(status, parsed_ctl, offset_min, now, note="registered by 
         ms = to_num(cfg.get("max_spread"))
         allow_long = ea_bool(cfg.get("allow_long", "1"))
         allow_short = ea_bool(cfg.get("allow_short", "1"))
-        blackouts = file_blackouts_to_utc(parsed_ctl["blackouts"], offset_min, now) if offset_min is not None else []
+        vals = strip_auto_values(parsed_ctl["blackouts"], exclude_blackouts) if exclude_blackouts else             parsed_ctl["blackouts"]
+        blackouts = file_blackouts_to_utc(vals, offset_min, now) if offset_min is not None else []
     else:
         mode = "pause" if str(st_ctl.get("mode", "run")).lower() == "pause" else "run"
         lots, ms, allow_long, allow_short, blackouts = None, None, True, True, []
@@ -962,7 +1405,7 @@ def desired_from_files(status, parsed_ctl, offset_min, now, note="registered by 
     }
 
 
-def seed_from_ea(common, cfg, clock=time.time, sleep=time.sleep, wait_s=6):
+def seed_from_ea(common, cfg, clock=time.time, sleep=time.sleep, wait_s=6, exclude_blackouts=None):
     """`register` (also used by the Dobby App): the desired state built from the EA's files. Two status samples
     `wait_s` apart (the offset is only trusted while the server clock runs). None when there is no status file.
     Returns {status, desired, confirmed, offset, offset_override, now}."""
@@ -978,7 +1421,8 @@ def seed_from_ea(common, cfg, clock=time.time, sleep=time.sleep, wait_s=6):
     ctl_text = read_text(os.path.join(common, CONTROL_NAME), sleep=sleep)
     parsed = parse_control_text(ctl_text) if ctl_text is not None else None
     now = clock()
-    return {"status": s2, "desired": desired_from_files(s2, parsed, offset, now), "confirmed": confirmed,
+    return {"status": s2, "desired": desired_from_files(s2, parsed, offset, now, exclude_blackouts=exclude_blackouts),
+            "confirmed": confirmed,
             "offset": offset, "offset_override": ov is not None, "now": now}
 
 
@@ -1186,6 +1630,9 @@ class SupabaseClient(object):
     def upsert(self, table, rows, on_conflict):
         return self.request("POST", table, params={"on_conflict": on_conflict}, body=rows,
                             prefer="resolution=merge-duplicates,return=minimal")
+
+    def insert(self, table, rows):
+        return self.request("POST", table, body=rows, prefer="return=minimal")
 
     def insert_ignore(self, table, rows, on_conflict):
         return self.request("POST", table, params={"on_conflict": on_conflict}, body=rows,
@@ -1452,8 +1899,10 @@ def default_state():
         "applied_version": 0, "applied_at": None, "applied_live": None, "applied_params": None,
         "reported_version": 0,
         "journal": {"offset": 0, "alert_offset": 0, "initialized": False, "hashes": []},
-        "control": {"last_write_mtime": 0.0, "last_write_id": "", "adopted_mtime": 0.0},
+        "control": {"last_write_mtime": 0.0, "last_write_id": "", "adopted_mtime": 0.0, "auto_lines": []},
         "remote": {"version": None},
+        "bars_upload": {"pos": 0, "last_t": None},
+        "cash": {"balance": None, "pnl": 0.0, "pending": None},
         "offset": {"min": None, "confirmed": False, "sample": None},
         "alerts": {"ea_offline": False, "cap_hit": None, "daily_done": "", "auth_alerted": False},
         "day_stats": {},
@@ -1745,7 +2194,7 @@ class CommonLock(object):
 # ---------------------------------------------------------------------------------------------------------------------
 class Agent(object):
     def __init__(self, agent_dir, common_dir, client, telegram, clock=time.time, sleep=time.sleep,
-                 local_now=datetime.now, dry_run=False):
+                 local_now=datetime.now, dry_run=False, news_transport=None):
         self.agent_dir = agent_dir
         self.common_dir = common_dir
         self.config_path = os.path.join(agent_dir, CONFIG_NAME)
@@ -1776,6 +2225,15 @@ class Agent(object):
         self._last_bots_update = None
         self._force_bots = False
         self._seen = set(self.state["journal"]["hashes"])
+        # SPEC 9: automatic blackouts, bars upload, deposit / withdrawal suggestions
+        self.news = NewsFeed(os.path.join(agent_dir, NEWS_CACHE_NAME),
+                             news_transport if news_transport is not None else getattr(client, "transport", None),
+                             dry_run=dry_run)
+        self.news_cfg = self.sched_cfg = None
+        self.auto_windows = []
+        self._auto_logged = None
+        self._bars_retry_at = self._cash_retry_at = 0.0
+        self._bars_error = self._cash_error = ""
         self._known_tokens = set()
         if client is not None:
             client.on_refresh_token = self._save_refresh_token
@@ -1922,6 +2380,8 @@ class Agent(object):
             row = self._fetch_control()
             row = self._adopt_local_change(row, now)
             self._apply_control(row, now)
+            self._upload_bars(now)              # SPEC 9.1 (after the control step: never delays it)
+            self._cash_flows(status, now)       # SPEC 9.2
             self.last_error = self.cycle_errors[-1] if self.cycle_errors else ""
             self._update_bot_row(status, now)
             self._ok()
@@ -1975,6 +2435,8 @@ class Agent(object):
         if reset:
             j["alert_offset"] = 0
         backfill = (not j["initialized"]) or reset
+        cash = self.state["cash"]
+        count_cash = j["initialized"] and cash.get("balance") is not None   # 9.2: Dobby pnl since the baseline
         bot = self.bot_name()
         for row, end in zip(rows, ends):
             if end <= j["alert_offset"]:
@@ -1986,6 +2448,8 @@ class Agent(object):
                 s["wins"] += 1 if row["pnl"] > 0 else 0
                 s["losses"] += 1 if row["pnl"] < 0 else 0
                 s["pnl"] = round(s["pnl"] + row["pnl"], 2)
+                if count_cash:
+                    cash["pnl"] = round(float(cash.get("pnl") or 0.0) + row["pnl"], 2)
             if not backfill:
                 m = msg_journal(bot, row)
                 if m:
@@ -2091,15 +2555,20 @@ class Agent(object):
             last_live = self._ea_live_now()
         ea_remote = (self.last_status or {}).get("remote")
         dec = evaluate_desired(desired, limits, last_live, ea_remote)
+        auto = self._auto_blackouts(desired, now)
         off, src = self.effective_offset()
         if src == "unconfirmed":
             self.warnings.append("offset_unconfirmed")
         if off is None:
-            values, bad = [], 0
-            if dec["blackouts"]:
+            values, bad, auto_values = [], 0, []
+            if dec["blackouts"] or auto:
                 self.warnings.append("offset_unknown")
         else:
-            values, bad = blackout_lines(dec["blackouts"], off, now)
+            manual, bad = blackout_lines(dec["blackouts"], off, now)
+            # SPEC 9.3: the automatic windows go into the same file, after the manual ones within the line limit
+            auto_values = [v for v in blackout_lines(auto, off, now)[0] if v not in manual]
+            auto_values = auto_values[:max(0, MAX_BLACKOUT_LINES - len(manual))]
+            values = sorted(manual + auto_values, key=lambda v: (blackout_key(v) or (datetime.max, datetime.max), v))
         if bad:
             self.warnings.append("bad_blackout")
         is_new = version != st["applied_version"]  # SPEC: "> last applied"; != also survives a DB restore
@@ -2117,6 +2586,8 @@ class Agent(object):
             return
         written = self.local_now()
         ctl_changed = self._write_control(render_control_text(dec, values, version, written), version)
+        if not self.dry_run:
+            self._remember_auto_lines(auto_values, off, now)
         remote = self._sync_remote(dec, version, limits, written)
         if not is_new:
             return
@@ -2129,12 +2600,13 @@ class Agent(object):
             st["applied_params"] = dec["params"]
         elif dec["params_state"] == "none":
             st["applied_params"] = None
-        self._decision(now, "v%d applied | live=%s mode=%s lots=%s long=%d short=%d spread=%s blackouts=%d | "
+        self._decision(now, "v%d applied | live=%s mode=%s lots=%s long=%d short=%d spread=%s blackouts=%d%s | "
                             "rejected: %s | control: %s, remote: %s%s" % (
                                 version, "on" if dec["live"] else "off", dec["mode"],
                                 "-" if dec["lots"] is None else "%.2f" % dec["lots"], dec["allow_long"],
                                 dec["allow_short"], "-" if dec["max_spread"] is None else "%.2f" % dec["max_spread"],
-                                len(values), ",".join(dec["rejected"]) or "none",
+                                len(values), " (auto %d)" % len(auto_values) if auto_values else "",
+                                ",".join(dec["rejected"]) or "none",
                                 "written" if ctl_changed else "unchanged", remote,
                                 " | " + "; ".join(dec["details"]) if dec["details"] else ""))
         bot = self.bot_name()
@@ -2161,6 +2633,10 @@ class Agent(object):
             return row  # our own format: the web's state is re-applied below
         desired = row.get("desired") if isinstance(row.get("desired"), dict) else {}
         off, _ = self.effective_offset()
+        auto_lines = self.state["control"].get("auto_lines") or []
+        if auto_lines:   # SPEC 9.3: the agent's automatic lines are never synced back into desired.blackouts
+            manual = blackout_lines(normalize_desired(desired)["blackouts"], off, now)[0] if off is not None else []
+            parsed = dict(parsed, blackouts=strip_auto_values(parsed["blackouts"], auto_lines, manual))
         live_eff = self.state["applied_live"]
         if live_eff is None:
             live_eff = self._ea_live_now()
@@ -2184,6 +2660,108 @@ class Agent(object):
             parsed["id"] or "(no id)", new_row.get("version"), "on" if to_bool(desired.get("live"), False) else "off"))
         self._force_bots = True
         return new_row
+
+    # -- SPEC 9.3 automatic blackouts
+    def _auto_blackouts(self, desired, now):
+        """Refresh the news calendar when due (only with auto_news on) and build the automatic windows."""
+        news_on, _ = validate_auto_news((desired or {}).get("auto_news"))
+        if news_on:
+            self.news.refresh(now)
+        windows, news_cfg, sched_cfg, warns = auto_blackouts(desired, self.news.events if news_on else [], now)
+        self.news_cfg, self.sched_cfg = news_cfg, sched_cfg
+        self.auto_windows = windows
+        for w in warns:
+            if w not in self.warnings:
+                self.warnings.append(w)
+        key = tuple((w["from_utc"], w["to_utc"], w["reason"]) for w in windows) if (news_cfg or sched_cfg) else None
+        if key != self._auto_logged:
+            if windows:
+                LOG.info("auto blackouts: %d window(s) in the next 7 days, next %s - %s (%s)", len(windows),
+                         windows[0]["from_utc"], windows[0]["to_utc"], windows[0]["reason"])
+            elif key is not None:
+                LOG.info("auto blackouts: none in the next 7 days")
+            elif self._auto_logged:
+                LOG.info("auto blackouts: off")
+            self._auto_logged = key
+        return windows
+
+    def _remember_auto_lines(self, auto_values, off, now):
+        """Keep the automatic lines this agent wrote (until a day after they ended) so a local edit of the file never
+        turns them into manual blackouts."""
+        c = self.state["control"]
+        keep = []
+        for v in list(c.get("auto_lines") or []) + list(auto_values or []):
+            k = blackout_key(v)
+            if k is None or v in keep:
+                continue
+            if off is not None and naive_to_epoch(k[1]) - off * 60 < now - 86400:
+                continue
+            keep.append(v)
+        c["auto_lines"] = keep[-200:]
+
+    # -- SPEC 9.1 bars upload
+    def _upload_bars(self, now):
+        """New complete rows of dobby2_bars.csv -> table `bars` (bot_id, t UTC, close, vwap), incrementally by file
+        position; the first upload goes back at most 45 days. Only with a confirmed / configured server offset. A
+        refused upload (e.g. the table does not exist yet) is retried after 10 minutes and never blocks the agent."""
+        off, src = self.effective_offset()
+        if off is None or src not in ("confirmed", "config") or now < self._bars_retry_at:
+            return
+        b = self.state["bars_upload"]
+        pos = int(to_num(b.get("pos")) or 0)
+        text, new_pos, reset = read_appended(self.bars_path, pos, sleep=self.sleep)
+        if text is None:
+            if reset:
+                b["pos"] = new_pos
+            return
+        last_t = to_num(b.get("last_t"))
+        floor = last_t if last_t is not None else now - BARS_BACKFILL_S - 1
+        fresh = [r for r in parse_bar_rows(text, off, skip_first=False) if floor < r[0] <= now + 3600]
+        bot_id = self.config["bot_id"]
+        for i in range(0, len(fresh), BARS_BATCH):
+            chunk = fresh[i:i + BARS_BATCH]
+            body = [{"bot_id": bot_id, "t": iso_z(t), "close": c, "vwap": v} for t, c, v in chunk]
+            if not self.dry_run:
+                try:
+                    self.client.insert_ignore("bars", body, "bot_id,t")
+                except ApiError as e:
+                    self._bars_retry_at = now + API_RETRY_S
+                    self._bars_error = redact(str(e))[:200]
+                    LOG.warning("bars not uploaded (%s): retry in %d min", self._bars_error, API_RETRY_S // 60)
+                    return
+            b["last_t"] = chunk[-1][0]
+        b["pos"] = new_pos
+        self._bars_error = ""
+        if fresh:
+            LOG.info("bars: %d bar(s) uploaded%s", len(fresh), " [dry-run, not uploaded]" if self.dry_run else "")
+
+    # -- SPEC 9.2 deposit / withdrawal suggestions
+    def _cash_flows(self, status, now):
+        """A balance change that Dobby's CLOSE rows do not explain -> a 'suggested' cash_flows row for the owner."""
+        if now < self._cash_retry_at:
+            return
+        cash = self.state["cash"]
+        bal = status_balance(status, now)
+        amount = cash_step(cash, bal, now)
+        if amount is None:
+            return
+        row = {"bot_id": self.config["bot_id"], "ts": iso_z(now), "amount": amount, "source": "auto",
+               "status": "suggested", "balance_after": round(bal, 2), "note": CASH_NOTE}
+        if self.dry_run:
+            LOG.info("[dry-run] would suggest a cash flow of %+.2f (balance %.2f)", amount, bal)
+        else:
+            try:
+                self.client.insert("cash_flows", [row])
+            except ApiError as e:
+                self._cash_retry_at = now + API_RETRY_S
+                self._cash_error = redact(str(e))[:200]
+                LOG.warning("cash flow suggestion not stored (%s): retry in %d min", self._cash_error,
+                            API_RETRY_S // 60)
+                return
+            LOG.info("cash flow suggested on the website: %+.2f (balance %.2f not explained by Dobby trades)",
+                     amount, bal)
+        self._cash_error = ""
+        cash_reset(cash, bal)
 
     # -- bots row
     def recent_bars(self):
@@ -2220,12 +2798,24 @@ class Agent(object):
             "control_file_id": parse_control_text(text)["id"] or None if text is not None else None,
             "remote_file_version": st["remote"]["version"],
             "reject_details": list(self.reject_details),
-            "warnings": list(self.warnings),
+            "warnings": list(self.warnings) + [w for w, on in (("bars_upload_failed", self._bars_error),
+                                                                ("cash_flow_failed", self._cash_error)) if on],
             "offset_source": src,
         }
         bars = self.recent_bars()
         if bars:
             out["bars"] = bars
+        # SPEC 9.3: automatic blackouts (keys only while auto_news / schedule is on)
+        if self.news_cfg or self.sched_cfg:
+            out["auto_blackouts"] = [dict(w) for w in self.auto_windows]
+        if self.news_cfg:
+            out["news"] = [dict((k, e.get(k)) for k in ("title", "ts_utc", "currency", "impact", "forecast",
+                                                        "previous"))
+                           for e in matching_news(self.news.events, self.news_cfg)][:NEWS_REPORT_MAX]
+            if self.news.fetched_at is not None:
+                out["news_fetched_at"] = iso_z(self.news.fetched_at)
+            if self.news.error or self.news.fetched_at is None:
+                out["news_error"] = self.news.error or "not fetched yet"
         return out
 
     def _update_bot_row(self, status, now):
@@ -2444,7 +3034,9 @@ def cmd_register(args, rt):
         return EXIT_CONFIG
     name = (args.name or cfg.get("bot_name") or socket.gethostname()).strip()[:100]
     common = resolve_common_dir(cfg, rt.environ)
-    seed = seed_from_ea(common, cfg, clock=rt.clock, sleep=rt.sleep)
+    old_state = load_state(os.path.join(rt.agent_dir, STATE_NAME))
+    seed = seed_from_ea(common, cfg, clock=rt.clock, sleep=rt.sleep,
+                        exclude_blackouts=old_state["control"].get("auto_lines"))
     if seed is None:
         rt.out("ไม่พบ %s ใน %s: เปิด MT5 + EA Dobby3 ก่อน แล้วลองใหม่" % (STATUS_NAME, common))
         return EXIT_CONFIG

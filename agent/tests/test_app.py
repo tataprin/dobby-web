@@ -541,3 +541,55 @@ def test_app_never_talks_to_mt5_and_starts_it_in_one_place_only():
             assert "terminal64" not in src.lower()
     core_src = open(os.path.join(here, "dobby_app_core.py"), encoding="utf-8").read()
     assert core_src.count("Popen(") == 1 and core_src.count('TERMINAL_EXE = "terminal64.exe"') == 1
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# SPEC 9 in the app: the AppAgent gets the batch features, demo feed, main-screen sentence, activity feed
+# ---------------------------------------------------------------------------------------------------------------------
+def test_app_agent_writes_auto_blackouts_and_snapshots_them(tmp_path):
+    from conftest import FakeNewsTransport
+    from test_batch import FF_WEEK, auto_desired
+    e = Env(tmp_path, desired=auto_desired(), config_extra={"server_utc_offset_min": 120})
+    cfg = da.load_config(e.cfg_path)
+    tg = da.Telegram(e.tg_transport, cfg["telegram"]["token"], cfg["telegram"]["chat_id"], clock=e.clock)
+    stop = threading.Event()
+    a = core.AppAgent(e.agent_dir, e.common, e.client(), tg, stop, clock=e.clock, sleep=lambda s: None,
+                      local_now=e.clock.local, news_transport=FakeNewsTransport(FF_WEEK))
+    a.cycle()
+    snap = a.snapshot()
+    assert [w["reason"] for w in snap["auto_blackouts"]][0] == "CPI m/m" and snap["news_error"] is None
+    assert b"blackout=2026.11.10 15:00-16:30\r\n" in e.read(da.CONTROL_NAME)
+    assert core.next_blackout_th(snap["auto_blackouts"], e.clock()) == \
+        "งดเข้าไม้อัตโนมัติครั้งถัดไป พรุ่งนี้ 20:00–21:30 (CPI m/m)"
+
+
+def test_demo_server_serves_a_synthetic_forexfactory_week():
+    now = time.time()
+    srv = core.DemoServer()
+    r = srv.request("GET", da.NEWS_URL, headers={"User-Agent": da.NEWS_USER_AGENT})
+    ev = da.normalize_ff_events(r.json())
+    usd = da.matching_news(ev, da.AUTO_NEWS_DEFAULTS)
+    assert srv.news_calls == 1 and [e["title"] for e in usd] == ["CPI m/m", "Unemployment Claims"]
+    assert all(da.parse_utc(e["ts_utc"]) > now for e in usd)
+
+
+def test_next_blackout_sentence_in_thai_time():
+    now = da.naive_to_epoch(da.parse_server_dt("2026.11.13 10:00:00"))          # Friday 17:00 Thai
+    fri = [{"from_utc": "2026-11-13T14:00:00Z", "to_utc": "2026-11-13T17:00:00Z", "reason": "ตารางเวลา"}]
+    assert core.next_blackout_th(fri, now) == "งดเข้าไม้อัตโนมัติครั้งถัดไป วันนี้ 21:00–24:00 (ตารางเวลา)"
+    assert core.next_blackout_th(fri, now + 5 * 3600) == "ตอนนี้งดเข้าไม้อัตโนมัติถึง เที่ยงคืน (ตารางเวลา)"
+    assert core.next_blackout_th(fri, now + 8 * 3600) == ""
+    hol = [{"from_utc": "2026-11-26T05:00:00Z", "to_utc": "2026-11-27T05:00:00Z", "reason": "Thanksgiving Day"}]
+    assert core.next_blackout_th(hol, now) == \
+        "งดเข้าไม้อัตโนมัติครั้งถัดไป วันพฤหัสบดี 12:00–วันศุกร์ 12:00 (Thanksgiving Day)"
+    assert core.next_blackout_th(None, now) == "" and core.next_blackout_th([{"x": 1}], now) == ""
+
+
+def test_activity_feed_lines_for_the_batch():
+    t, text = core.app_activity("auto blackouts: 3 window(s) in the next 7 days, next 2026-11-10T13:00:00Z - "
+                                "2026-11-10T14:30:00Z (CPI m/m)")
+    assert t == "info" and text.startswith("งดเข้าไม้อัตโนมัติ 3 ช่วงใน 7 วัน ครั้งถัดไป") and text.endswith("(CPI m/m)")
+    assert core.app_activity("cash flow suggested on the website: +200.00 (balance 700.00 not explained by Dobby "
+                             "trades)") == ("info", "พบเงินเข้า-ออกบัญชี +200.00 ที่ไม่ใช่ผลเทรดของ Dobby: ยืนยันได้บนเว็บ")
+    assert core.friendly_log("news calendar fetched: 42 event(s) this week") == "โหลดปฏิทินข่าวสัปดาห์นี้แล้ว (42 ข่าว)"
+    assert core.app_activity("bars: 4 bar(s) uploaded") is None                  # not worth the main screen

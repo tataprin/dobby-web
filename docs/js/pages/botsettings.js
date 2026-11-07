@@ -9,6 +9,7 @@ import { liveSwitch, appliedLive } from '../liveswitch.js';
 import { panel, pageHead, noBotState, stepper, bigToggle, segmented, progressSteps, helpBtn } from '../views.js';
 import { normalizeParams, presetFromLive, remoteSubset, defaults } from '../params.js';
 import { buildSet, setFileName } from '../setfile.js';
+import { autoBlackouts } from '../autoblackout.js';
 import { STRATS, ASIA, lockMode, lotsSame, mainLot, currentValues, setLotsAll, syncMaxLots, setLockMode, fixHiddenLocks,
   autoFromBalance, autoLot, toDesiredParams, summaryRows, summaryText, describeChanges, validateSimple, riskHint,
   matchesEffective, pctText } from '../simple.js';
@@ -90,7 +91,17 @@ export async function render(root, ctx) {
   const liveBox = h('div'), pauseBox = h('div');
   const editorBox = h('section', { class: 'editor', 'aria-label': 'ปรับการตั้งค่าบอท', id: 'edit' });
   const sidesBox = h('section', { class: 'set-sec', id: 'set-sides', 'aria-label': 'ฝั่งที่เข้าได้' });
-  const boBox = h('section', { class: 'set-sec', id: 'set-bo', 'aria-label': 'งดเข้าไม้ช่วงข่าว' });
+  const boBox = h('section', { class: 'set-sec', id: 'set-bo', 'aria-label': 'งดเข้าไม้' });
+  // งดเข้าไม้: the automatic part (SPEC 9.3, its own editor that keeps unsent edits) above the windows set by hand
+  const auto = autoBlackouts({ get: () => ({ bot, ctl, friend }), onSent: (row) => { ctl = row; refreshAll(); } });
+  const manualBox = h('div', { class: 'bo-manual' });
+  boBox.append(
+    h('div', { class: 'set-sec-head' }, h('h2', null, 'งดเข้าไม้'), friend ? null : helpBtn('news', 'วิธีใช้'),
+      h('p', null, friend ? 'ช่วงที่บอทนี้ไม่เปิดไม้ใหม่' : 'ช่วงนี้บอทไม่เปิดไม้ใหม่ ไม้ที่เปิดอยู่ยังวิ่งต่อ')),
+    h('div', { class: 'sub-head' }, h('h3', null, 'อัตโนมัติ'), h('p', null, 'ตามปฏิทินข่าวและตารางเวลา แอปที่เครื่องคำนวณช่วงงดให้เอง')),
+    h('div', { class: 'group' }, auto),
+    h('div', { class: 'sub-head' }, h('h3', null, 'ตั้งเอง'), h('p', null, 'งดทันที งดช่วงข่าวที่เลือก หรือกำหนดเวลาเอง')),
+    manualBox);
   const bar = h('div', { class: 'action-bar', role: 'region', 'aria-label': 'บันทึกการเปลี่ยนแปลง', hidden: true });
   // section anchors (the app routes by hash, so they scroll instead of changing location.hash)
   const ANCHORS = [['set-now', 'ค่าที่ใช้อยู่'], ['set-switch', 'สวิตช์หลัก'], ['set-money', 'ทุนและล็อต'], ['set-strat', 'สูตร'],
@@ -714,13 +725,11 @@ export async function render(root, ctx) {
     };
     fromIn.addEventListener('input', updHint); toIn.addEventListener('input', updHint); updHint();
     if (friend) {
-      mount(boBox,
-        h('div', { class: 'set-sec-head' }, h('h2', null, 'งดเข้าไม้ช่วงข่าว'), h('p', null, 'ช่วงที่บอทนี้ไม่เปิดไม้ใหม่')),
+      mount(manualBox,
         h('div', { class: 'group' }, list.length ? h('ul', { class: 'bo-list' }, list.map(item)) : h('p', { class: 'muted group-note' }, 'ไม่มีช่วงงดเข้าไม้')));
       return;
     }
-    mount(boBox,
-      h('div', { class: 'set-sec-head' }, h('h2', null, 'งดเข้าไม้ช่วงข่าว'), helpBtn('news', 'วิธีใช้'), h('p', null, 'ช่วงนี้บอทไม่เปิดไม้ใหม่ ไม้ที่เปิดอยู่ยังวิ่งต่อ')),
+    mount(manualBox,
       h('div', { class: 'group' },
         setRow(h('p', { class: 'set-label' }, 'งดทันที'), [h('span', { class: 'hint' }, 'บอทไม่เปิดไม้ใหม่ 2 ชั่วโมงนับจากตอนนี้')],
           h('button', { class: 'btn', type: 'button', onclick: (e) => addBo(Date.now(), Date.now() + 2 * 3600e3, 'งดเข้าไม้ 2 ชม.', e.currentTarget) }, icon('clock'), 'งด 2 ชม.')),
@@ -795,7 +804,7 @@ export async function render(root, ctx) {
       onChange();
     }
   }
-  function refreshAll() { resync(); drawHead(); drawNow(); drawLive(); drawPause(); drawSides(); drawBlackouts(); drawBar(); }
+  function refreshAll() { resync(); drawHead(); drawNow(); drawLive(); drawPause(); drawSides(); drawBlackouts(); auto.update(); drawBar(); }
 
   drawHead(); drawNow(true); drawLive(true); drawPause(true); buildEditor(); drawSides(true); drawBlackouts(true); drawBar();
   const presetId = friend ? null : ctx.query.get('preset');
@@ -806,10 +815,10 @@ export async function render(root, ctx) {
   const unsub = ctx.api.subscribeBot(bot.id, {
     status: (row) => { if (!row || !row.status) return; st = row.status; resync(); drawHead(); drawNow(); drawLive(); },
     control: (row) => { ctl = row; refreshAll(); },
-    bot: (row) => { bot = { ...bot, ...row }; updateBotRow(bot); resync(); drawHead(); drawNow(); drawLive(); drawPause(); },
+    bot: (row) => { bot = { ...bot, ...row }; updateBotRow(bot); resync(); drawHead(); drawNow(); drawLive(); drawPause(); auto.update(); },
   });
   const offCtl = on('control-updated', (row) => { if (row && row.bot_id === bot.id) { ctl = row; refreshAll(); } });
-  const tick = setInterval(() => { drawHead(); drawBlackouts(); }, 15000);
+  const tick = setInterval(() => { drawHead(); drawBlackouts(); auto.update(); }, 15000);
   const poll = setInterval(async () => {
     try {
       const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), friend ? ctx.api.adminBots() : ctx.api.listBots()]);

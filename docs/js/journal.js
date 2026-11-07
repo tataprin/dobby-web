@@ -26,7 +26,21 @@ export function closeReason(detail) {
   return m ? m[1] : '';
 }
 
-// OPEN -> CLOSE per module, in time order. Rows must be sorted ascending.
+// trade_key (SPEC 9.6): "<tag>|<open ts_server as YYYY-MM-DD HH:MM:SS>" of the trade's OPEN journal row.
+export function tradeKeyOf(tag, tsServer) {
+  const s = String(tsServer || '').replace('T', ' ').replace(/\./g, '-').slice(0, 19);
+  return tag && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s) ? `${tag}|${s}` : '';
+}
+export function parseTradeKey(key) {
+  const i = String(key || '').indexOf('|');
+  if (i < 1) return null;
+  const tag = key.slice(0, i), ts = key.slice(i + 1);
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(ts) ? { tag, ts } : null;
+}
+export const tradeHref = (key) => `#/trade/${encodeURIComponent(key)}`;
+
+// OPEN -> CLOSE per module, in time order. Rows must be sorted ascending. Each trade carries its trade_key and the SL
+// steps of the lock stages (LOCK1 / LOCK rows: time and the new SL).
 export function pairTrades(rows) {
   const open = {};
   const trades = [];
@@ -36,11 +50,11 @@ export function pairTrades(rows) {
       if (open[mod]) trades.push({ ...open[mod], open: true, orphan: true });
       open[mod] = {
         module: mod, side: r.side, lots: r.lots, openUtc: r.utc, openWall: r.wall, openPrice: r.price, sl: r.sl, tp: r.tp,
-        step: r.step, openDetail: r.detail, events: [],
+        step: r.step, openDetail: r.detail, events: [], lockSteps: [], openTs: r.ts_server, key: tradeKeyOf(mod, r.ts_server),
       };
     } else if (r.event === 'CLOSE') {
       const t = open[mod];
-      const base = t || { module: mod, side: r.side, lots: r.lots, openUtc: null, openWall: null, openPrice: null, sl: null, tp: null, step: r.step, events: [] };
+      const base = t || { module: mod, side: r.side, lots: r.lots, openUtc: null, openWall: null, openPrice: null, sl: null, tp: null, step: r.step, events: [], lockSteps: [], key: '' };
       trades.push({
         ...base, open: false, closeUtc: r.utc, closeWall: r.wall, closePrice: r.price, pnl: r.pnl ?? 0, vBalance: r.v_balance,
         reason: closeReason(r.detail), closeDetail: r.detail, day: r.day,
@@ -48,6 +62,7 @@ export function pairTrades(rows) {
       open[mod] = null;
     } else if (open[mod] && LOCK_EVENTS.has(r.event)) {
       open[mod].events.push(r.event);
+      if ((r.event === 'LOCK' || r.event === 'LOCK1') && r.sl > 0) open[mod].lockSteps.push({ event: r.event, utc: r.utc, sl: r.sl, detail: r.detail });
     }
   }
   for (const t of Object.values(open)) if (t) trades.push({ ...t, open: true });
@@ -112,4 +127,6 @@ export const EVENT_LABELS = {
   SIGNAL: 'สัญญาณ', ORDER: 'ตั้งคำสั่ง', ARM: 'ตั้งกรอบ NY', CANCEL: 'ยกเลิกคำสั่ง', SKIP: 'ข้าม', ERROR: 'ข้อผิดพลาด',
   DAYCAP: 'ถึงจุดหยุดรายวัน', LOCKED: 'ล็อกการเทรดจริง', UNLOCKED: 'ปลดล็อกเทรดจริง',
 };
+// trade_notes tags offered on the trade page (SPEC 9.6); any other tag can be typed
+export const SUGGESTED_TAGS = ['ช่วงข่าว', 'ปิดเอง', 'เลื่อน SL เอง', 'ตลาดผันผวน'];
 export const REASON_LABELS = { TP: 'ถึง TP', SL: 'โดน SL', LOCK: 'ล็อกกำไร', TIME: 'หมดเวลา', FLAT: 'ปิดสิ้นวัน', MANUAL: 'ปิดเอง' };

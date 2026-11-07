@@ -97,7 +97,10 @@ export class BotSim {
     const entry = r2(price(t));
     const slP = r2(entry - dir * sl), tpP = r2(entry + dir * tpd);
     const u = r();
-    let outcome = u < 0.39 ? 'TP' : u < 0.48 ? 'LOCK' : u < 0.53 ? 'LOCK1' : u < 0.57 ? 'TIME' : 'SL';
+    // a strategy going through a bad patch (so ประวัติ shows one in "จับตา"): same random draws, fewer wins
+    const weak = this.cfg.weak && this.cfg.weak.module === mod && t >= this.weakFrom;
+    let outcome = weak ? (u < 0.27 ? 'TP' : u < 0.31 ? 'LOCK' : u < 0.34 ? 'LOCK1' : u < 0.40 ? 'TIME' : 'SL')
+      : u < 0.39 ? 'TP' : u < 0.48 ? 'LOCK' : u < 0.53 ? 'LOCK1' : u < 0.57 ? 'TIME' : 'SL';
     if (outcome === 'LOCK1' && !P.InpLock1Enable) outcome = 'TP';
     if (outcome === 'LOCK' && !P.InpLockEnable) outcome = 'TP';
     let dur = (18 + r() * 230) * MIN;
@@ -150,6 +153,7 @@ export class BotSim {
     const today = Math.floor(nowWall / DAY) * DAY;
     const first = today - 21 * DAY;
     this.today = today;
+    this.weakFrom = cfg.weak ? today - cfg.weak.days * DAY : Infinity;
     const t0 = first + 9 * HOUR + 2 * MIN;
     this.add(t0, 'START', 'A_new', 'NONE', P.InpLotsA, null, null, null, 0, 0,
       `v${cfg.ea} A_new+NY+C5G lots ${f2(P.InpLotsA)} (max ${f2(P.InpMaxLots)}) virtual ${f2(this.vb)} | mode REAL`);
@@ -242,25 +246,57 @@ export class BotSim {
   // Closes follow the same price path as the demo trades (so the trade marks sit on the line) plus a small
   // deterministic jitter that does not touch the simulation's random sequence. VWAP is anchored to each server day.
   bars(nowUtc) {
-    const tf = 15 * MIN, n = 96;
-    const nowWall = nowUtc + DEMO_OFFSET_MIN * MIN;
-    const lastOpen = Math.floor(nowWall / tf) * tf - tf; // the newest closed bar
+    const rows = this.barsBetween(nowUtc - 96 * 15 * MIN - 15 * MIN, nowUtc, nowUtc).slice(-96);
+    return { tf: 'M15', t: rows.map((b) => Math.floor(Date.parse(b.t) / 1000)), c: rows.map((b) => b.close), vwap: rows.map((b) => b.vwap) };
+  }
+
+  // SPEC 9.1: rows of the `bars` table {t: bar open (UTC ISO), close, vwap} for closed M15 bars in [fromUtc, toUtc].
+  // VWAP is accumulated from the start of each server day, so any window gives the same values.
+  // anchors (optional, demo only): [{w: server wall ms, p: price}] of one trade (entry, lock triggers, exit) that the
+  // closes are bent towards, so a trade page chart shows the price actually reaching that trade's levels.
+  barsBetween(fromUtc, toUtc, nowUtc = Date.now(), anchors = null) {
+    const tf = 15 * MIN, off = DEMO_OFFSET_MIN * MIN;
+    const A = anchors && anchors.length ? anchors.map((a) => ({ w: a.w, d: a.p - price(a.w) })) : null;
+    const bend = (w) => {
+      if (!A) return 0;
+      if (w <= A[0].w) return A[0].d * Math.max(0, 1 - (A[0].w - w) / (90 * MIN));
+      const last = A[A.length - 1];
+      if (w >= last.w) return last.d * Math.max(0, 1 - (w - last.w) / (45 * MIN));
+      for (let i = 1; i < A.length; i++) if (w <= A[i].w) { const f = (w - A[i - 1].w) / (A[i].w - A[i - 1].w || 1); return A[i - 1].d + (A[i].d - A[i - 1].d) * f; }
+      return 0;
+    };
+    const lastOpen = Math.floor((nowUtc + off) / tf) * tf - tf; // the newest closed bar
+    const a = Math.floor((fromUtc + off) / tf) * tf, b = Math.min(lastOpen, Math.floor((toUtc + off) / tf) * tf);
+    if (!(b >= a)) return [];
     const jitter = (k) => { const r = rng((this.cfg.seed % 997) * 7919 + k); return (r() - 0.5) * 1.1 + (r() - 0.5) * 0.7; };
-    const t = [], c = [], vwap = [];
+    const out = [];
     let day = null, pv = 0, vol = 0;
-    for (let i = n - 1; i >= 0; i--) {
-      const open = lastOpen - i * tf;
+    for (let open = Math.floor(a / DAY) * DAY; open <= b; open += tf) {
       const k = Math.floor(open / tf);
-      const close = r2(price(open + tf) + jitter(k));
+      const close = r2(price(open + tf) + jitter(k) + bend(open + tf));
       const d = Math.floor(open / DAY);
       if (d !== day) { day = d; pv = 0; vol = 0; }
       const v = 1 + rng(k * 31 + 7)() * 2.5;
       pv += close * v; vol += v;
-      t.push(Math.floor((open - DEMO_OFFSET_MIN * MIN) / 1000));
-      c.push(close);
-      vwap.push(r2(pv / vol));
+      if (open >= a) out.push({ t: new Date(open - off).toISOString(), close, vwap: r2(pv / vol) });
     }
-    return { tf: 'M15', t, c, vwap };
+    return out;
+  }
+
+  // the price anchors of the trade opened at openUtc (OPEN, NEAR / LOCK triggers, CLOSE), for barsBetween
+  anchorsFor(openUtc) {
+    const w0 = openUtc + DEMO_OFFSET_MIN * MIN;
+    const i = this.rows.findIndex((r) => r.event === 'OPEN' && Math.abs(Date.parse(r.ts_server + 'Z') - w0) < 90000);
+    if (i < 0) return null;
+    const tag = this.rows[i].tag, out = [];
+    for (let j = i; j < this.rows.length; j++) {
+      const r = this.rows[j];
+      if (r.tag !== tag || !(r.price > 0)) continue;
+      if (j > i && r.event === 'OPEN') break;
+      if (['OPEN', 'NEAR1', 'NEARTP', 'LOCK1', 'LOCK', 'CLOSE'].includes(r.event)) out.push({ w: Date.parse(r.ts_server + 'Z'), p: r.price });
+      if (r.event === 'CLOSE') break;
+    }
+    return out;
   }
 
   tick(nowUtc) {
@@ -397,6 +433,96 @@ function nextNews(nowUtc) {
     .sort((a, b) => a.ts_utc.localeCompare(b.ts_utc)).map((n, i) => ({ id: i + 1, ...n }));
 }
 
+// SPEC 9.3: what agent 1.2.0 reports from the Forex Factory week calendar (USD, High) next to the admin's news_events
+// (the same moments under the calendar's own titles, plus two events the admin did not add), and the automatic
+// windows it builds for the next 7 days: news [t - before, t + after], the weekly schedule (Thai time) and NYSE holidays.
+const FF_TITLES = {
+  'US CPI': [['CPI m/m', '0.3%', '0.2%'], ['Core CPI m/m', '0.3%', '0.3%']],
+  'US NFP (Non-Farm Payrolls)': [['Non-Farm Employment Change', '115K', '22K'], ['Unemployment Rate', '4.3%', '4.3%']],
+  'FOMC rate decision': [['Federal Funds Rate', '3.75%', '4.00%'], ['FOMC Statement', '', '']],
+  'FOMC press conference': [['FOMC Press Conference', '', '']],
+  'Fed Chair speech': [['Fed Chair Powell Speaks', '', '']],
+};
+const NYSE_HOLIDAYS = [['2026-11-26', 'Thanksgiving Day'], ['2026-12-25', 'Christmas Day'], ['2027-01-01', "New Year's Day"],
+  ['2027-01-18', 'Martin Luther King Jr. Day'], ['2027-02-15', "Washington's Birthday"], ['2027-03-26', 'Good Friday'],
+  ['2027-05-31', 'Memorial Day'], ['2027-06-18', 'Juneteenth'], ['2027-07-05', 'Independence Day'], ['2027-09-06', 'Labor Day'],
+  ['2027-11-25', 'Thanksgiving Day'], ['2027-12-24', 'Christmas Day']];
+
+function agentNews(nowUtc, news) {
+  const out = [];
+  for (const n of news) {
+    const t = Date.parse(n.ts_utc);
+    if (t < nowUtc - DAY || t > nowUtc + 6 * DAY) continue;
+    for (const [title, forecast, previous] of FF_TITLES[n.name] || []) out.push({ title, ts_utc: isoUtc(t), currency: 'USD', impact: 'High', forecast, previous });
+  }
+  // two events only the calendar has: weekly jobless claims (Thursday 12:30 UTC) and ISM services (the next weekday 14:00 UTC)
+  for (let i = 0; i < 7; i++) {
+    const d = Math.floor(nowUtc / DAY) * DAY + i * DAY, dow = new Date(d).getUTCDay();
+    if (dow === 4) out.push({ title: 'Unemployment Claims', ts_utc: isoUtc(d + 12.5 * HOUR), currency: 'USD', impact: 'High', forecast: '226K', previous: '219K' });
+  }
+  let ism = Math.floor(nowUtc / DAY) * DAY + DAY;
+  while ([0, 6].includes(new Date(ism).getUTCDay())) ism += DAY;
+  out.push({ title: 'ISM Services PMI', ts_utc: isoUtc(ism + 14 * HOUR), currency: 'USD', impact: 'High', forecast: '50.8', previous: '50.0' });
+  return out.sort((a, b) => a.ts_utc.localeCompare(b.ts_utc));
+}
+
+function autoWindows(nowUtc, events, autoNews, schedule) {
+  const w = [];
+  if (autoNews && autoNews.enabled) {
+    for (const e of events) {
+      const t = Date.parse(e.ts_utc);
+      w.push({ from: t - autoNews.before_min * MIN, to: t + autoNews.after_min * MIN, reason: e.title, kind: 'news' });
+    }
+  }
+  if (schedule && schedule.enabled) {
+    const thai = 7 * HOUR;
+    for (let i = -1; i < 8; i++) {
+      const d = Math.floor((nowUtc + thai) / DAY) * DAY + i * DAY; // Thai midnight (as a wall clock)
+      const dow = ((new Date(d).getUTCDay() + 6) % 7) + 1;
+      for (const x of schedule.weekly || []) {
+        if (x.dow !== dow) continue;
+        const [fh, fm] = x.from.split(':').map(Number), [th, tm] = x.to.split(':').map(Number);
+        w.push({ from: d - thai + (fh * 60 + fm) * MIN, to: d - thai + (th * 60 + tm) * MIN, reason: 'ตารางเวลา', kind: 'schedule' });
+      }
+    }
+    if (schedule.us_holidays) {
+      for (const [day, name] of NYSE_HOLIDAYS) {
+        const ny = Date.parse(`${day}T05:00:00Z`); // 00:00 New York (EST)
+        w.push({ from: ny, to: ny + DAY, reason: name, kind: 'holiday' });
+      }
+    }
+  }
+  const keep = w.filter((x) => x.to > nowUtc && x.from < nowUtc + 7 * DAY).sort((a, b) => a.from - b.from);
+  const merged = [];
+  for (const x of keep) {
+    const last = merged[merged.length - 1];
+    if (last && x.from <= last.to) {
+      last.to = Math.max(last.to, x.to);
+      if (!last.reason.split(', ').includes(x.reason)) last.reason += `, ${x.reason}`;
+      if (!last.kinds.includes(x.kind)) last.kinds.push(x.kind);
+    } else merged.push({ ...x, kinds: [x.kind] });
+  }
+  return merged.map((x) => ({ from_utc: isoUtc(x.from), to_utc: isoUtc(x.to), reason: x.reason, kinds: x.kinds }));
+}
+
+// [{open, close}] journal rows of every closed trade, in time order
+function closedTrades(sim) {
+  const open = {}, out = [];
+  for (const r of sim.rows) {
+    if (r.event === 'OPEN') open[r.tag] = r;
+    else if (r.event === 'CLOSE' && open[r.tag]) { out.push({ open: open[r.tag], close: r }); open[r.tag] = null; }
+  }
+  return out;
+}
+const keyOf = (row) => `${row.tag}|${row.ts_server.replace('T', ' ').slice(0, 19)}`;
+// virtual balance just before a moment (UTC ms)
+function vbAt(sim, utc) {
+  const s = tsServer(utc + DEMO_OFFSET_MIN * MIN);
+  let v = sim.params.InpVirtualStart;
+  for (const r of sim.rows) { if (r.ts_server > s) break; if (r.event === 'CLOSE') v = r.v_balance; }
+  return v;
+}
+
 export function createDemoDb(nowUtc = Date.now()) {
   const iso = (ms) => new Date(ms).toISOString();
   const news = nextNews(nowUtc);
@@ -411,8 +537,10 @@ export function createDemoDb(nowUtc = Date.now()) {
     ...templateParams('std-003'), InpLotsA: 0.02, InpLotsNY: 0.02, InpLotsC5G: 0.02, InpMaxLots: 0.02, InpVirtualStart: 200,
     InpLock1Enable: true, InpLock1AtPct: 82, InpLock1ToPct: 80, InpUseAsia: true, InpLotsAsia: 0.01, InpMaxAttempts: 2,
   };
+  // account balance = virtual + the cash flows below (a 100 deposit, a 50 one not confirmed yet, a -12.40 manual trade)
   const sim1 = new BotSim({
-    id: 'demo-bot-1', seed: 20261107, idBase: 100000, ea: '3.04', remote: true, params: p1, openPosition: true, accountExtra: 0,
+    id: 'demo-bot-1', seed: 20261107, idBase: 100000, ea: '3.04', remote: true, params: p1, openPosition: true, accountExtra: 137.6,
+    weak: { module: 'C5G', days: 13 },
     applied: {
       version: 14, live: true, mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: '',
       blackouts: [[srv(nfpFrom), srv(nfpTo)]], applied_at: tsEa(nowUtc + DEMO_OFFSET_MIN * MIN - 26 * HOUR),
@@ -430,7 +558,7 @@ export function createDemoDb(nowUtc = Date.now()) {
   // Friends (read-only for the admin). นก: EA v3.04 on a 500 balance, live, an open trade.
   const pNok = { ...autoFromBalance(templateParams('ea-default'), 500), InpRemoteParams: true, InpRemoteLive: true, InpRemoteMaxLots: 0.50, InpRemoteMaxCapPct: 10 };
   const simNok = new BotSim({
-    id: 'demo-bot-nok', seed: 777029, idBase: 700000, ea: '3.04', remote: true, params: pNok, openPosition: true, accountExtra: 12.4, spread: 0.22,
+    id: 'demo-bot-nok', seed: 777029, idBase: 700000, ea: '3.04', remote: true, params: pNok, openPosition: true, accountExtra: 212.4, spread: 0.22,
     applied: {
       version: 9, live: true, mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: '',
       blackouts: [], applied_at: tsEa(nowUtc + DEMO_OFFSET_MIN * MIN - 30 * HOUR),
@@ -455,17 +583,29 @@ export function createDemoDb(nowUtc = Date.now()) {
   // local limits: SPEC 7.3 defaults (max lots = min(0.50, max(0.02, 2 x L)), daily cap 10)
   const limits1 = { allow_remote_control: true, allow_remote_live: true, allow_remote_params: true, max_lots: 0.06, max_daily_cap_pct: 10 };
   const limits2 = { allow_remote_control: true, allow_remote_live: false, allow_remote_params: false, max_lots: 0.04, max_daily_cap_pct: 10 };
-  const agentState = (v, limits, sim, at = nowUtc, rejected = []) => ({
+  // SPEC 9.3 settings: คอมหลัก uses both (news 30 / 60, no trading on Friday night, NYSE holidays); นก news only;
+  // บีม news only, and its PC could not fetch the calendar before it went offline. DESKTOP-NPNL85P runs agent 1.0.0.
+  const auto1 = { auto_news: { enabled: true, before_min: 30, after_min: 60, currencies: ['USD'], impact: ['High'] },
+    schedule: { enabled: true, us_holidays: true, weekly: [{ dow: 5, from: '21:00', to: '24:00' }] } };
+  const autoNok = { auto_news: { enabled: true, before_min: 30, after_min: 60, currencies: ['USD'], impact: ['High'] }, schedule: { enabled: false, us_holidays: true, weekly: [] } };
+  const autoBeam = { auto_news: { enabled: true, before_min: 45, after_min: 90, currencies: ['USD'], impact: ['High'] } };
+  const evs = agentNews(nowUtc, news);
+  const newsState = (auto, at = nowUtc, extra = {}) => ({
+    news: evs.filter((e) => Date.parse(e.ts_utc) > at - DAY), auto_blackouts: autoWindows(at, evs, auto.auto_news, auto.schedule),
+    news_fetched_at: iso(at - 95 * MIN), ...extra,
+  });
+  const agentState = (v, limits, sim, at = nowUtc, rejected = [], extra = {}) => ({
     agent_version: '1.0.0', applied_version: v, applied_at: iso(at - 26 * HOUR), limits, rejected, last_error: null,
     ea_heartbeat_age_s: 2, control_file_id: `W${pad3(v)}`, remote_file_version: sim.remote ? v : null,
-    bars: sim.bars(at),
+    bars: sim.bars(at), ...extra,
   });
   const limitsNok = { allow_remote_control: true, allow_remote_live: true, allow_remote_params: true, max_lots: 0.10, max_daily_cap_pct: 10 };
   const limitsBeam = { allow_remote_control: true, allow_remote_live: true, allow_remote_params: true, max_lots: 0.04, max_daily_cap_pct: 10 };
   const bots = [
     {
       id: 'demo-bot-1', owner: DEMO_USER.id, name: 'คอมหลัก', created_at: iso(nowUtc - 21 * DAY), last_seen: iso(nowUtc - 2000),
-      agent_version: '1.0.0', ea_version: '3.04', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN, agent_state: agentState(14, limits1, sim1),
+      agent_version: '1.2.0', ea_version: '3.04', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN,
+      agent_state: agentState(14, limits1, sim1, nowUtc, [], { agent_version: '1.2.0', ...newsState(auto1) }),
     },
     {
       id: 'demo-bot-2', owner: DEMO_USER.id, name: 'DESKTOP-NPNL85P', created_at: iso(nowUtc - 20 * DAY), last_seen: iso(nowUtc - 4000),
@@ -473,19 +613,21 @@ export function createDemoDb(nowUtc = Date.now()) {
     },
     {
       id: 'demo-bot-nok', owner: 'demo-nok', name: 'คอมนก', created_at: iso(nowUtc - 11 * DAY), last_seen: iso(nowUtc - 3000),
-      agent_version: '1.0.0', ea_version: '3.04', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN, agent_state: agentState(9, limitsNok, simNok),
+      agent_version: '1.2.0', ea_version: '3.04', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN,
+      agent_state: agentState(9, limitsNok, simNok, nowUtc, [], { agent_version: '1.2.0', ...newsState(autoNok) }),
     },
     {
       id: 'demo-bot-beam', owner: 'demo-beam', name: 'โน้ตบุ๊กบีม', created_at: iso(nowUtc - 8 * DAY), last_seen: iso(beamOffline), offline: true,
-      agent_version: '1.0.0', ea_version: '3.04', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN,
-      agent_state: agentState(5, limitsBeam, simBeam, beamOffline, [{ code: 'lots_clamped', detail: '0.05 -> 0.04' }]),
+      agent_version: '1.2.0', ea_version: '3.04', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN,
+      agent_state: agentState(5, limitsBeam, simBeam, beamOffline, [{ code: 'lots_clamped', detail: '0.05 -> 0.04' }],
+        { agent_version: '1.2.0', ...newsState(autoBeam, beamOffline, { news_error: 'HTTP Error 429: Too Many Requests', news_fetched_at: iso(beamOffline - 30 * HOUR) }) }),
     },
   ];
   const ctl = (bot_id, version, desired, ago, by = DEMO_USER.id) => ({ bot_id, version, desired, updated_by: by, updated_at: iso(nowUtc - ago) });
   const control = [
     ctl('demo-bot-1', 14, {
       live: true, control: { mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: '' },
-      blackouts: [{ from_utc: isoUtc(nfpFrom), to_utc: isoUtc(nfpTo), label: nextTier1.name }], params: remoteSubset(normalizeParams(p1)),
+      blackouts: [{ from_utc: isoUtc(nfpFrom), to_utc: isoUtc(nfpTo), label: nextTier1.name }], params: remoteSubset(normalizeParams(p1)), ...auto1,
     }, 26 * HOUR),
     ctl('demo-bot-2', 6, {
       live: false, control: { mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: 'พักไว้ก่อน' },
@@ -493,11 +635,11 @@ export function createDemoDb(nowUtc = Date.now()) {
     }, 50 * HOUR),
     ctl('demo-bot-nok', 9, {
       live: true, control: { mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: '' },
-      blackouts: [], params: remoteSubset(normalizeParams(pNok)),
+      blackouts: [], params: remoteSubset(normalizeParams(pNok)), ...autoNok,
     }, 30 * HOUR, 'demo-nok'),
     ctl('demo-bot-beam', 5, {
       live: true, control: { mode: 'pause', lots: null, allow_long: true, allow_short: true, max_spread: null, note: 'ไปต่างจังหวัด พักไว้' },
-      blackouts: [{ from_utc: isoUtc(nfpFrom), to_utc: isoUtc(nfpTo), label: nextTier1.name }], params: remoteSubset(normalizeParams(pBeam)),
+      blackouts: [{ from_utc: isoUtc(nfpFrom), to_utc: isoUtc(nfpTo), label: nextTier1.name }], params: remoteSubset(normalizeParams(pBeam)), ...autoBeam,
     }, 4 * HOUR, 'demo-beam'),
   ];
 
@@ -560,9 +702,34 @@ export function createDemoDb(nowUtc = Date.now()) {
     { name: 'dobby_agent.zip', size: 18240, updated_at: iso(nowUtc - 2 * DAY) },
   ];
 
+  // SPEC 9.2 cash flows: คอมหลัก has a confirmed 100 deposit, an auto-detected +50 waiting for the owner, and a -12.40
+  // the owner marked as a manual trade; นก has a confirmed auto-detected 200 deposit.
+  const auto = 'balance change not explained by Dobby trades';
+  const fl = (id, bot_id, ts, amount, source, status, balance_after, note) => ({ id, bot_id, ts: isoUtc(ts), amount, source, status, balance_after, note, created_at: iso(ts + 4 * MIN), updated_at: iso(ts + 4 * MIN) });
+  const tDep = nowUtc - 10 * DAY + 3 * HOUR, tMan = nowUtc - 6 * DAY - 2 * HOUR, tSug = nowUtc - 26 * HOUR, tNok = nowUtc - 9 * DAY + 5 * HOUR;
+  const flows = [
+    fl(1, 'demo-bot-1', tDep, 100, 'manual', 'confirmed', null, 'โอนเพิ่มจากบัญชีออมทรัพย์'),
+    fl(2, 'demo-bot-1', tMan, -12.4, 'auto', 'dismissed', r2(vbAt(sim1, tMan) + 100 - 12.4), auto),
+    fl(3, 'demo-bot-1', tSug, 50, 'auto', 'suggested', r2(vbAt(sim1, tSug) + 137.6), auto),
+    fl(4, 'demo-bot-nok', tNok, 200, 'auto', 'confirmed', r2(vbAt(simNok, tNok) + 212.4), auto),
+  ];
+  // SPEC 9.6 notes and tags on a few trades
+  const t1 = closedTrades(sim1), tn = closedTrades(simNok);
+  const pick = (list, pred, from = 0) => list.slice(0, list.length - from).reverse().find(pred);
+  const nyWin = pick(t1, (x) => x.open.tag === 'NY' && x.close.pnl > 0);
+  const c5Loss = pick(t1, (x) => x.open.tag === 'C5G' && x.close.pnl < 0, 2);
+  const aTime = pick(t1, (x) => x.open.tag === 'A_new', 3);
+  const note = (bot_id, x, tags, text, ago) => (x ? { bot_id, trade_key: keyOf(x.open), note: text, tags, updated_at: iso(nowUtc - ago), updated_by: bot_id === 'demo-bot-nok' ? 'demo-nok' : DEMO_USER.id } : null);
+  const notes = [
+    note('demo-bot-1', nyWin, ['ช่วงข่าว'], 'ข่าวออกตอนถือไม้อยู่ ราคาวิ่งแรงทั้งสองทาง แต่ยังถึง TP', 20 * HOUR),
+    note('demo-bot-1', c5Loss, ['ตลาดผันผวน', 'เลื่อน SL เอง'], 'ราคาแกว่งแรงช่วงตลาดยุโรปเปิด ลองเลื่อน SL เองแล้วไม่ช่วย ครั้งหน้าปล่อยตามบอท', 3 * DAY),
+    note('demo-bot-1', aTime, ['ปิดเอง'], null, 4 * DAY),
+    note('demo-bot-nok', pick(tn, (x) => x.close.pnl < 0), ['ช่วงข่าว'], 'ลืมตั้งงดเข้าไม้ช่วงข่าว', 2 * DAY),
+  ].filter(Boolean);
+
   return {
     user: DEMO_USER, profiles, invites, bots, control, sims: { 'demo-bot-1': sim1, 'demo-bot-2': sim2, 'demo-bot-nok': simNok, 'demo-bot-beam': simBeam },
-    presets, audit, news, downloads,
+    presets, audit, news, downloads, flows, notes, push: [],
     factors: [{ id: 'demo-totp-1', factor_type: 'totp', status: 'verified', friendly_name: 'มือถือ (ตัวอย่าง)', created_at: iso(nowUtc - 30 * DAY) }],
   };
 }

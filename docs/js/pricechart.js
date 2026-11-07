@@ -1,6 +1,7 @@
 // The dashboard hero chart: the last 24 h of XAUUSD (bots.agent_state.bars, SPEC 8) as one quiet line, a faint VWAP,
 // the current price, and Dobby's own trades stamped on it (OPEN: ▲ jade buy / ▼ cinnabar sell at entry time and
-// price; CLOSE: a small ring coloured by the trade's P&L). Hover or tap shows the trade (or the price at that time).
+// price; CLOSE: a small ring coloured by the trade's P&L). Hover or tap shows the trade (or the price at that time);
+// a click on a mark (a second tap on touch) opens the trade page through data.onTrade.
 // Drawn as inline SVG at the container's pixel width, redrawn on resize. One orchestrated motion on first draw: the
 // line draws in and the marks stamp in where the line reaches them (off with prefers-reduced-motion).
 import { h, fmtNum, fmtSigned, fmtThai, thaiDayKey } from './util.js';
@@ -44,7 +45,7 @@ export function priceChart() {
   const plot = h('div', { class: 'pc-plot' });
   const tip = h('div', { class: 'pc-tip', role: 'status', hidden: true });
   const el = h('figure', { class: 'pchart' }, plot, tip);
-  let data = null, animateNext = false, lastW = 0, geo = null, pinned = false, lastPt = null;
+  let data = null, animateNext = false, lastW = 0, geo = null, pinned = false, lastPt = null, tapped = null;
 
   el.update = (d, opts = {}) => {
     data = d;
@@ -183,7 +184,12 @@ export function priceChart() {
     geo = { xs, pts, sx, sy, marks, L, pw, T, ph, W, live, xb };
     const hit = plot.querySelector('.pc-hit');
     hit.addEventListener('pointermove', (e) => { if (e.pointerType !== 'touch') point(e); });
-    hit.addEventListener('pointerdown', (e) => { point(e); pinned = e.pointerType === 'touch'; });
+    hit.addEventListener('pointerdown', (e) => {
+      const m = point(e);
+      const open = m && data.onTrade && m.t.key;
+      if (e.pointerType === 'touch') { if (open && tapped === m.t) { tapped = null; data.onTrade(m.t); return; } tapped = m ? m.t : null; pinned = true; }
+      else if (open) data.onTrade(m.t);
+    });
     hit.addEventListener('pointerleave', (e) => { if (e.pointerType !== 'touch') hideTip(); });
     // a live redraw (new price every few seconds) keeps the tooltip where the pointer is
     if (lastPt) point(lastPt); else tip.hidden = true;
@@ -199,9 +205,11 @@ export function priceChart() {
     const cross = plot.querySelector('.pc-cross');
     if (best) {
       cross.setAttribute('visibility', 'hidden');
-      showTip(tradeTip(best.t), best.x, best.y);
-      return;
+      showTip(tradeTip(best.t, e.pointerType === 'touch'), best.x, best.y);
+      hit(true);
+      return best;
     }
+    hit(false);
     // nearest point on the line
     let bi = 0, bx = Infinity;
     geo.pts.forEach((p, i) => { const d = Math.abs(geo.sx(p[0]) - x); if (d < bx) { bx = d; bi = i; } });
@@ -213,7 +221,10 @@ export function priceChart() {
     dot.setAttribute('cx', px.toFixed(1)); dot.setAttribute('cy', py.toFixed(1));
     const isNow = geo.live && bi === geo.pts.length - 1;
     showTip([h('p', { class: 'pc-tip-sub' }, isNow ? 'ตอนนี้' : when(p[0])), h('p', { class: 'pc-tip-price num' }, fmtNum(p[1]))], px, py);
+    return null;
   }
+  // the pointer is over a trade mark: show it can be opened
+  function hit(on) { const r = plot.querySelector('.pc-hit'); if (r) r.classList.toggle('on-mark', !!(on && data && data.onTrade)); }
 
   function showTip(kids, x, y) {
     tip.replaceChildren(...kids);
@@ -228,7 +239,7 @@ export function priceChart() {
     tip.style.top = `${top}px`;
   }
 
-  function tradeTip(t) {
+  function tradeTip(t, touch = false) {
     const buy = t.side === 'BUY';
     const kids = [h('p', { class: 'pc-tip-title' }, h('span', { class: `side ${buy ? 'buy' : 'sell'}` }, buy ? '▲ ซื้อ' : '▼ ขาย'), ` ${t.module || ''} `, h('span', { class: 'num' }, fmtNum(t.lots)), ' ล็อต')];
     if (t.openPrice > 0 && Number.isFinite(t.openUtc)) kids.push(h('p', null, `เปิด ${when(t.openUtc)} ที่ `, h('span', { class: 'num' }, fmtNum(t.openPrice))));
@@ -238,6 +249,7 @@ export function priceChart() {
       kids.push(h('p', { class: 'pc-tip-pnl' }, h('span', { class: `num pnl ${t.pnl > 0 ? 'pos' : t.pnl < 0 ? 'neg' : 'zero'}` }, fmtSigned(t.pnl)),
         h('span', { class: 'pc-tip-sub' }, ` ${REASON_LABELS[t.reason] || t.reason || ''}`)));
     }
+    if (data && data.onTrade && t.key) kids.push(h('p', { class: 'pc-tip-sub' }, touch ? 'แตะอีกครั้งเพื่อดูไม้นี้' : 'กดเพื่อดูไม้นี้'));
     return kids;
   }
 

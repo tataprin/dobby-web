@@ -110,6 +110,10 @@ class FakeSupabase(object):
         self.expires_in = 3600
         self.reject_access_once = False
         self.web_name = "คอมหลัก"
+        self.bars = {}                  # SPEC 9.1: t -> row
+        self.bars_posts = []
+        self.cash_rows = []             # SPEC 9.2
+        self.missing_tables = set()     # tables that answer like PostgREST when schema.sql was not re-run
 
     # -- web side helpers
     def web_set(self, desired):
@@ -168,6 +172,26 @@ class FakeSupabase(object):
 
     def _rest(self, method, table, params, body, headers):
         prefer = headers.get("Prefer", "")
+        if table in self.missing_tables:
+            return da.HttpResponse(404, json.dumps({"code": "PGRST205", "message": "Could not find the table "
+                                                    "'public.%s' in the schema cache" % table}))
+        if table == "bars" and method == "POST":
+            assert params == {"on_conflict": "bot_id,t"} and "resolution=ignore-duplicates" in prefer
+            assert 0 < len(body) <= 500
+            for r in body:
+                assert set(r) == {"bot_id", "t", "close", "vwap"} and r["bot_id"] == BOT
+                assert r["t"].endswith("Z") and isinstance(r["close"], float)
+                self.bars.setdefault(r["t"], r)
+            self.bars_posts.append(len(body))
+            return da.HttpResponse(201, "")
+        if table == "cash_flows" and method == "POST":
+            assert "return=minimal" in prefer and not params
+            for r in body:
+                assert set(r) == {"bot_id", "ts", "amount", "source", "status", "balance_after", "note"}
+                assert r["bot_id"] == BOT and r["source"] == "auto" and r["status"] == "suggested"
+                assert r["amount"] != 0
+            self.cash_rows += body
+            return da.HttpResponse(201, "")
         if table == "bot_status" and method == "POST":
             assert params == {"on_conflict": "bot_id"} and "resolution=merge-duplicates" in prefer
             self.status_rows.append(body)
@@ -212,6 +236,26 @@ class FakeSupabase(object):
         if table == "rpc/is_approved":
             return da.HttpResponse(200, "true")
         return da.HttpResponse(404, '{"message":"no route %s %s"}' % (method, table))
+
+
+class FakeNewsTransport(object):
+    """The ForexFactory weekly JSON (SPEC 9.3), offline. fail: None | "network" | "html" | <HTTP status>."""
+
+    def __init__(self, events=None):
+        self.events = events if events is not None else []
+        self.calls = []
+        self.fail = None
+
+    def request(self, method, url, headers=None, params=None, json_body=None, timeout=None):
+        assert method == "GET" and url == da.NEWS_URL, url
+        self.calls.append({"headers": dict(headers or {}), "timeout": timeout})
+        if self.fail == "network":
+            raise da.NetworkError("ConnectionError: Max retries exceeded")
+        if self.fail == "html":
+            return da.HttpResponse(200, "<html><body>Request Denied</body></html>")
+        if self.fail:
+            return da.HttpResponse(self.fail, "")
+        return da.HttpResponse(200, json.dumps(self.events))
 
 
 class FakeTelegramTransport(object):
@@ -295,13 +339,13 @@ class Env(object):
     def client(self, refresh_token="rt-0"):
         return da.SupabaseClient(URL, KEY, self.fake, refresh_token=refresh_token, clock=self.clock)
 
-    def agent(self, dry_run=False):
+    def agent(self, dry_run=False, news=None):
         cfg = da.load_config(self.cfg_path)
         tg = cfg["telegram"]
         telegram = da.Telegram(self.tg_transport, tg["token"], tg["chat_id"], tg["events"], clock=self.clock,
                                dry_run=dry_run)
         return da.Agent(self.agent_dir, self.common, self.client(cfg["refresh_token"]), telegram, clock=self.clock,
-                        sleep=lambda s: None, local_now=self.clock.local, dry_run=dry_run)
+                        sleep=lambda s: None, local_now=self.clock.local, dry_run=dry_run, news_transport=news)
 
     def read(self, name):
         p = self.path(name)

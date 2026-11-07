@@ -1929,6 +1929,7 @@ class MainScreen(Screen):
         self.hero_text = L(hc, "", font="base", fg="slate", wrap=True)
         self.hero_text.pack(fill="x", pady=(px(2), 0))
         self.hero_meta = L(hc, "", font="small", fg="slate", wrap=True)
+        self.next_bo = L(hc, "", font="small", fg="slate", wrap=True)     # SPEC 9.3: the next automatic blackout
         self.hero_act_row = frame(hc)
         self.hero_act = Btn(self.hero_act_row, "", self._hero_action, style="secondary", size="sm")
         self.hero_act.pack(side="left")
@@ -2157,6 +2158,14 @@ class MainScreen(Screen):
                 self.today.pack_forget()
             if self.hero_meta.winfo_manager():
                 self.hero_meta.pack_forget()
+        nb = core.next_blackout_th((snap or {}).get("auto_blackouts"), now) if running else ""
+        if nb:
+            self.next_bo.configure(text=nb)
+            if not self.next_bo.winfo_manager():
+                self.next_bo.pack(fill="x", pady=(px(2), 0),
+                                  after=self.hero_meta if self.hero_meta.winfo_manager() else self.hero_text)
+        elif self.next_bo.winfo_manager():
+            self.next_bo.pack_forget()
         marks = []
         if offset is not None:
             for p in s["positions"]:
@@ -3462,6 +3471,28 @@ def run_selftest(out_png, data_dir):
         pump(until=lambda: ui.snap and ui.snap.get("applied_version") == want, timeout=30)
         ctl = da.read_text(os.path.join(common, da.CONTROL_NAME)) or ""
         check("web lots 0.50 clamped to the local max 0.06", "lots=0.06" in ctl)
+        # ---- SPEC 9: automatic blackouts (a synthetic ForexFactory week from the demo server), bars upload
+        server.web_auto(bot_id)
+        want = server.control[bot_id]["version"]
+        pump(until=lambda: ui.snap and ui.snap.get("applied_version") == want and ui.snap.get("auto_blackouts"),
+             timeout=30)
+        ctl = da.read_text(os.path.join(common, da.CONTROL_NAME)) or ""
+        auto = (ui.snap or {}).get("auto_blackouts") or []
+        check("auto blackouts: news + Friday night reported and written to the control file",
+              len(auto) >= 2 and any("CPI m/m" in w["reason"] for w in auto) and
+              ctl.count("blackout=") == len(auto) and server.news_calls >= 1,
+              "%d windows, %d lines, %d fetch(es)" % (len(auto), ctl.count("blackout="), server.news_calls))
+        check("auto blackouts are never copied into desired.blackouts",
+              server.control[bot_id]["desired"]["blackouts"] == [])
+        check("bars uploaded from the TEMP dobby2_bars.csv (SPEC 9.1)", server.bars_rows >= 96, str(server.bars_rows))
+        ms.scroll.to_top()
+        pump(until=lambda: bool(ms.next_bo.winfo_manager()), timeout=10)
+        check("main screen: the next automatic blackout is shown",
+              "งดเข้าไม้อัตโนมัติ" in str(ms.next_bo.cget("text")),
+              str(ms.next_bo.cget("text")).encode("unicode_escape").decode()[:80])
+        check("activity feed: the automatic blackouts are listed",
+              any("งดเข้าไม้อัตโนมัติ" in it["text"] for it in ui.activity))
+        shot("main_auto_blackout")
         ui.stop_agent()
         pump(until=lambda: not ui.runner.running, timeout=30)
         m0 = os.stat(os.path.join(common, da.CONTROL_NAME)).st_mtime

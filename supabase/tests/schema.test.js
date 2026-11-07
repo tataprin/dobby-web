@@ -4,13 +4,16 @@ import assert from 'node:assert/strict';
 import { freshDb, SCHEMA_SQL, SEED_SQL, CODE_RE } from './helpers.js';
 
 const TABLES = ['profiles', 'invites', 'bots', 'bot_status', 'journal', 'bot_control', 'presets', 'audit',
-  'news_events'];
+  'news_events', 'bars', 'cash_flows', 'trade_notes', 'push_subscriptions'];
+const SEQUENCES = ['journal_id_seq', 'audit_id_seq', 'news_events_id_seq', 'cash_flows_id_seq',
+  'push_subscriptions_id_seq'];
 const RPCS = ['is_approved()', 'is_admin()', 'owns_bot(uuid)', 'live_gate_status()', 'redeem_invite(text)',
   'create_invite(text,integer,text)', 'revoke_invite(text)', 'admin_set_user(uuid,text,boolean,boolean)',
-  'set_display_name(text)', 'admin_overview()', 'register_bot(text,jsonb)'];
+  'set_display_name(text)', 'admin_overview()', 'register_bot(text,jsonb)',
+  'register_push_subscription(text,text,text,text,text[])'];
 const INTERNAL = ['gen_invite_code()', 'handle_new_user()', 'bot_control_before()', 'bot_control_audit()',
   'presets_before()', 'presets_audit()', 'bots_before()', 'bots_audit_delete()', 'bot_status_before()',
-  'journal_skip_duplicate()'];
+  'journal_skip_duplicate()', 'cash_flows_before()', 'cash_flows_audit()', 'trade_notes_before()'];
 
 let ctx;
 before(async () => { ctx = await freshDb({ runs: 2 }); });
@@ -35,7 +38,7 @@ test('anon has no privileges on any table, sequence or RPC', async () => {
     const [r] = await ctx.sql(`select has_table_privilege('anon', $1, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') as p`, [`public.${t}`]);
     assert.equal(r.p, false, `anon on ${t}`);
   }
-  for (const s of ['journal_id_seq', 'audit_id_seq', 'news_events_id_seq']) {
+  for (const s of SEQUENCES) {
     const [r] = await ctx.sql(`select has_sequence_privilege('anon', $1, 'USAGE,SELECT,UPDATE') as p`, [`public.${s}`]);
     assert.equal(r.p, false, `anon on ${s}`);
   }
@@ -45,13 +48,16 @@ test('anon has no privileges on any table, sequence or RPC', async () => {
   }
 });
 
-test('authenticated gets exactly the intended table privileges (no TRUNCATE, no bot_control/audit insert)', async () => {
+test('authenticated gets exactly the intended table privileges (no TRUNCATE, no bot_control/audit insert, no bars delete)', async () => {
   const expected = {
     profiles: ['SELECT'], invites: ['SELECT'], audit: ['SELECT'],
     bots: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'], presets: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
     news_events: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
     bot_status: ['SELECT', 'INSERT', 'UPDATE'], journal: ['SELECT', 'INSERT', 'UPDATE'],
     bot_control: ['SELECT', 'UPDATE'],
+    bars: ['SELECT', 'INSERT', 'UPDATE'],
+    cash_flows: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'], trade_notes: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
+    push_subscriptions: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
   };
   for (const [t, privs] of Object.entries(expected)) {
     for (const p of ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) {

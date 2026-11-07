@@ -7,7 +7,9 @@ import { app, currentBot, updateBotRow, on, ownsBot } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, rejectionsBlock, isPending, heroState } from '../botctl.js';
 import { modChip, sideEl, kv, panel, noBotState, onOff, pageHead } from '../views.js';
 import { minutesToClock } from '../params.js';
-import { prepareRows, pairTrades, REASON_LABELS } from '../journal.js';
+import { prepareRows, pairTrades, REASON_LABELS, tradeHref } from '../journal.js';
+import { strategyHealth, riskStats, sinceStart } from '../analytics.js';
+import { riskStrip } from '../insights.js';
 import { currentValues, summaryText } from '../simple.js';
 import { hallmark } from '../hallmark.js';
 import { priceChart, readBars } from '../pricechart.js';
@@ -36,7 +38,7 @@ function stampOf(hs, info, st) {
 export async function render(root, ctx) {
   const bot0 = currentBot();
   if (!bot0) { root.append(pageHead('ภาพรวม', null, null, 'dashboard'), noBotState()); return; }
-  let bot = bot0, st = null, ctl = null, rtState = '', rows = [], journalReady = false;
+  let bot = bot0, st = null, ctl = null, rtState = '', rows = [], journalReady = false, flows = [];
   const ro = !ownsBot(bot0); // the admin viewing someone else's bot: no pause, no blackout, nothing is sent
   root.append(loadingState('กำลังโหลดสถานะบอท…'));
   const off = () => bot.server_utc_offset_min ?? 0;
@@ -66,22 +68,27 @@ export async function render(root, ctx) {
   // empty boxes are hidden, so the column's 24 px rhythm never doubles
   const warnBox = h('div', { class: 'stack', hidden: true });
   const figsBox = h('div');
+  const riskBox = h('div', { hidden: true });
   const posBox = h('section', { class: 'panel dsec', 'aria-label': 'ไม้ที่เปิดอยู่' });
   const recentBox = h('section', { class: 'panel dsec', 'aria-label': 'เทรดล่าสุด' });
   const detailBox = h('div', { hidden: true });
-  root.append(headBox, hero, warnBox, figsBox, h('div', { class: 'dash-cols' }, posBox, recentBox), detailBox);
+  root.append(headBox, hero, warnBox, figsBox, riskBox, h('div', { class: 'dash-cols' }, posBox, recentBox), detailBox);
   setTimeout(() => hero.classList.remove('intro'), 1600);
 
-  // journal for the chart marks and the recent trades list (last 14 days, server time)
+  // journal for the chart marks, the recent trades list and the risk strip (last 30 days, server time); confirmed cash
+  // flows for the % of "ตั้งแต่เริ่ม" (SPEC 9.2)
   (async () => {
     try {
-      const fromServer = utcToServer(Date.now() - 14 * DAY, off()).replace(/\./g, '-').replace(' ', 'T');
+      const fromServer = utcToServer(Date.now() - 30 * DAY, off()).replace(/\./g, '-').replace(' ', 'T');
       rows = prepareRows(await ctx.api.journal(bot.id, { fromServer }), off());
     } catch { rows = []; }
     journalReady = true;
     drawRecent(true);
     drawChart(true);
+    drawRisk();
+    drawPositions(true);
   })();
+  ctx.api.listCashFlows(bot.id).then((f) => { flows = f || []; drawFigs(); }).catch(() => {});
   // the line waits for the journal (so the marks stamp in with it), but not forever
   setTimeout(() => { if (!journalReady) { journalReady = true; drawChart(true); } }, 1500);
 
@@ -142,6 +149,7 @@ export async function render(root, ctx) {
     chart.update({
       bars, trades, bid: Number(mk.bid), now: Date.now(), offsetMin: off(),
       emptyText: 'กราฟราคาจะขึ้นเมื่อแอปเวอร์ชันใหม่ส่งข้อมูล',
+      onTrade: (t) => { if (t.key) location.hash = tradeHref(t.key); },
     }, { animate });
   }
 
@@ -188,7 +196,8 @@ export async function render(root, ctx) {
     const a = st.account || {}, v = st.virtual || {}, p = st.params || {};
     const c = cur();
     const floating = (a.equity ?? 0) - (a.balance ?? 0);
-    const since = (v.balance ?? 0) - (v.start ?? 0);
+    const ss = sinceStart(st, flows, off());
+    const since = ss ? ss.pnl : (v.balance ?? 0) - (v.start ?? 0);
     const capPct = p.daily_cap_pct ?? 10;
     const capAmt = (capPct / 100) * (v.day_start || 0);
     const loss = Math.max(0, -(v.day_pnl || 0));
@@ -209,14 +218,25 @@ export async function render(root, ctx) {
             : ['ใช้ไป ', h('span', { class: 'num' }, fmtPct(used * 100, 0)), ' ของจุดหยุด ', h('span', { class: 'num' }, `−${fmtNum(capAmt, 0)}`)]),
       ], `tone-${tone}`),
       fig('ตั้งแต่เริ่ม', money(since, { signed: true, unit: c }),
-        h('p', null, v.start ? [h('span', { class: 'num' }, fmtPct((since / v.start) * 100, 1, true)), ` จากทุน ${fmtNum(v.start, 0)}`] : 'ยังไม่มีทุนตั้งต้น'),
+        h('p', null, v.start ? [h('span', { class: 'num' }, fmtPct(ss && ss.pct !== null ? ss.pct : (since / v.start) * 100, 1, true)),
+          ss && ss.weighted ? ' ไม่นับเงินฝาก-ถอน' : ` จากทุน ${fmtNum(v.start, 0)}`] : 'ยังไม่มีทุนตั้งต้น'),
         '', wr === null ? null : `${v.trades} ไม้ ชนะ ${wr}%`)));
   }
 
-  function drawPositions() {
+  // the compact risk strip (SPEC 9.5; the full panels are in ประวัติ > ภาพรวม)
+  function drawRisk() {
+    if (!journalReady) return;
+    const trades = pairTrades(rows);
+    if (!changed('risk', [trades.length, trades.length ? trades[trades.length - 1].closeUtc : 0, st && st.virtual && st.virtual.balance])) return;
+    const closed = trades.filter((t) => !t.open);
+    riskBox.hidden = !closed.length;
+    mount(riskBox, closed.length ? riskStrip(riskStats(trades, st), strategyHealth(trades), cur()) : '');
+  }
+
+  function drawPositions(force) {
     const list = st ? (st.positions || []).filter((p) => p.open) : [];
     const mk = (st && st.market) || {};
-    if (!changed('pos', [list, mk.bid, cur(), Math.floor(Date.now() / 60000)])) return;
+    if (!changed('pos', [list, mk.bid, cur(), Math.floor(Date.now() / 60000)]) && !force) return;
     mount(posBox,
       h('div', { class: 'dsec-head' }, h('h2', null, list.length > 1 ? `ไม้ที่เปิดอยู่ ${list.length} ไม้` : 'ไม้ที่เปิดอยู่'),
         mk.bid ? h('p', null, 'สเปรด ', h('span', { class: 'num' }, fmtNum(mk.spread))) : null),
@@ -265,6 +285,7 @@ export async function render(root, ctx) {
           h('span', { class: 'pt-mid', style: { left: `${t(0) * 100}%` } }, h('b', null, 'ราคาเข้า'), h('span', { class: 'num' }, fmtNum(p.open_price))),
           h('span', { class: 'pt-r' }, h('b', null, 'TP'), h('span', { class: 'num' }, fmtNum(p.tp))))) : null,
       progress ? h('p', { class: 'pos-progress' }, progress) : null,
+      openKey(p.module) ? h('a', { class: 'link-quiet pos-link', href: tradeHref(openKey(p.module)) }, 'ดูกราฟและเหตุผลที่เปิดไม้นี้', icon('chevron')) : null,
       full ? h('dl', { class: 'pos-facts' },
         fact('ราคาตอนนี้', h('span', { class: 'num' }, fmtNum(price)), ['เข้าที่ ', h('span', { class: 'num' }, fmtNum(p.open_price))]),
         fact('เปิดมาแล้ว', Number.isFinite(openedUtc) ? duration(Date.now() - openedUtc) : '—', `ตั้งแต่ ${opened}`),
@@ -277,7 +298,13 @@ export async function render(root, ctx) {
         : h('p', { class: 'muted small' }, `เปิดเมื่อ ${opened}`));
   }
 
-  // the last 6 closed trades (the full list is one click away), amounts right-aligned
+  // the journal's OPEN row of the position that is still open (for the link to its trade page)
+  function openKey(mod) {
+    const t = pairTrades(rows).filter((x) => x.open && x.module === mod).pop();
+    return t ? t.key : '';
+  }
+
+  // the last 6 closed trades (the full list is one click away), amounts right-aligned; each row opens its trade page
   function drawRecent(force) {
     const trades = pairTrades(rows).filter((t) => !t.open).slice(-6).reverse();
     if (!changed('recent', trades.map((t) => [t.closeUtc, t.pnl])) && !force) return;
@@ -288,14 +315,14 @@ export async function render(root, ctx) {
       trades.length ? h('ul', { class: 'trade-list' }, trades.map((t) => {
         const when = thaiDayKey(t.closeUtc) === today ? `วันนี้ ${fmtThai(t.closeUtc, 'time')}` : fmtThai(t.closeUtc, 'short');
         const buy = t.side === 'BUY';
-        return h('li', { class: 'trade' },
+        return h('li', null, h(t.key ? 'a' : 'div', { class: 'trade', href: t.key ? tradeHref(t.key) : null },
           h('span', { class: `trade-ico ${buy ? 'buy' : 'sell'}`, 'aria-hidden': 'true' }, buy ? '▲' : '▼'),
           h('div', { class: 'trade-main' },
             h('p', null, modChip(t.module), ' ', h('span', { class: `side ${buy ? 'buy' : 'sell'}` }, buy ? 'ซื้อ' : 'ขาย'), ' ', h('span', { class: 'muted' }, h('span', { class: 'num' }, fmtNum(t.lots)), ' ล็อต')),
             h('p', { class: 'muted small' }, `${when} ${REASON_LABELS[t.reason] || t.reason || 'ปิดไม้'}`)),
-          h('span', { class: 'trade-pnl' }, money(t.pnl, { signed: true, unit: c })));
+          h('span', { class: 'trade-pnl' }, money(t.pnl, { signed: true, unit: c }))));
       })) : h('div', { class: 'pos-empty' }, h('span', { class: 'pos-empty-ico' }, icon('history')),
-        h('p', { class: 'state-title' }, journalReady ? 'ยังไม่มีไม้ที่ปิดใน 14 วันนี้' : 'กำลังโหลด…')));
+        h('p', { class: 'state-title' }, journalReady ? 'ยังไม่มีไม้ที่ปิดใน 30 วันนี้' : 'กำลังโหลด…')));
   }
 
   function srvToThaiClock(min) {
@@ -364,7 +391,7 @@ export async function render(root, ctx) {
   drawAll();
 
   const redrawChart = debounce(() => drawChart(false), 120);
-  const onStatus = (row) => { if (!row || !row.status) return; st = row.status; drawHero(); drawWarn(); drawFigs(); drawPositions(); drawDetails(); redrawChart(); };
+  const onStatus = (row) => { if (!row || !row.status) return; st = row.status; drawHero(); drawWarn(); drawFigs(); drawPositions(); drawDetails(); drawRisk(); redrawChart(); };
   const onControl = (row) => { ctl = row; drawHero(); };
   const onBot = (row) => {
     const barsBefore = JSON.stringify(bot.agent_state && bot.agent_state.bars && bot.agent_state.bars.t ? bot.agent_state.bars.t.slice(-1) : null);
@@ -372,7 +399,7 @@ export async function render(root, ctx) {
     const barsNow = JSON.stringify(bot.agent_state && bot.agent_state.bars && bot.agent_state.bars.t ? bot.agent_state.bars.t.slice(-1) : null);
     if (barsBefore !== barsNow) redrawChart();
   };
-  const addRow = debounce(() => { drawRecent(); drawChart(false); }, 500);
+  const addRow = debounce(() => { drawRecent(); drawChart(false); drawRisk(); drawPositions(true); }, 500);
   const unsub = ctx.api.subscribeBot(bot.id, {
     status: onStatus, control: onControl, bot: onBot,
     journal: (row) => { rows = prepareRows([...rows, row], off()); addRow(); },

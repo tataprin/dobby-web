@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - python 2
 import dobby_agent as da
 
 APP_NAME = "Dobby App"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 DEFAULT_URL = "https://rpzuzhefviydjmeggvvz.supabase.co"
 DEFAULT_KEY = "sb_publishable_208tCs0INvDHYohhl5_DGQ_ezVQkJst"   # publishable key: public by design (RLS protects data)
 WEB_URL = "https://tataprin.github.io/dobby-web/"
@@ -493,7 +493,9 @@ class NoEaStatus(Exception):
 
 def register_new_bot(client, data_dir, common, name, cfg, clock=time.time, sleep=time.sleep, wait_s=6):
     """Same as `dobby_agent.py register`: desired seeded from the EA's files, RPC register_bot, fresh state."""
-    seed = da.seed_from_ea(common, cfg, clock=clock, sleep=sleep, wait_s=wait_s)
+    old = da.load_state(state_path(data_dir))
+    seed = da.seed_from_ea(common, cfg, clock=clock, sleep=sleep, wait_s=wait_s,
+                           exclude_blackouts=old["control"].get("auto_lines"))
     if seed is None:
         raise NoEaStatus()
     bot_id = client.rpc("register_bot", {"p_name": name, "p_desired": seed["desired"]})
@@ -577,6 +579,45 @@ def duration_th(seconds):
     if s < 3600:
         return "%d นาที" % (s // 60)
     return "%d ชม. %d นาที" % (s // 3600, (s % 3600) // 60)
+
+
+THAI_DOW = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
+
+
+def thai_when(t_utc, now):
+    """'วันนี้ 20:00' / 'พรุ่งนี้ 20:00' / 'วันศุกร์ 21:00' in Thai time (UTC+7)."""
+    d = da.epoch_to_naive(t_utc + da.THAI_OFFSET_S)
+    diff = (d.date() - da.epoch_to_naive(now + da.THAI_OFFSET_S).date()).days
+    day = "วันนี้" if diff == 0 else "พรุ่งนี้" if diff == 1 else "วัน" + THAI_DOW[d.weekday()]
+    return "%s %s" % (day, d.strftime("%H:%M"))
+
+
+def next_blackout_th(windows, now):
+    """SPEC 9.3, main screen: the running or next automatic blackout in one Thai sentence, or ''."""
+    for w in windows or []:
+        f, t = da.parse_utc((w or {}).get("from_utc")), da.parse_utc((w or {}).get("to_utc"))
+        if f is None or t is None or t <= now:
+            continue
+        reason = da.clean_note(w.get("reason"), 70)
+        ts = da.epoch_to_naive(t + da.THAI_OFFSET_S)
+        fs = da.epoch_to_naive(f + da.THAI_OFFSET_S)
+        if ts.strftime("%H:%M") == "00:00" and (ts.date() - fs.date()).days == 1:
+            end = "24:00"                                      # "to 24:00" of the start day
+        elif ts.date() == fs.date():
+            end = ts.strftime("%H:%M")
+        else:
+            end = thai_when(t, now)
+        why = " (%s)" % reason if reason else ""
+        if f <= now:
+            return "ตอนนี้งดเข้าไม้อัตโนมัติถึง %s%s" % (end if end != "24:00" else "เที่ยงคืน", why)
+        return "งดเข้าไม้อัตโนมัติครั้งถัดไป %s–%s%s" % (thai_when(f, now), end, why)
+    return ""
+
+
+def _auto_activity(m):
+    f = da.parse_utc(m.group(2))
+    when = thai_when(f, time.time()) if f is not None else m.group(2)
+    return "งดเข้าไม้อัตโนมัติ %s ช่วงใน 7 วัน ครั้งถัดไป %s (%s)" % (m.group(1), when, da.clean_note(m.group(4), 60))
 
 
 def money(x, signed=False):
@@ -805,6 +846,15 @@ _FRIENDLY = [  # (pattern, Thai text, keep the original line after it)
     (re.compile(r"^bot \"(.*)\" created on the website"), "สร้างบอท \"\\1\" บนเว็บแล้ว", False),
     (re.compile(r"^MT5 started with Dobby"), "เปิด MT5 พร้อม Dobby แล้ว", False),
     (re.compile(r"^preset written: (.+?) "), "สร้างพรีเซ็ต \\1 ใน MT5 แล้ว", False),
+    (re.compile(r"^auto blackouts: (\d+) window"), "งดเข้าไม้อัตโนมัติ \\1 ช่วงใน 7 วันข้างหน้า", True),
+    (re.compile(r"^auto blackouts: none"), "ไม่มีช่วงงดเข้าไม้อัตโนมัติใน 7 วันข้างหน้า", False),
+    (re.compile(r"^auto blackouts: off"), "ปิดการงดเข้าไม้อัตโนมัติแล้ว", False),
+    (re.compile(r"^news calendar fetched: (\d+)"), "โหลดปฏิทินข่าวสัปดาห์นี้แล้ว (\\1 ข่าว)", False),
+    (re.compile(r"^news calendar not fetched"), "โหลดปฏิทินข่าวไม่ได้ ใช้ข้อมูลเดิมไปก่อน", True),
+    (re.compile(r"^cash flow suggested on the website: (\S+)"),
+     "พบเงินเข้า-ออกบัญชี \\1 ที่ไม่ใช่ผลเทรดของ Dobby: ยืนยันได้บนเว็บ", False),
+    (re.compile(r"^bars: (\d+) bar"), "ส่งราคา \\1 แท่งขึ้นเว็บ", False),
+    (re.compile(r"^(bars not uploaded|cash flow suggestion not stored)"), "ส่งข้อมูลเสริมขึ้นเว็บไม่ได้ จะลองใหม่", True),
 ]
 
 
@@ -868,7 +918,8 @@ class AppAgent(da.Agent):
                 "reject_details": list(self.reject_details), "warnings": list(self.warnings),
                 "last_error": self.last_error, "fail_count": self.fail_count, "backoff": self.backoff,
                 "last_ok_at": self.last_ok_at, "time": self.clock(), "phase": "running",
-                "offset": self.effective_offset()}
+                "offset": self.effective_offset(), "auto_blackouts": [dict(w) for w in self.auto_windows],
+                "news_error": self.news.error if self.news_cfg else None}
 
 
 class AgentRunner(object):
@@ -2148,6 +2199,10 @@ _APP_ACTIVITY = [
     (re.compile(r"^this PC is now linked to the bot \"(.*)\""), "good", "เชื่อมเครื่องนี้กับบอท \"\\1\" แล้ว"),
     (re.compile(r"^MT5 started with Dobby"), "info", "เปิด MT5 พร้อม Dobby แล้ว"),
     (re.compile(r"^start refused"), "bad", "เริ่มทำงานไม่ได้"),
+    (re.compile(r"^auto blackouts: (\d+) window\(s\) in the next 7 days, next (\S+) - (\S+) \((.*)\)$"), "info",
+     _auto_activity),
+    (re.compile(r"^cash flow suggested on the website: (\S+)"), "info",
+     "พบเงินเข้า-ออกบัญชี \\1 ที่ไม่ใช่ผลเทรดของ Dobby: ยืนยันได้บนเว็บ"),
 ]
 
 
@@ -2156,7 +2211,7 @@ def app_activity(msg):
     for rx, tone, th in _APP_ACTIVITY:
         m = rx.search(msg or "")
         if m:
-            return tone, m.expand(th)
+            return tone, (th(m) if callable(th) else m.expand(th))
     return None
 
 
@@ -2259,6 +2314,21 @@ def _iso(t):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
 
 
+def demo_ff_week(now):
+    """A synthetic ForexFactory week (SPEC 9.3) for --demo / --selftest: USD high-impact news 3 h and 27 h ahead and
+    one EUR medium item (filtered out by the default settings)."""
+    base = (int(now) // 3600 + 3) * 3600
+
+    def ny(t):
+        return da.epoch_to_naive(t - 5 * 3600).strftime("%Y-%m-%dT%H:%M:%S") + "-05:00"
+    return [{"title": "CPI m/m", "country": "USD", "date": ny(base), "impact": "High", "forecast": "0.3%",
+             "previous": "0.4%"},
+            {"title": "German ZEW Economic Sentiment", "country": "EUR", "date": ny(base + 3600), "impact": "Medium",
+             "forecast": "", "previous": "39.3"},
+            {"title": "Unemployment Claims", "country": "USD", "date": ny(base + 24 * 3600), "impact": "High",
+             "forecast": "221K", "previous": "219K"}]
+
+
 class DemoServer(object):
     """Stands in for Supabase (auth, PostgREST, RPC, Storage) and Telegram. Any password works except "wrong".
     An email containing "pending" is not approved; one containing "new" is a new user without bots; every other
@@ -2302,6 +2372,9 @@ class DemoServer(object):
         self.downloads = []
         self.status_posts = 0
         self.journal_rows = 0
+        self.bars_rows = 0          # SPEC 9.1
+        self.cash_rows = []         # SPEC 9.2
+        self.news_calls = 0         # SPEC 9.3 (the ForexFactory week, synthetic)
         self.telegram = []
 
     def web_change(self, bot_id, **control):
@@ -2309,6 +2382,20 @@ class DemoServer(object):
         with self.lock:
             row = self.control[bot_id]
             row["desired"]["control"].update(control)
+            row["version"] += 1
+            row["updated_at"] = _iso(self.clock())
+
+    def web_auto(self, bot_id, news=True, schedule=True):
+        """The website turns on automatic blackouts (SPEC 9.3): USD high-impact news and Friday night."""
+        with self.lock:
+            row = self.control[bot_id]
+            d = row["desired"]
+            if news:
+                d["auto_news"] = {"enabled": True, "before_min": 30, "after_min": 60, "currencies": ["USD"],
+                                  "impact": ["High"]}
+            if schedule:
+                d["schedule"] = {"enabled": True, "us_holidays": True,
+                                 "weekly": [{"dow": 5, "from": "21:00", "to": "24:00"}]}
             row["version"] += 1
             row["updated_at"] = _iso(self.clock())
 
@@ -2324,6 +2411,9 @@ class DemoServer(object):
         if url.startswith("https://api.telegram.org/"):
             self.telegram.append(body)
             return self._resp(200, {"ok": True})
+        if url == da.NEWS_URL:
+            self.news_calls += 1
+            return self._resp(200, demo_ff_week(self.clock()))
         if not url.startswith(self.url):
             raise da.NetworkError("demo: unknown host %s" % url.split("/")[2])
         if headers.get("apikey") != self.key:
@@ -2422,6 +2512,12 @@ class DemoServer(object):
             return self._resp(201)
         if table == "journal" and method == "POST":
             self.journal_rows += len(body or [])
+            return self._resp(201)
+        if table == "bars" and method == "POST":
+            self.bars_rows += len(body or [])
+            return self._resp(201)
+        if table == "cash_flows" and method == "POST":
+            self.cash_rows += list(body or [])
             return self._resp(201)
         if table == "bot_control":
             ids = [i for i in self._ids(params, "bot_id") if any(b["id"] == i for b in mine)]

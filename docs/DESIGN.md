@@ -109,6 +109,42 @@ equal height. Each bot panel has the same order: name + online line + trading-st
 (balance / today / since start), facts (strategies + lots, lock, daily cap, versions, open trade, last trade), the
 settings sentence, presets, actions pinned to the bottom.
 
+## Feature batch views (SPEC 9, 2026-11-07)
+Same system, no new tokens, no new component sizes; colour keeps its meaning (gold = Dobby / lock / the hold, jade =
+profit / TP, cinnabar = loss / SL).
+- **Trade page** (`#/trade/<key>`): back link, page head ("ไม้ซื้อ C5G" + bot, lots, step chips), four identical figures
+  (result, entry, risk at open, time held), the price panel, then two equal-height panels (why it opened / note + tags)
+  and the timeline. The chart speaks the hero's language: the same quiet price line and faint VWAP, the holding period
+  as a faint gold band (neutral in dark), TP jade dashed, SL cinnabar dashed stepping up in gold at each lock stage
+  (a ring at the step), the entry triangle and the exit ring; level prices sit on the right edge in their colour, pushed
+  16 px apart so they never collide; a legend names each mark. The timeline is a time column, a dot on a hairline rail
+  (ink for open / close, gold for locks, cinnabar for errors) and one plain sentence per row; raw EA text only as a
+  fallback or under "ข้อความต้นฉบับจาก EA".
+- **Tags** are 40 px buttons (pressed = gold tint + check), never a new chip size; the note is a 112 px textarea; the
+  save button stays disabled until something changed.
+- **Strategy health**: one row per strategy (chip, status chip ปกติ / จับตา / ผิดปกติ in jade / gold / cinnabar tints, one
+  sentence, then three facts "live (ทดสอบ baseline)"); three columns from 600 px, label / value rows below. The
+  "simulation, not a forecast" note closes the panel.
+- **Risk**: four cells in one panel (two columns on phones, four from 1024 px) separated by hairlines, values in the
+  figure face; today's budget reuses the 4 px meter. ภาพรวม carries a compact three-cell strip (drawdown, losing streak,
+  strategy health) between the figures and the open-trade row, with "ดูทั้งหมด" to ประวัติ.
+- **ประวัติ tabs** (5): full labels from 768 px, short labels below (ภาพรวม / เทรด / สรุป / ฝาก-ถอน / บันทึก) so the 44 px
+  segmented control never overflows a 360 px phone. The filter bar only appears on the tabs it filters.
+- **สรุป** reads like a statement: the period as a 22 px title, four figures with "ช่วงก่อน" in their foot, the
+  per-strategy table, risk and flows side by side, a footnote on how P&L and % are counted. **Print**: the shell, tabs,
+  filters and buttons disappear, colours are forced to the light palette on white, figures stay four across, the table
+  keeps its columns (the phone card layout is overridden), one A4 page.
+- **เงินฝาก-ถอน**: four figures, the suggestions as rows with their two actions (full-width stacked buttons on phones),
+  confirmed rows with the amount right-aligned and icon actions, dismissed rows under a details, and an info callout.
+  Money signs follow the meaning colours (deposit +, withdrawal −) but a deposit is never shown as profit.
+- **Automatic blackouts** live in the existing งดเข้าไม้ section as two sub-heads ("อัตโนมัติ" above "ตั้งเอง"), using the
+  existing switch rows (`toggle-card`), steppers in the inset `toggle-extra`, 44 px selects for weekly rows and the
+  existing blackout list for the upcoming windows. A save row appears only while there are unsent edits.
+- **การแจ้งเตือน** is one more grouped section in ตั้งค่าบัญชี: the device row (state chip + one action), the event
+  checkboxes, the test row, and the iPhone sentence as the group's foot.
+- **Icons for the installable site** are rendered from the hallmark geometry (gold plate with its one sheen, double
+  engraved outline, a Chakra Petch "D"); maskable and Apple icons put it on graphite `#20262A`.
+
 ## Principles
 1. **The market is always visible** — a live XAUUSD ticker in the header (22 px price on desktop); the dashboard hero is
    today's price line with Dobby's own trades stamped on it (bars from `bots.agent_state.bars`, SPEC 8).

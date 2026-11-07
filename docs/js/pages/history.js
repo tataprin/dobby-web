@@ -1,11 +1,16 @@
-// History: journal table, paired trades, equity curve, daily calendar heatmap, per-module stats, CSV export.
+// History: ภาพรวม (risk, strategy health, per-module stats, equity curve, daily calendar), รายการเทรด (paired trades with
+// links to the trade page and a tag filter), สรุป (week / month report), เงินฝาก-ถอน (cash flows), บันทึกทั้งหมด (journal).
 import { h, mount, icon, fmtNum, fmtSigned, fmtPct, pnl, fmtThai, timeEl, utcToServer, thaiDayKey, thaiDateInputToUtc,
-  duration, downloadCsv, errorState, loadingState, emptyState, debounce, toneOf, field } from '../util.js';
+  duration, downloadCsv, errorState, loadingState, emptyState, debounce, toneOf, field, callout } from '../util.js';
 import { app, currentBot, on, ownsBot } from '../state.js';
 import { prepareRows, pairTrades, moduleStats, dailyPnl, equitySeries, journalCsvRows, JOURNAL_HEADER, MODULES,
-  EVENT_LABELS, REASON_LABELS } from '../journal.js';
+  EVENT_LABELS, REASON_LABELS, tradeHref } from '../journal.js';
 import { modChip, sideEl, panel, pageHead, noBotState } from '../views.js';
 import { prefs } from '../state.js';
+import { strategyHealth, riskStats, periodBounds } from '../analytics.js';
+import { healthPanel, riskPanel } from '../insights.js';
+import { flowsView } from '../history-flows.js';
+import { summaryView } from '../history-summary.js';
 
 const CHART_CDN = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/auto/+esm';
 let chartMod = null;
@@ -15,29 +20,32 @@ async function loadChart() {
 }
 
 const DAY = 86400000;
-const TABS = [{ id: 'overview', label: 'ภาพรวม' }, { id: 'trades', label: 'รายการเทรด' }, { id: 'journal', label: 'บันทึกทั้งหมด' }];
+const TABS = [{ id: 'overview', label: 'ภาพรวม' }, { id: 'trades', label: 'รายการเทรด', short: 'เทรด' }, { id: 'summary', label: 'สรุป' },
+  { id: 'flows', label: 'เงินฝาก-ถอน', short: 'ฝาก-ถอน' }, { id: 'journal', label: 'บันทึกทั้งหมด', short: 'บันทึก' }];
+const FILTERED = new Set(['overview', 'trades', 'journal']);
 
 export async function render(root, ctx) {
   const bot = currentBot();
   if (!bot) { root.append(pageHead('ประวัติ', null, null, 'history'), noBotState()); return; }
   const off = bot.server_utc_offset_min ?? 0;
-  const cur = 'บัญชี';
   let rows = [], loadedAll = false;
   const today = thaiDayKey(Date.now());
   const ago = (d) => thaiDayKey(Date.now() - d * DAY);
-  const f = { from: ago(29), to: today, module: '', event: '', serverDay: '' };
+  const f = { from: ago(29), to: today, module: '', event: '', serverDay: '', tag: '' };
+  let st = null, flows = [], flowsErr = null, notes = [];
+  const period = { kind: prefs.get('summary-kind', 'week') === 'month' ? 'month' : 'week', offset: 0 };
   let tab = TABS.some((t) => t.id === ctx.query.get('tab')) ? ctx.query.get('tab') : prefs.get('history-tab', 'overview');
   let chart = null;
   let journalShown = 100;
 
   root.append(pageHead('ประวัติ', h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name),
     ownsBot(bot) ? null : h('span', { class: 'chip live' }, icon('eye'), `ของ ${bot.owner_name || 'สมาชิก'}`),
-    h('span', null, 'ทุกไม้ กราฟพอร์ต และปฏิทินกำไรรายวัน')), null, 'history'));
+    h('span', null, 'ทุกไม้ สรุปรายสัปดาห์และเดือน เงินฝาก-ถอน และความเสี่ยง')), null, 'history'));
   // view tabs, then one filter bar (labelled 44 px controls on the 12-column grid), then the view
   const filterBox = h('div', { class: 'filters', role: 'group', 'aria-label': 'ตัวกรอง' });
   const tabsBox = h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'มุมมอง' });
   const body = h('div', { class: 'stack-lg' });
-  root.append(h('div', { class: 'view-tabs' }, tabsBox), filterBox, body);
+  root.append(h('div', { class: 'view-tabs five' }, tabsBox), filterBox, body);
   body.append(loadingState('กำลังโหลดบันทึก…'));
 
   async function load(all) {
@@ -47,7 +55,17 @@ export async function render(root, ctx) {
     loadedAll = !!all;
   }
 
-  try { await load(false); } catch (e) { body.replaceChildren(errorState(e, () => ctx.route())); return; }
+  try {
+    const [, s] = await Promise.all([load(false), ctx.api.botStatus(bot.id).catch(() => null), loadFlows(), loadNotes()]);
+    st = s ? s.status : null;
+  } catch (e) { body.replaceChildren(errorState(e, () => ctx.route())); return; }
+  async function loadFlows() {
+    try { flows = await ctx.api.listCashFlows(bot.id); flowsErr = null; } catch (e) { flows = []; flowsErr = e; }
+  }
+  async function loadNotes() {
+    try { notes = await ctx.api.listTradeNotes(bot.id); } catch { notes = []; }
+  }
+  const cur = () => (st && st.account && st.account.currency) || 'USD';
 
   // ---------------- filters
   const fromIn = h('input', { class: 'input', type: 'date', value: f.from });
@@ -98,7 +116,7 @@ export async function render(root, ctx) {
   const drawTabs = () => tabsBox.replaceChildren(...TABS.map((t) => h('button', {
     type: 'button', role: 'tab', 'aria-selected': tab === t.id ? 'true' : 'false', class: tab === t.id ? 'on' : '',
     onclick: () => { tab = t.id; prefs.set('history-tab', tab); drawTabs(); draw(); },
-  }, t.label)));
+  }, t.short ? [h('span', { class: 'tab-full' }, t.label), h('span', { class: 'tab-short', 'aria-hidden': 'true' }, t.short)] : t.label)));
   drawTabs();
 
   // ---------------- filtering
@@ -126,6 +144,9 @@ export async function render(root, ctx) {
   function draw() {
     if (chart) { chart.destroy(); chart = null; }
     markQuick();
+    filterBox.hidden = !FILTERED.has(tab);
+    if (tab === 'flows') { drawFlows(); return; }
+    if (tab === 'summary') { drawSummary(); return; }
     const all = filtered(false);
     const trades = tradesInRange();
     if (!rows.length) {
@@ -147,7 +168,12 @@ export async function render(root, ctx) {
     }
     const chartBox = h('div', { class: 'chart-box' }, loadingState('กำลังวาดกราฟ…'));
     const series = equitySeries(all);
+    // health looks at the last 20 trades of each strategy whatever the date filter; risk follows the range
+    const health = strategyHealth(pairTrades(rows));
+    const rangeLabel = f.serverDay ? f.serverDay : f.from ? `${f.from} ถึง ${f.to || today}` : 'ทั้งหมด';
     body.replaceChildren(
+      riskPanel(riskStats(trades, st), cur(), rangeLabel),
+      healthPanel(health, { owner: ownsBot(bot) }),
       statsPanel(stats),
       panel('กราฟพอร์ตจำลอง', { sub: 'ยอดพอร์ตที่บอทนับเอง หลังปิดแต่ละไม้' }, chartBox,
         h('details', { class: 'table-view' }, h('summary', null, 'ดูเป็นตาราง'),
@@ -279,26 +305,70 @@ export async function render(root, ctx) {
   }
 
   // ---------------- trades
-  function drawTrades(trades) {
+  function drawTrades(trades0) {
+    // trade_notes: tags filter the list; each row links to the trade page (#/trade/<trade_key>)
+    const byKey = new Map(notes.map((n) => [n.trade_key, n]));
+    const allTags = [...new Set(notes.flatMap((n) => n.tags || []))].sort();
+    if (f.tag && !allTags.includes(f.tag)) f.tag = '';
+    const trades = f.tag ? trades0.filter((t) => t.key && ((byKey.get(t.key) || {}).tags || []).includes(f.tag)) : trades0;
     const list = trades.slice().reverse();
     const csvBtn = h('button', { class: 'btn small', type: 'button', disabled: !list.length, onclick: () => exportTrades(list) }, icon('download'), 'ส่งออก CSV');
-    if (!list.length) { body.replaceChildren(panel('รายการเทรด', { actions: csvBtn }, h('p', { class: 'muted' }, 'ไม่มีเทรดในช่วงนี้'), f.serverDay ? h('button', { class: 'btn small', type: 'button', onclick: () => { f.serverDay = ''; draw(); } }, 'ดูทั้งช่วง') : null)); return; }
-    const dayChip = f.serverDay ? h('div', { class: 'row gap wrap' }, h('span', { class: 'chip pending' }, `เฉพาะวันที่ ${f.serverDay} (เวลาเซิร์ฟเวอร์)`),
-      h('button', { class: 'btn small ghost', type: 'button', onclick: () => { f.serverDay = ''; draw(); } }, icon('x'), 'ดูทั้งช่วง')) : null;
-    body.replaceChildren(panel('รายการเทรด', { actions: csvBtn, sub: `${list.length} ไม้ จับคู่เปิดกับปิดของแต่ละสูตรตามลำดับเวลา` }, dayChip,
-      h('div', { class: 'table-wrap' }, h('table', { class: 'rtable' },
+    const tagSel = h('select', { class: 'input select tag-sel', 'aria-label': 'กรองตามแท็ก', disabled: !allTags.length, onchange: (e) => { f.tag = e.target.value; draw(); } },
+      h('option', { value: '' }, allTags.length ? 'ทุกแท็ก' : 'ยังไม่มีแท็ก'), allTags.map((t) => h('option', { value: t, selected: t === f.tag }, `แท็ก: ${t}`)));
+    const actions = h('div', { class: 'panel-actions' }, tagSel, csvBtn);
+    const reset = (label) => h('button', { class: 'btn small ghost', type: 'button', onclick: () => { f.serverDay = ''; f.tag = ''; draw(); } }, icon('x'), label);
+    if (!list.length) {
+      body.replaceChildren(panel('รายการเทรด', { actions }, h('p', { class: 'muted' }, f.tag ? `ไม่มีไม้ที่ติดแท็ก "${f.tag}" ในช่วงนี้` : 'ไม่มีเทรดในช่วงนี้'),
+        f.serverDay || f.tag ? reset('ดูทั้งหมด') : null));
+      return;
+    }
+    const filterChips = f.serverDay || f.tag ? h('div', { class: 'row gap wrap' },
+      f.serverDay ? h('span', { class: 'chip pending' }, `เฉพาะวันที่ ${f.serverDay} (เวลาเซิร์ฟเวอร์)`) : null,
+      f.tag ? h('span', { class: 'chip pending' }, `แท็ก ${f.tag}`) : null, reset('ล้างตัวกรอง')) : null;
+    body.replaceChildren(panel('รายการเทรด', { actions, sub: `${list.length} ไม้ กดที่ไม้เพื่อดูกราฟ เหตุผลที่เปิด และบันทึก` }, filterChips,
+      h('div', { class: 'table-wrap' }, h('table', { class: 'rtable trades' },
         h('thead', null, h('tr', null, ['เปิด', 'สูตร', 'ฝั่ง', 'ล็อต', 'ราคาเข้า', 'ราคาออก', 'ผล', 'ถือ', 'กำไร'].map((t) => h('th', { scope: 'col' }, t)))),
-        h('tbody', null, list.map((t) => h('tr', { class: t.open ? 'open-row' : '' },
-          h('td', { 'data-label': 'เปิด' }, Number.isFinite(t.openUtc) ? timeEl(t.openUtc, off) : '—'),
+        h('tbody', null, list.map((t) => {
+          const n = t.key ? byKey.get(t.key) : null;
+          const tags = (n && n.tags) || [];
+          return h('tr', {
+            class: `${t.open ? 'open-row' : ''}${t.key ? ' click-row' : ''}`.trim(),
+            onclick: (e) => { if (t.key && !e.target.closest('a, button')) location.hash = tradeHref(t.key); },
+          },
+          h('td', { 'data-label': 'เปิด' }, Number.isFinite(t.openUtc)
+            ? (t.key ? h('a', { class: 'trade-open', href: tradeHref(t.key), title: 'ดูรายละเอียดไม้นี้' }, timeEl(t.openUtc, off)) : timeEl(t.openUtc, off)) : '—',
+            n && n.note ? h('span', { class: 'note-mark', title: n.note, 'aria-label': 'มีบันทึก' }, icon('doc')) : null),
           h('td', { 'data-label': 'สูตร' }, modChip(t.module), t.step ? h('span', { class: 'muted small' }, ` ไม้แก้ ${t.step}`) : null),
           h('td', { 'data-label': 'ฝั่ง' }, sideEl(t.side)),
           h('td', { 'data-label': 'ล็อต', class: 'num' }, fmtNum(t.lots)),
           h('td', { 'data-label': 'ราคาเข้า', class: 'num' }, fmtNum(t.openPrice)),
           h('td', { 'data-label': 'ราคาออก', class: 'num' }, t.open ? '—' : fmtNum(t.closePrice)),
           h('td', { 'data-label': 'ผล' }, t.open ? h('span', { class: 'chip pending' }, 'ยังเปิดอยู่')
-            : [REASON_LABELS[t.reason] || t.reason || '—', t.events.includes('LOCK') || t.events.includes('LOCK1') ? h('span', { class: 'muted small' }, ' (มีล็อก)') : null]),
+            : [REASON_LABELS[t.reason] || t.reason || '—', t.events.includes('LOCK') || t.events.includes('LOCK1') ? h('span', { class: 'muted small' }, ' (มีล็อก)') : null],
+            tags.length ? h('span', { class: 'row-tags' }, tags.map((x) => h('span', { class: 'chip' }, x))) : null),
           h('td', { 'data-label': 'ถือ' }, !t.open && Number.isFinite(t.openUtc) ? duration(t.closeUtc - t.openUtc) : '—'),
-          h('td', { 'data-label': 'กำไร', class: 'num' }, t.open ? '—' : pnl(t.pnl)))))))));
+          h('td', { 'data-label': 'กำไร', class: 'num' }, t.open ? '—' : pnl(t.pnl)));
+        }))))));
+  }
+
+  // ---------------- สรุป + เงินฝาก-ถอน
+  function drawSummary() {
+    const earliest = rows.length ? rows[0].utc : Date.now();
+    const b0 = Date.now() - 94 * DAY;
+    body.replaceChildren(summaryView({
+      bot, trades: pairTrades(rows), rows, flows, st, kind: period.kind, offset: period.offset, earliest: loadedAll ? earliest : -Infinity,
+      setPeriod: async (kind, offset) => {
+        period.kind = kind; period.offset = offset; prefs.set('summary-kind', kind);
+        const { from } = periodBounds(kind, offset);
+        if (!loadedAll && from < b0) { body.replaceChildren(loadingState()); try { await safeLoad(true); } catch { return; } }
+        draw();
+      },
+    }));
+  }
+  function drawFlows() {
+    if (flowsErr && flowsErr.code === 'not_deployed') { body.replaceChildren(callout('info', 'เงินฝาก-ถอนยังใช้ไม่ได้', h('p', null, flowsErr.thai))); return; }
+    if (flowsErr) { body.replaceChildren(errorState(flowsErr, async () => { await loadFlows(); draw(); })); return; }
+    body.replaceChildren(flowsView({ api: ctx.api, bot, ro: !ownsBot(bot), st, flows, offsetMin: off, reload: async () => { await loadFlows(); draw(); } }));
   }
 
   function exportTrades(list) {

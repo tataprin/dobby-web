@@ -49,6 +49,7 @@ const P = {
   dashboard: () => import('./pages/dashboard.js'),
   bot: () => import('./pages/botsettings.js'),
   history: () => import('./pages/history.js'),
+  trade: () => import('./pages/trade.js'),
   news: () => import('./pages/news.js'),
   machines: () => import('./pages/machines.js'),
   guide: () => import('./pages/guide.js'),
@@ -83,6 +84,7 @@ const ROUTES = {
   dashboard: { load: P.dashboard },
   bot: { load: P.bot },
   history: { load: P.history },
+  trade: { load: P.trade, nav: 'history', title: 'รายละเอียดไม้' },
   news: { load: P.news },
   machines: { load: P.machines },
   guide: { load: P.guide },
@@ -424,6 +426,14 @@ async function boot() {
   window.addEventListener('hashchange', () => route());
   on('bot-changed', () => { if (currentBot()) route(); });
   route();
+  registerServiceWorker();
+}
+
+// sw.js handles only push and notificationclick (SPEC 9.7): no fetch handler and no cache, so the import-map file
+// addresses stay the only cache rule. Registered on every visit so a device that turned notifications on keeps them.
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+  navigator.serviceWorker.register('./sw.js', { scope: './' }).catch((e) => console.warn('service worker not registered', e));
 }
 
 boot();

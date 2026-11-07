@@ -8,6 +8,9 @@
   <meta name="theme-color" content="#F1F2EE">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M10.6 1.5h10.8l9.1 9.1v10.8l-9.1 9.1H10.6l-9.1-9.1V10.6z' fill='%23D4AE52'/%3E%3Cpath d='M11.6 4h8.8l7.6 7.6v8.8L20.4 28h-8.8L4 20.4v-8.8z' fill='none' stroke='%236B4E10' stroke-width='1.4'/%3E%3Ctext x='16' y='21.4' text-anchor='middle' font-family='Arial,sans-serif' font-weight='700' font-size='15' fill='%233A2A08'%3ED%3C/text%3E%3C/svg%3E">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="Dobby">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <!-- Anuphan: Thai + UI (the css2 API serves the thai / latin subsets by unicode-range). Chakra Petch: only the glyphs
@@ -53,40 +56,49 @@
     })();
   </script>
   <!-- stamp:begin (written by tools/stamp_versions.py: do not edit by hand) -->
-  <link rel="stylesheet" href="css/app.css?v=23c8590bdc">
+  <link rel="stylesheet" href="css/app.css?v=a3d63496d0">
   <script type="importmap">
   { "imports": {
-    "./js/api.js": "./js/api.js?v=112702b719",
-    "./js/app.js": "./js/app.js?v=a47c01be5f",
+    "./js/analytics.js": "./js/analytics.js?v=1a6cf2e3bc",
+    "./js/api.js": "./js/api.js?v=eee9bf59e1",
+    "./js/app.js": "./js/app.js?v=3e8e83bb3c",
+    "./js/autoblackout.js": "./js/autoblackout.js?v=24684c9116",
     "./js/botctl.js": "./js/botctl.js?v=e0a88dcd10",
-    "./js/config.js": "./js/config.js?v=88b47d3500",
-    "./js/demo.js": "./js/demo.js?v=25e8b5995f",
+    "./js/config.js": "./js/config.js?v=7206a63893",
+    "./js/demo.js": "./js/demo.js?v=df515d8d51",
+    "./js/explain.js": "./js/explain.js?v=9ca158f738",
     "./js/guide-art.js": "./js/guide-art.js?v=9922c8ba57",
     "./js/hallmark.js": "./js/hallmark.js?v=520fe6dbb0",
-    "./js/journal.js": "./js/journal.js?v=534f162efb",
+    "./js/history-flows.js": "./js/history-flows.js?v=c4cf3f72ae",
+    "./js/history-summary.js": "./js/history-summary.js?v=3335e9e64c",
+    "./js/insights.js": "./js/insights.js?v=3ce4f0430e",
+    "./js/journal.js": "./js/journal.js?v=41727c5e4b",
     "./js/liveswitch.js": "./js/liveswitch.js?v=ea43f211cd",
     "./js/lotcalc.js": "./js/lotcalc.js?v=3235ed0f9c",
-    "./js/pages/audit.js": "./js/pages/audit.js?v=4da398d70b",
-    "./js/pages/botsettings.js": "./js/pages/botsettings.js?v=abcbe76f83",
-    "./js/pages/dashboard.js": "./js/pages/dashboard.js?v=361fbd1df8",
+    "./js/pages/audit.js": "./js/pages/audit.js?v=fe3513b47e",
+    "./js/pages/botsettings.js": "./js/pages/botsettings.js?v=bbd80f4a15",
+    "./js/pages/dashboard.js": "./js/pages/dashboard.js?v=afd7bc4460",
     "./js/pages/downloads.js": "./js/pages/downloads.js?v=27f4efcf95",
     "./js/pages/gate.js": "./js/pages/gate.js?v=a2f2c7eae1",
     "./js/pages/guide.js": "./js/pages/guide.js?v=386163abd7",
-    "./js/pages/history.js": "./js/pages/history.js?v=66e351accf",
+    "./js/pages/history.js": "./js/pages/history.js?v=92f9ecf017",
     "./js/pages/login.js": "./js/pages/login.js?v=94f9801643",
     "./js/pages/machines.js": "./js/pages/machines.js?v=597db1d1b4",
-    "./js/pages/news.js": "./js/pages/news.js?v=4dd2c8fc2f",
+    "./js/pages/news.js": "./js/pages/news.js?v=5bea4137c9",
     "./js/pages/presets.js": "./js/pages/presets.js?v=d426bcd3a3",
-    "./js/pages/settings.js": "./js/pages/settings.js?v=d42d09b2d7",
+    "./js/pages/settings.js": "./js/pages/settings.js?v=6d4a09bbbc",
     "./js/pages/setup.js": "./js/pages/setup.js?v=662372cf9e",
+    "./js/pages/trade.js": "./js/pages/trade.js?v=4d57336d68",
     "./js/pages/users.js": "./js/pages/users.js?v=ab7e29022e",
     "./js/params.js": "./js/params.js?v=9afc90bd74",
-    "./js/pricechart.js": "./js/pricechart.js?v=528aeb7ba7",
+    "./js/pricechart.js": "./js/pricechart.js?v=b6fcf832d7",
+    "./js/push.js": "./js/push.js?v=4fd2723395",
     "./js/setfile.js": "./js/setfile.js?v=3163952df7",
     "./js/simple.js": "./js/simple.js?v=b35dc66cbd",
     "./js/state.js": "./js/state.js?v=a25171b851",
     "./js/ticker.js": "./js/ticker.js?v=6a5e291891",
     "./js/tour.js": "./js/tour.js?v=557db83062",
+    "./js/tradechart.js": "./js/tradechart.js?v=48dc1c830b",
     "./js/util.js": "./js/util.js?v=4035b3058a",
     "./js/views.js": "./js/views.js?v=8e69c80b19"
   } }

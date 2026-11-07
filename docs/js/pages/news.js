@@ -1,4 +1,5 @@
-// News: upcoming news_events in Thai time, one-click blackout per bot (default -30/+90 min), admin add/edit/delete.
+// News: upcoming news_events in Thai time merged with the PC's own calendar (agent_state.news, SPEC 9.3: Forex Factory, USD,
+// High; the same moment is shown once), one-click blackout per bot (default -30/+90 min), admin add/edit/delete.
 import { h, mount, icon, fmtThai, thaiDayKey, until, toast, errText, confirmDialog, openModal, errorState, loadingState, emptyState,
   field, busy, isoUtc, utcToThaiInput, thaiInputToUtc, utcToServer } from '../util.js';
 import { app, myBot, isAdmin } from '../state.js';
@@ -7,6 +8,23 @@ import { panel, pageHead } from '../views.js';
 
 const MIN = 60000;
 const TIER = { 1: ['สำคัญมาก', 'tier1'], 2: ['สำคัญ', 'tier2'], 3: ['ทั่วไป', 'tier3'] };
+const IMPACT_TIER = { high: 1, medium: 2, low: 3 };
+
+// news_events + agent_state.news, de-duplicated: calendar events within 5 minutes of an admin item are folded into it
+// (shown as its calendar lines); the rest become items of their own, one per moment.
+export function mergeNews(events, agentNews) {
+  const out = events.map((n) => ({ ...n, cal: [] }));
+  const extra = [];
+  for (const a of agentNews || []) {
+    const t = Date.parse(a.ts_utc);
+    if (!Number.isFinite(t) || !a.title) continue;
+    const host = out.find((n) => n.id !== undefined && Math.abs(Date.parse(n.ts_utc) - t) <= 5 * MIN) || extra.find((n) => Math.abs(Date.parse(n.ts_utc) - t) <= 5 * MIN);
+    if (host) { if (!host.cal.some((c) => c.title === a.title)) host.cal.push(a); if (host.auto) host.tier = Math.min(host.tier, IMPACT_TIER[String(a.impact || '').toLowerCase()] || 2); continue; }
+    extra.push({ auto: true, ts_utc: new Date(t).toISOString(), name: a.title, tier: IMPACT_TIER[String(a.impact || '').toLowerCase()] || 2, cal: [a] });
+  }
+  for (const x of extra) x.name = x.cal.map((c) => c.title).join(', ');
+  return [...out, ...extra].sort((a, b) => a.ts_utc.localeCompare(b.ts_utc));
+}
 
 export async function render(root, ctx) {
   const bot = myBot(); // blackouts go to my own bot, also while the admin is viewing a friend's bot
@@ -15,12 +33,16 @@ export async function render(root, ctx) {
   root.append(ctrlBox, listBox, adminBox);
   listBox.append(loadingState());
   let news = [], ctl = null;
+  // the PC calendar of my bot (or of any of my bots that has one)
+  const calBot = [bot, ...app.bots].find((b) => b && b.agent_state && Array.isArray(b.agent_state.news) && b.agent_state.news.length);
   const load = async () => {
     const [n, c] = await Promise.all([
       ctx.api.listNews({ fromIso: new Date(Date.now() - 24 * 3600e3).toISOString() }),
       bot ? ctx.api.botControl(bot.id).catch(() => null) : null,
     ]);
-    news = n; ctl = c;
+    const since = Date.now() - 24 * 3600e3;
+    news = mergeNews(n, calBot ? calBot.agent_state.news.filter((a) => Date.parse(a.ts_utc) >= since) : []);
+    ctl = c;
   };
   try { await load(); } catch (e) { listBox.replaceChildren(errorState(e, () => ctx.route())); return; }
 
@@ -45,13 +67,15 @@ export async function render(root, ctx) {
     const upcoming = news.filter((n) => Date.parse(n.ts_utc) >= now - 90 * MIN);
     const past = news.filter((n) => Date.parse(n.ts_utc) < now - 90 * MIN);
     if (!news.length) { listBox.replaceChildren(emptyState('ยังไม่มีข่าวในปฏิทิน', isAdmin() ? 'เพิ่มข่าวได้ที่ฟอร์มด้านล่าง' : 'ผู้ดูแลระบบจะเพิ่มข่าวสำคัญให้')); return; }
+    const calNote = calBot ? h('p', { class: 'muted small cal-note' }, `รวมปฏิทินข่าวอัตโนมัติจากเครื่อง ${calBot.name} (ข่าวสหรัฐที่มีผลแรง)`,
+      calBot.agent_state.news_fetched_at ? ` อัปเดต ${fmtThai(Date.parse(calBot.agent_state.news_fetched_at), 'short')} น.` : '') : null;
     const groups = new Map();
     for (const n of upcoming) {
       const k = thaiDayKey(Date.parse(n.ts_utc));
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(n);
     }
-    mount(listBox,
+    mount(listBox, calNote,
       upcoming.length ? h('div', { class: 'news-days' }, [...groups.entries()].map(([k, list]) => h('section', { class: 'news-day' },
         h('h2', null, fmtThai(Date.parse(list[0].ts_utc), 'longday')),
         h('ul', { class: 'news-list' }, list.map(item))))) : emptyState('ไม่มีข่าวที่จะถึง', null),
@@ -67,14 +91,17 @@ export async function render(root, ctx) {
     return h('li', { class: `news-item ${cls}` },
       h('div', { class: 'news-time' }, h('span', { class: 'big' }, fmtThai(t, 'time')), h('span', { class: 'muted small' }, live ? 'กำลังเกิด' : until(t))),
       h('div', { class: 'news-main' },
-        h('p', { class: 'news-name' }, n.name, ' ', h('span', { class: `chip ${cls}` }, label)),
+        h('p', { class: 'news-name' }, n.name, ' ', h('span', { class: `chip ${cls}` }, label), n.auto ? [' ', h('span', { class: 'chip quiet-chip' }, 'ปฏิทินอัตโนมัติ')] : null),
         n.note ? h('p', { class: 'muted small' }, n.note) : null,
+        (n.cal || []).length && !(n.auto && n.cal.length === 1 && !n.cal[0].forecast) ? h('ul', { class: 'cal-lines' }, n.cal.map((c) => h('li', null,
+          n.auto ? null : `${c.title} `, c.forecast ? ['คาด ', h('span', { class: 'num' }, c.forecast)] : null,
+          c.previous ? [c.forecast ? ' ' : '', 'ครั้งก่อน ', h('span', { class: 'num' }, c.previous)] : null))) : null,
         off !== null ? h('p', { class: 'muted small' }, `เวลาเซิร์ฟเวอร์ ${utcToServer(t, off).slice(11)}`) : null),
       h('div', { class: 'news-actions' },
         bot ? (done ? h('span', { class: 'chip good' }, icon('check'), 'งดไว้แล้ว')
           : h('button', { class: 'btn small', type: 'button', disabled: t + mins()[1] * MIN < Date.now(), onclick: (e) => blackout(n, e.currentTarget) }, icon('clock'), `งดเข้าไม้ −${mins()[0]}/+${mins()[1]} นาที`)) : null,
-        isAdmin() ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': `แก้ไข ${n.name}`, onclick: () => editNews(n) }, icon('edit')) : null,
-        isAdmin() ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': `ลบ ${n.name}`, onclick: () => delNews(n) }, icon('trash')) : null));
+        isAdmin() && !n.auto ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': `แก้ไข ${n.name}`, onclick: () => editNews(n) }, icon('edit')) : null,
+        isAdmin() && !n.auto ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': `ลบ ${n.name}`, onclick: () => delNews(n) }, icon('trash')) : null));
   }
 
   async function blackout(n, btn) {
@@ -133,7 +160,7 @@ export async function render(root, ctx) {
   async function delNews(n) {
     const ok = await confirmDialog(`ลบข่าว "${n.name}"?`, `${fmtThai(Date.parse(n.ts_utc), 'datetime')} ช่วงงดเข้าไม้ที่ตั้งไว้แล้วไม่ถูกลบ`, { ok: 'ลบ', danger: true });
     if (!ok) return;
-    try { await ctx.api.deleteNews(n.id); news = news.filter((x) => x.id !== n.id); drawList(); toast('ลบข่าวแล้ว', 'good'); } catch (e) { toast(errText(e), 'error'); }
+    try { await ctx.api.deleteNews(n.id); await load(); drawList(); toast('ลบข่าวแล้ว', 'good'); } catch (e) { toast(errText(e), 'error'); }
   }
 
   drawList();
