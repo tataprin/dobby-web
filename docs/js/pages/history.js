@@ -19,7 +19,7 @@ const TABS = [{ id: 'overview', label: 'ภาพรวม' }, { id: 'trades', l
 
 export async function render(root, ctx) {
   const bot = currentBot();
-  if (!bot) { root.append(noBotState()); return; }
+  if (!bot) { root.append(pageHead('ประวัติ', null, null, 'history'), noBotState()); return; }
   const off = bot.server_utc_offset_min ?? 0;
   const cur = 'บัญชี';
   let rows = [], loadedAll = false;
@@ -30,8 +30,8 @@ export async function render(root, ctx) {
   let chart = null;
   let journalShown = 100;
 
-  root.append(pageHead('ประวัติ', h('span', { class: 'muted' }, bot.name)));
-  const filterBox = h('div', { class: 'filters', role: 'group', 'aria-label': 'ตัวกรอง' });
+  root.append(pageHead('ประวัติ', h('span', { class: 'chip bot-chip' }, icon('monitor'), bot.name), null, 'history'));
+  const filterBox = h('div', { class: 'filters panel', role: 'group', 'aria-label': 'ตัวกรอง' });
   const tabsBox = h('div', { class: 'segmented wide', role: 'tablist', 'aria-label': 'มุมมอง' });
   const body = h('div', { class: 'stack-lg' });
   root.append(filterBox, tabsBox, body);

@@ -5,7 +5,7 @@ import { panel, pageHead } from '../views.js';
 import { themeSegment } from '../app.js';
 
 export async function render(root, ctx) {
-  root.append(pageHead('ตั้งค่า', ctx.app.user ? ctx.app.user.email : ''));
+  root.append(pageHead('ตั้งค่าบัญชี', ctx.app.user ? ctx.app.user.email : '', null, 'live'));
   const nameBox = h('div'), pwBox = h('div'), mfaBox = h('div'), themeBox = h('div'), accBox = h('div');
   root.append(h('div', { class: 'grid-2' }, nameBox, pwBox), mfaBox, h('div', { class: 'grid-2' }, themeBox, accBox));
 

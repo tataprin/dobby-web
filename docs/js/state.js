@@ -31,11 +31,15 @@ export function selectBot(id) {
   emit('bot-changed', id);
 }
 
+// The default bot ("บอทหลัก", chosen on เครื่องของฉัน) opens first; otherwise the last selected one.
+export const defaultBotId = () => load('dobby-default-bot') || '';
+export function setDefaultBot(id) { store('dobby-default-bot', id || ''); emit('bots-loaded', app.bots); }
+
 export async function loadBots() {
   app.bots = await app.api.listBots();
-  const saved = load('dobby-bot');
   if (!app.bots.some((b) => b.id === app.botId)) {
-    app.botId = app.bots.some((b) => b.id === saved) ? saved : (app.bots[0] ? app.bots[0].id : null);
+    const def = defaultBotId(), saved = load('dobby-bot');
+    app.botId = app.bots.some((b) => b.id === def) ? def : app.bots.some((b) => b.id === saved) ? saved : (app.bots[0] ? app.bots[0].id : null);
   }
   emit('bots-loaded', app.bots);
   return app.bots;

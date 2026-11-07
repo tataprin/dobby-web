@@ -4,7 +4,7 @@ import { app } from '../state.js';
 import { panel, pageHead } from '../views.js';
 
 export async function render(root, ctx) {
-  root.append(pageHead('ผู้ใช้', 'จัดการเพื่อนที่ใช้เว็บนี้ ผู้ดูแลไม่เห็นยอดเงินหรือการตั้งค่าบอทของเพื่อน'));
+  root.append(pageHead('ผู้ใช้', 'จัดการเพื่อนที่ใช้เว็บนี้ ผู้ดูแลไม่เห็นยอดเงินหรือการตั้งค่าบอทของเพื่อน', null, 'start'));
   const inviteBox = h('div'), usersBox = h('div'), invitesBox = h('div');
   root.append(h('div', { class: 'grid-2' }, inviteBox, invitesBox), usersBox);
   usersBox.append(loadingState());

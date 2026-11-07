@@ -12,7 +12,7 @@ import { panel, pageHead } from '../views.js';
 
 function tabs(active) {
   return h('nav', { class: 'segmented wide', 'aria-label': 'พรีเซ็ตและเครื่องคำนวณ' },
-    h('a', { href: '#/presets', class: active === 'presets' ? 'on' : '', 'aria-current': active === 'presets' ? 'page' : null }, icon('doc'), 'พรีเซ็ต'),
+    h('a', { href: '#/presets', class: active === 'presets' ? 'on' : '', 'aria-current': active === 'presets' ? 'page' : null }, icon('doc'), 'พรีเซ็ตที่บันทึกไว้'),
     h('a', { href: '#/calc', class: active === 'calc' ? 'on' : '', 'aria-current': active === 'calc' ? 'page' : null }, icon('calc'), 'คำนวณล็อต'));
 }
 
@@ -29,7 +29,8 @@ export async function render(root, ctx) {
 
 // ------------------------------------------------------------------ list
 async function renderList(root, ctx) {
-  root.append(pageHead('พรีเซ็ต', 'ชุดค่า Inputs ของ EA เก็บไว้ ส่งออกเป็น .set หรือส่งค่าที่ส่งได้ไปที่บอท'), tabs('presets'));
+  root.append(pageHead('พรีเซ็ตที่บันทึกไว้', 'ชุดค่าที่เก็บไว้ใช้ทีหลัง กด "ใช้กับบอท" เพื่อเปิดในหน้าตั้งค่าบอท หรือส่งออกเป็นไฟล์ .set', null, 'settings'), tabs('presets'),
+    callout('info', null, h('p', null, 'เปลี่ยนค่าบอทแบบง่าย ใช้หน้า ', h('a', { href: '#/bot' }, 'ตั้งค่าบอท'), ' หน้านี้สำหรับเก็บหลายชุดค่า และแก้ค่าทุกตัวของ EA (ขั้นสูง)')));
   const listBox = h('div');
   const createBox = h('div');
   root.append(createBox, listBox);
@@ -79,6 +80,7 @@ async function renderList(root, ctx) {
               Object.keys(errors).length ? h('span', { class: 'chip bad' }, icon('warn'), `ค่าไม่ถูกต้อง ${Object.keys(errors).length}`) : null),
             h('p', { class: 'muted small' }, `แก้ไขล่าสุด ${fmtThai(Date.parse(p.updated_at || p.created_at), 'short')}`)),
           h('div', { class: 'preset-actions' },
+            bot ? h('a', { class: 'btn small primary', href: `#/bot?preset=${encodeURIComponent(p.id)}`, title: `เปิดค่านี้ในหน้าตั้งค่าบอทของ ${bot.name}` }, icon('sliders'), 'ใช้กับบอท') : null,
             h('a', { class: 'btn small', href: `#/presets/${encodeURIComponent(p.id)}` }, icon('edit'), 'แก้ไข'),
             h('button', { class: 'btn small', type: 'button', onclick: () => exportSet(p.name, v, p.notes) }, icon('download'), '.set'),
             h('button', {
@@ -365,10 +367,11 @@ async function renderEditor(root, ctx, id) {
 
 // ------------------------------------------------------------------ lot calculator (SPEC 5.1)
 export async function renderCalc(root, ctx) {
-  root.append(pageHead('คำนวณล็อต', 'ประมาณผล 30 วันจากการจำลองย้อนหลัง ปรับตามทุนและล็อตของคุณ'), tabs('calc'));
+  root.append(pageHead('คำนวณล็อต', 'ประมาณผล 30 วันจากการจำลองย้อนหลัง ปรับตามทุนและล็อตของคุณ', null, 'risk'), tabs('calc'));
   const { st } = await botStatus(ctx);
-  const startBal = st && st.account && st.account.balance > 0 ? Math.round(st.account.balance) : 300;
-  const startLot = st && st.params && st.params.lots_input > 0 ? st.params.lots_input : 0.03;
+  const qBal = Number(ctx.query.get('balance')), qLot = Number(ctx.query.get('lot'));
+  const startBal = qBal > 0 ? Math.round(qBal) : st && st.account && st.account.balance > 0 ? Math.round(st.account.balance) : 300;
+  const startLot = qLot > 0 ? qLot : st && st.params && st.params.lots_input > 0 ? st.params.lots_input : 0.03;
   const balIn = h('input', { class: 'input', type: 'number', inputmode: 'decimal', min: '10', step: '10', value: String(startBal) });
   const lotIn = h('input', { class: 'input', type: 'number', inputmode: 'decimal', min: '0.01', step: '0.01', value: String(startLot) });
   const out = h('div', { class: 'stack-lg', 'aria-live': 'polite' });

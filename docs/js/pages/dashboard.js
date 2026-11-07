@@ -1,11 +1,15 @@
-// Dashboard: live state of the selected bot (SPEC 5 page 2). Realtime + 30 s fallback poll.
-import { h, icon, fmtNum, fmtSigned, fmtPct, pnl, fmtThai, timeEl, serverToUtc, parseWall, toast, errText, confirmDialog,
-  errorState, loadingState, isoUtc, agoSeconds, toneOf } from '../util.js';
+// ภาพรวม: hero "กำลังเทรดจริง / หยุดอยู่ / ออฟไลน์" with one sentence why, balance, today, open trade with a simple
+// SL - entry - TP bar, recent trades, then details. Realtime + 30 s fallback poll (SPEC 5 page 2).
+import { h, mount, icon, fmtNum, fmtSigned, fmtPct, pnl, fmtThai, timeEl, serverToUtc, parseWall, toast, errText, confirmDialog,
+  errorState, loadingState, isoUtc, toneOf, utcToServer, ago, debounce } from '../util.js';
 import { app, currentBot, updateBotRow, on } from '../state.js';
-import { normDesired, patchDesired, onlineInfo, onlineBadge, rejectionsBlock, effectiveState, isPending } from '../botctl.js';
-import { liveSwitch, appliedLive } from '../liveswitch.js';
-import { modChip, sideEl, kv, panel, noBotState, onOff } from '../views.js';
+import { normDesired, patchDesired, onlineInfo, rejectionsBlock, isPending, heroState } from '../botctl.js';
+import { modChip, sideEl, kv, panel, noBotState, onOff, pageHead } from '../views.js';
 import { minutesToClock } from '../params.js';
+import { prepareRows, pairTrades, REASON_LABELS } from '../journal.js';
+import { currentValues, summaryText } from '../simple.js';
+
+const DAY = 86400000;
 
 function lockModules(s) {
   const m = /A=(\w+)\s+NY=(\w+)\s+C5G=(\w+)/.exec(s || '');
@@ -16,81 +20,88 @@ function lockModules(s) {
 
 export async function render(root, ctx) {
   const bot0 = currentBot();
-  if (!bot0) { root.append(noBotState()); return; }
-  let bot = bot0, st = null, ctl = null, rtState = '';
+  if (!bot0) { root.append(pageHead('ภาพรวม', null, null, 'dashboard'), noBotState()); return; }
+  let bot = bot0, st = null, ctl = null, rtState = '', rows = [];
   root.append(loadingState('กำลังโหลดสถานะบอท…'));
+  const off = () => bot.server_utc_offset_min ?? 0;
   try {
-    const [s, c] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id)]);
+    const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), ctx.api.listBots().catch(() => [])]);
     st = s ? s.status : null; ctl = c;
+    const fresh = bots.find((b) => b.id === bot.id); // last_seen in app.bots may be minutes old
+    if (fresh) { bot = { ...bot, ...fresh }; updateBotRow(bot); }
   } catch (e) {
-    root.replaceChildren(errorState(e, () => ctx.route()));
+    mount(root, errorState(e, () => ctx.route()));
     return;
   }
-  root.replaceChildren();
+  mount(root);
 
   const headBox = h('div');
-  const liveBox = h('div', { class: 'live-wrap' });
-  const stateBox = h('div');
+  const heroBox = h('div');
   const warnBox = h('div');
   const kpiBox = h('div');
   const posBox = h('div');
-  const modBox = h('div');
-  const detailBox = h('div', { class: 'grid-2' });
-  root.append(headBox, h('div', { class: 'dash-top' }, liveBox, stateBox), warnBox, kpiBox, posBox, modBox, detailBox);
+  const recentBox = h('div');
+  const detailBox = h('div');
+  root.append(headBox, heroBox, warnBox, kpiBox, h('div', { class: 'grid-2 dash-grid' }, posBox, recentBox), detailBox);
 
-  const off = () => bot.server_utc_offset_min ?? 0;
+  // journal for the recent trades list (last 14 days, server time)
+  (async () => {
+    try {
+      const fromServer = utcToServer(Date.now() - 14 * DAY, off()).replace(/\./g, '-').replace(' ', 'T');
+      rows = prepareRows(await ctx.api.journal(bot.id, { fromServer }), off());
+    } catch { rows = []; }
+    drawRecent(true);
+  })();
 
   function drawHead() {
-    const info = onlineInfo(bot, st);
-    const acc = (st && st.account) || {};
     const chips = [
-      st && st.symbol ? h('span', { class: 'chip' }, st.symbol) : null,
-      (st && st.ea_version) || bot.ea_version ? h('span', { class: 'chip' }, `EA v${(st && st.ea_version) || bot.ea_version}`) : null,
-      acc.mode ? h('span', { class: `chip ${acc.mode === 'REAL' ? 'real' : ''}` }, acc.mode === 'REAL' ? `บัญชีจริง ${acc.currency || ''}` : `บัญชี ${acc.mode} ${acc.currency || ''}`) : null,
-      st && st.server_time ? h('span', { class: 'chip', title: `เวลาไทย ${fmtThai(serverToUtc(st.server_time, off()), 'seconds')}` },
-        `เวลาเซิร์ฟเวอร์ ${st.server_time.slice(11, 16)}`) : null,
+      (st && st.ea_version) || bot.ea_version ? h('span', { class: 'chip' }, `EA ${(st && st.ea_version) || bot.ea_version}`) : null,
+      st && st.account && st.account.mode ? h('span', { class: `chip ${st.account.mode === 'REAL' ? 'real' : ''}` }, st.account.mode === 'REAL' ? 'บัญชีจริง' : `บัญชี ${st.account.mode}`) : null,
       h('span', { class: `chip ${rtState === 'SUBSCRIBED' ? 'good' : ''}`, title: rtState === 'SUBSCRIBED' ? 'รับข้อมูลแบบสด' : 'ดึงข้อมูลใหม่ทุก 30 วินาที' },
-        rtState === 'SUBSCRIBED' ? 'อัปเดตสด' : 'อัปเดตทุก 30 วินาที'),
+        rtState === 'SUBSCRIBED' ? [h('span', { class: 'live-dot', 'aria-hidden': 'true' }), 'สด'] : 'ทุก 30 วินาที'),
     ];
-    headBox.replaceChildren(h('div', { class: 'page-head' },
-      h('div', { class: 'page-title' }, h('h1', null, bot.name), h('div', { class: 'page-sub chips' }, chips)),
-      h('div', { class: 'page-actions' }, onlineBadge(info))));
+    mount(headBox, pageHead('ภาพรวม', h('span', { class: 'row gap wrap' }, h('span', { class: 'chip bot-chip' }, icon('monitor'), bot.name), chips), null, 'dashboard'));
   }
 
-  // Re-render interactive sections only when what they show changed (status ticks every few seconds and
-  // rebuilding a focused button would drop keyboard focus).
   const sigs = {};
   const changed = (key, val) => { const s = JSON.stringify(val); if (sigs[key] === s) return false; sigs[key] = s; return true; };
 
-  function drawLive(force) {
-    const d = normDesired(ctl && ctl.desired);
-    const info = onlineInfo(bot, st);
-    if (!changed('live', [d.live, d.control.mode, ctl && ctl.version, bot.agent_state && bot.agent_state.applied_version, appliedLive(st), info.agentOnline]) && !force) return;
-    liveBox.replaceChildren(liveSwitch({ bot, ctl, st }));
-  }
-
-  function drawState(force) {
-    const eff = effectiveState(st, bot, ctl);
+  function drawHero(force) {
+    const hs = heroState(bot, st, ctl);
     const d = normDesired(ctl && ctl.desired);
     const paused = d.control.mode === 'pause';
     const pending = isPending(bot, ctl);
-    if (!changed('state', [eff, paused, pending, !!ctl]) && !force) return;
-    stateBox.replaceChildren(h('section', { class: `state-panel tone-${eff.tone}`, 'aria-live': 'polite' },
-      h('p', { class: 'state-label' }, h('span', { class: 'dot', 'aria-hidden': 'true' }), eff.label),
-      h('p', { class: 'state-text' }, eff.text),
-      h('div', { class: 'row gap wrap' },
+    const info = onlineInfo(bot, st);
+    const updated = st && Number.isFinite(st.heartbeat_gmt_unix) ? st.heartbeat_gmt_unix * 1000 : bot.last_seen ? Date.parse(bot.last_seen) : NaN;
+    const summary = st ? summaryText(currentValues(st).values, (st.account && st.account.currency) || 'USD') : '';
+    const ageBucket = Number.isFinite(updated) ? Math.min(12, Math.floor((Date.now() - updated) / 10000)) : -1;
+    if (!changed('hero', [hs, paused, pending, !!ctl, summary, ageBucket, info.online]) && !force) return;
+    mount(heroBox, h('section', { class: `hero tone-${hs.tone}`, 'aria-live': 'polite' },
+      h('div', { class: 'hero-main' },
+        h('div', { class: 'hero-art', 'aria-hidden': 'true', html: HERO_ART[hs.tone] || HERO_ART.off }),
+        h('div', { class: 'hero-copy' },
+          h('p', { class: 'hero-kicker' }, h('span', { class: 'dot' }), info.online ? 'ออนไลน์' : 'ออฟไลน์',
+            Number.isFinite(updated) ? h('span', { class: 'muted' }, ` · อัปเดต ${ago(updated)}`) : null),
+          h('h2', { class: 'hero-title' }, hs.title),
+          h('p', { class: 'hero-text' }, hs.text),
+          hs.help ? h('a', { class: 'small hero-help', href: '#/guide/offline' }, icon('help'), 'วิธีแก้เมื่อบอทออฟไลน์') : null)),
+      h('div', { class: 'hero-actions' },
         h('button', {
           class: `btn ${paused ? 'primary' : ''}`, type: 'button', disabled: !ctl,
           onclick: (e) => togglePause(e.currentTarget, !paused),
         }, icon(paused ? 'play' : 'pause'), paused ? 'ทำงานต่อ' : 'หยุดชั่วคราว'),
         h('button', { class: 'btn', type: 'button', disabled: !ctl, onclick: (e) => blackout2h(e.currentTarget) }, icon('clock'), 'งดเข้าไม้ 2 ชม.'),
-        h('a', { class: 'btn ghost', href: '#/control' }, icon('sliders'), 'ตั้งค่าคำสั่ง')),
-      paused && pending ? h('p', { class: 'muted small' }, 'สั่งหยุดแล้ว รอเครื่องรับคำสั่ง') : null));
+        h('a', { class: 'btn ghost', href: '#/bot' }, icon('sliders'), 'ตั้งค่าบอท')),
+      paused && pending ? h('p', { class: 'muted small' }, 'สั่งหยุดแล้ว รอเครื่องรับคำสั่ง') : null,
+      summary ? h('a', { class: 'hero-summary', href: '#/bot' }, h('span', { class: 'muted small' }, 'ค่าที่ใช้อยู่'), h('span', null, summary), icon('chevron')) : null));
   }
 
   async function togglePause(btn, pause) {
     if (!pause) {
       const ok = await confirmDialog('ให้บอททำงานต่อ?', 'บอทจะกลับมาเปิดไม้ใหม่ได้ตามสัญญาณ (ถ้าสวิตช์เทรดจริงเปิดอยู่)', { ok: 'ทำงานต่อ' });
+      if (!ok) return;
+    } else {
+      const ok = await confirmDialog('หยุดชั่วคราว?', 'บอทจะหยุดเปิดไม้ใหม่ ไม้ที่เปิดอยู่ไม่ถูกปิด และยังมี SL/TP ตามเดิม', { ok: 'หยุดชั่วคราว' });
       if (!ok) return;
     }
     btn.disabled = true;
@@ -98,7 +109,7 @@ export async function render(root, ctx) {
       ctl = await patchDesired(bot.id, (d) => { d.control.mode = pause ? 'pause' : 'run'; });
       toast(pause ? 'ส่งคำสั่งหยุดชั่วคราวแล้ว' : 'ส่งคำสั่งทำงานต่อแล้ว', 'good');
     } catch (e) { toast(errText(e), 'error', 6000); }
-    drawAll();
+    drawHero(true);
   }
 
   async function blackout2h(btn) {
@@ -111,43 +122,44 @@ export async function render(root, ctx) {
       });
       toast(`งดเข้าไม้ถึง ${fmtThai(now + 2 * 3600e3, 'time')} น. แล้ว`, 'good');
     } catch (e) { toast(errText(e), 'error', 6000); }
-    drawAll();
+    drawHero(true);
   }
 
   function drawWarn() {
     const as = bot.agent_state || {};
     if (!changed('warn', [as.rejected, as.last_error, st && st.remote && st.remote.rejects, st && st.control && st.control.warn])) return;
-    warnBox.replaceChildren(rejectionsBlock(bot, st) || '');
+    mount(warnBox, rejectionsBlock(bot, st) || '');
   }
 
   function drawKpi() {
-    if (!st) { kpiBox.replaceChildren(panel(null, {}, h('p', { class: 'muted' }, 'ยังไม่มีสถานะจาก EA เมื่อเอเจนต์บนเครื่องส่งไฟล์สถานะ ตัวเลขจะขึ้นที่นี่'))); return; }
+    if (!st) { mount(kpiBox, panel(null, {}, h('p', { class: 'muted' }, 'ยังไม่มีตัวเลขจากบอท เมื่อแอปที่เครื่องส่งสถานะขึ้นมา ยอดเงินและกำไรจะขึ้นที่นี่'))); return; }
     const a = st.account || {}, v = st.virtual || {}, p = st.params || {};
     const cur = a.currency || '';
     const floating = (a.equity ?? 0) - (a.balance ?? 0);
-    const vChange = v.start ? ((v.balance - v.start) / v.start) * 100 : null;
+    const since = (v.balance ?? 0) - (v.start ?? 0);
     const capPct = p.daily_cap_pct ?? 10;
     const capAmt = (capPct / 100) * (v.day_start || 0);
     const loss = Math.max(0, -(v.day_pnl || 0));
     const used = capAmt > 0 ? Math.min(1, loss / capAmt) : 0;
     const tone = v.day_cap_hit || used >= 0.8 ? 'critical' : used >= 0.5 ? 'warn' : 'ok';
-    kpiBox.replaceChildren(h('section', { class: 'kpis', 'aria-label': 'ยอดเงิน' },
-      kpi('ยอดเงินในบัญชี', fmtNum(a.balance), cur),
-      kpi('มูลค่าสุทธิ (Equity)', fmtNum(a.equity), cur, Math.abs(floating) >= 0.005 ? h('span', { class: `num ${toneOf(floating)}` }, `ไม้ลอย ${fmtSigned(floating)}`) : 'ไม่มีไม้ลอย'),
-      kpi('พอร์ตจำลอง', fmtNum(v.balance), cur, vChange !== null ? h('span', { class: `num ${toneOf(vChange)}` }, `${fmtPct(vChange, 1, true)} จากทุน ${fmtNum(v.start, 0)}`) : null),
-      kpi('กำไรขาดทุนวันนี้', h('span', { class: `num ${toneOf(v.day_pnl)}` }, fmtSigned(v.day_pnl)), cur, `ทุนต้นวัน ${fmtNum(v.day_start)}`)),
-    h('section', { class: `capbar tone-${tone}`, 'aria-label': 'จุดหยุดรายวัน' },
-      h('div', { class: 'capbar-head' },
-        h('span', null, `จุดหยุดรายวัน ${fmtNum(capPct, 1)}% = ${fmtSigned(-capAmt)} ${cur}`),
-        h('span', { class: 'num' }, v.day_cap_hit ? [icon('warn'), ' ถึงจุดหยุดแล้ว วันนี้ไม่เปิดไม้ใหม่']
-          : (v.day_pnl || 0) >= 0 ? `วันนี้ยังไม่ขาดทุน` : `ใช้ไปแล้ว ${fmtPct(used * 100, 0)}`)),
-      h('div', { class: 'meter', role: 'meter', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(Math.round(used * 100)), 'aria-label': 'ขาดทุนวันนี้เทียบกับจุดหยุดรายวัน' },
-        h('span', { class: 'meter-fill', style: { width: `${(v.day_cap_hit ? 1 : used) * 100}%` } })),
-      h('p', { class: 'muted small' }, `วันของ EA: ${v.day || '—'} (เวลาเซิร์ฟเวอร์) เทรดทั้งหมด ${v.trades ?? 0} ไม้ ชนะ ${v.wins ?? 0} แพ้ ${v.losses ?? 0}`)));
+    const wr = v.trades ? Math.round((v.wins / v.trades) * 100) : null;
+    mount(kpiBox, h('section', { class: 'kpi-cards', 'aria-label': 'ยอดเงินและกำไร' },
+      kpi('ยอดเงินในบัญชี', fmtNum(a.balance), cur,
+        Math.abs(floating) >= 0.005 ? h('span', null, 'รวมไม้ที่เปิดอยู่ ', h('span', { class: `num ${toneOf(floating)}` }, fmtNum(a.equity)), ` (${fmtSigned(floating)})`) : 'ไม่มีไม้ค้าง'),
+      h('div', { class: `kpi-card tone-${tone}` },
+        h('p', { class: 'kpi-label' }, 'วันนี้'),
+        h('p', { class: `kpi-value num ${toneOf(v.day_pnl)}` }, fmtSigned(v.day_pnl), h('span', { class: 'unit' }, ` ${cur}`)),
+        h('div', { class: 'meter', role: 'meter', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(Math.round(used * 100)), 'aria-label': 'ขาดทุนวันนี้เทียบกับจุดหยุดรายวัน' },
+          h('span', { class: 'meter-fill', style: { width: `${(v.day_cap_hit ? 1 : used) * 100}%` } })),
+        h('p', { class: 'kpi-sub' }, v.day_cap_hit ? [icon('warn'), ' ถึงจุดหยุดแล้ว วันนี้ไม่เปิดไม้ใหม่']
+          : (v.day_pnl || 0) >= 0 ? `ยังไม่ขาดทุน · หยุดเมื่อ −${fmtNum(capAmt, 0)} (${fmtNum(capPct, 0)}%)` : `ใช้ไป ${fmtPct(used * 100, 0)} ของจุดหยุด −${fmtNum(capAmt, 0)}`)),
+      kpi('กำไรตั้งแต่เริ่ม', h('span', { class: `num ${toneOf(since)}` }, fmtSigned(since)), cur,
+        v.start ? `ทุน ${fmtNum(v.start, 0)} → ตอนนี้ ${fmtNum(v.balance)} (${fmtPct((since / v.start) * 100, 1, true)})` : null),
+      kpi('เทรดทั้งหมด', String(v.trades ?? 0), 'ไม้', wr === null ? null : `ชนะ ${v.wins} แพ้ ${v.losses} (ชนะ ${wr}%)`)));
   }
 
   function kpi(label, value, unit, sub) {
-    return h('div', { class: 'kpi' }, h('p', { class: 'kpi-label' }, label),
+    return h('div', { class: 'kpi-card' }, h('p', { class: 'kpi-label' }, label),
       h('p', { class: 'kpi-value' }, value, unit ? h('span', { class: 'unit' }, ` ${unit}`) : null),
       sub ? h('p', { class: 'kpi-sub' }, sub) : null);
   }
@@ -156,8 +168,9 @@ export async function render(root, ctx) {
     const list = st ? (st.positions || []).filter((p) => p.open) : [];
     const mk = (st && st.market) || {};
     const cur = (st && st.account && st.account.currency) || '';
-    posBox.replaceChildren(panel('ไม้ที่เปิดอยู่', { sub: mk.bid ? `ราคา ${fmtNum(mk.bid)} / ${fmtNum(mk.ask)} สเปรด ${fmtNum(mk.spread)}` : null },
-      list.length ? h('div', { class: 'positions' }, list.map((p) => positionCard(p, mk, cur))) : h('p', { class: 'muted' }, 'ไม่มีไม้เปิดอยู่')));
+    mount(posBox, panel(list.length ? `ไม้ที่เปิดอยู่ (${list.length})` : 'ไม้ที่เปิดอยู่', { icon: 'bars', sub: mk.bid ? `ราคาทองตอนนี้ ${fmtNum(mk.bid)} (สเปรด ${fmtNum(mk.spread)})` : null },
+      list.length ? h('div', { class: 'positions' }, list.map((p) => positionCard(p, mk, cur)))
+        : h('div', { class: 'quiet' }, h('p', null, 'ไม่มีไม้เปิดอยู่'), h('p', { class: 'muted small' }, 'บอทกำลังรอสัญญาณ เมื่อเปิดไม้ จะขึ้นที่นี่ทันที'))));
   }
 
   function positionCard(p, mk, cur) {
@@ -165,42 +178,73 @@ export async function render(root, ctx) {
     const price = p.side === 'BUY' ? mk.bid : mk.ask;
     const tpDist = (p.tp - p.open_price) * dir, slDist = (p.open_price - p.sl) * dir;
     const gain = (price - p.open_price) * dir;
-    const span = p.tp - p.sl;
-    const t = (x) => Math.max(0, Math.min(1, (x - p.sl) / span));
+    // bar in "distance" terms: SL (left) -> entry -> TP (right), whatever the side
+    const lo = -Math.max(slDist, 0.0001), hi = Math.max(tpDist, 0.0001);
+    const t = (x) => Math.max(0, Math.min(1, (x - lo) / (hi - lo)));
+    const slLocked = slDist < 0;
     let progress = '';
     if (Number.isFinite(gain) && tpDist > 0) {
       if (gain >= 0) progress = `ไปแล้ว ${fmtPct((gain / tpDist) * 100, 0)} ของทาง TP`;
       else if (slDist > 0) progress = `ติดลบ ${fmtPct((-gain / slDist) * 100, 0)} ของทาง SL`;
     }
-    const slLocked = slDist < 0;
     const openedUtc = serverToUtc(p.open_time, off());
     const money = (p.profit || 0) + (p.swap || 0);
+    const slPos = slLocked ? t(-slDist) : 0;
     return h('article', { class: 'position' },
-      h('div', { class: 'pos-head' }, modChip(p.module), sideEl(p.side), h('span', { class: 'num' }, `${fmtNum(p.lots)} ล็อต`),
-        p.locked ? h('span', { class: 'chip good' }, icon('shield'), 'ล็อกกำไรแล้ว') : p.near_tp ? h('span', { class: 'chip warn' }, 'ใกล้ TP') : null,
+      h('div', { class: 'pos-head' }, modChip(p.module), sideEl(p.side), h('span', { class: 'num muted' }, `${fmtNum(p.lots)} ล็อต`),
+        p.locked || slLocked ? h('span', { class: 'chip good' }, icon('shield'), 'ล็อกกำไรแล้ว') : p.near_tp ? h('span', { class: 'chip warn' }, 'ใกล้ TP') : null,
         h('span', { class: 'pos-pnl' }, pnl(money), h('span', { class: 'unit' }, ` ${cur}`))),
-      span ? h('div', { class: 'track', role: 'img', 'aria-label': `SL ${fmtNum(p.sl)} ราคาเข้า ${fmtNum(p.open_price)} ราคาตอนนี้ ${fmtNum(price)} TP ${fmtNum(p.tp)}` },
-        h('span', { class: 'track-bar' }),
-        h('span', { class: 'track-entry', style: { left: `${t(p.open_price) * 100}%` } }),
-        h('span', { class: `track-now ${gain >= 0 ? 'up' : 'down'}`, style: { left: `${t(price) * 100}%` } }),
-        h('span', { class: 'track-l' }, 'SL'), h('span', { class: 'track-r' }, 'TP')) : null,
-      h('p', { class: 'pos-progress' }, progress, slLocked ? ` SL ล็อกกำไรไว้ ${fmtSigned(-slDist * 100 * p.lots)} ${cur}` : ''),
-      kv([
-        ['ราคาเข้า', h('span', { class: 'num' }, fmtNum(p.open_price))],
-        ['SL', h('span', { class: 'num' }, fmtNum(p.sl))],
-        ['TP', h('span', { class: 'num' }, fmtNum(p.tp))],
-        ['ราคาปิดตอนนี้', h('span', { class: 'num' }, fmtNum(price))],
-        ['เปิดเมื่อ', h('span', null, timeEl(openedUtc, off(), 'short'), ` (${p.bars_held ?? 0} แท่ง M15)`)],
-        ['ตั๋ว', h('span', { class: 'num muted' }, String(p.ticket ?? '—'))],
-      ]));
+      Number.isFinite(gain) ? h('div', { class: 'ptrack', role: 'img', 'aria-label': `SL ${fmtNum(p.sl)} ราคาเข้า ${fmtNum(p.open_price)} ราคาตอนนี้ ${fmtNum(price)} TP ${fmtNum(p.tp)}` },
+        h('div', { class: 'pt-bar' },
+          h('span', { class: 'pt-loss', style: { width: `${t(0) * 100}%` } }),
+          h('span', { class: 'pt-win', style: { left: `${t(0) * 100}%`, width: `${(1 - t(0)) * 100}%` } }),
+          h('span', { class: 'pt-entry', style: { left: `${t(0) * 100}%` } }),
+          slLocked ? h('span', { class: 'pt-lock', style: { left: `${slPos * 100}%` }, title: 'SL ใหม่ (ล็อกกำไร)' }) : null,
+          h('span', { class: `pt-now ${gain >= 0 ? 'up' : 'down'}`, style: { left: `${t(gain) * 100}%` } })),
+        h('div', { class: 'pt-labels' },
+          h('span', null, h('b', null, slLocked ? 'SL เดิม' : 'SL'), h('span', { class: 'num' }, slLocked ? '' : fmtNum(p.sl))),
+          h('span', { class: 'pt-mid', style: { left: `${t(0) * 100}%` } }, h('b', null, 'ราคาเข้า'), h('span', { class: 'num' }, fmtNum(p.open_price))),
+          h('span', { class: 'pt-r' }, h('b', null, 'TP'), h('span', { class: 'num' }, fmtNum(p.tp))))) : null,
+      h('p', { class: 'pos-progress' }, progress, slLocked ? ` · SL ล็อกกำไรไว้ ${fmtSigned(-slDist * 100 * p.lots)} ${cur}` : ''),
+      h('p', { class: 'muted small' }, 'เปิดเมื่อ ', timeEl(openedUtc, off(), 'short'), ` · ราคาตอนนี้ ${fmtNum(price)}`));
   }
 
-  function drawModules() {
-    if (!st || !st.modules) { modBox.replaceChildren(); return; }
+  function drawRecent(force) {
+    const trades = pairTrades(rows).filter((t) => !t.open).slice(-8).reverse();
+    if (!changed('recent', trades.map((t) => [t.closeUtc, t.pnl])) && !force) return;
+    const cur = (st && st.account && st.account.currency) || '';
+    const today = fmtThai(Date.now(), 'date');
+    mount(recentBox, panel('เทรดล่าสุด', { icon: 'history', actions: h('a', { class: 'btn small ghost', href: '#/history?tab=trades' }, 'ดูทั้งหมด', icon('chevron')) },
+      trades.length ? h('ul', { class: 'trade-list' }, trades.map((t) => {
+        const when = fmtThai(t.closeUtc, 'date') === today ? `วันนี้ ${fmtThai(t.closeUtc, 'time')}` : fmtThai(t.closeUtc, 'short');
+        return h('li', { class: 'trade' },
+          h('span', { class: `trade-ico ${t.pnl >= 0 ? 'pos' : 'neg'}`, 'aria-hidden': 'true' }, t.pnl >= 0 ? '+' : '−'),
+          h('div', { class: 'trade-main' },
+            h('p', null, modChip(t.module), ' ', sideEl(t.side), h('span', { class: 'muted small' }, ` ${fmtNum(t.lots)} ล็อต`)),
+            h('p', { class: 'muted small' }, when, ' · ', REASON_LABELS[t.reason] || t.reason || 'ปิดไม้')),
+          h('span', { class: 'trade-pnl' }, pnl(t.pnl), h('span', { class: 'unit' }, ` ${cur}`)));
+      })) : h('div', { class: 'quiet' }, h('p', null, rows.length ? 'ยังไม่มีไม้ที่ปิดใน 14 วันนี้' : 'กำลังโหลด…'))));
+  }
+
+  function srvToThaiClock(min) {
+    const t = ((min - off() + 420) % 1440 + 1440) % 1440;
+    return minutesToClock(t);
+  }
+
+  function drawDetails() {
+    if (!st) { mount(detailBox); return; }
+    if (!changed('details', [st.modules, st.ny, st.options, st.control, st.last_event, st.last_error]) && detailBox.firstChild) return;
+    const open = detailBox.querySelector('details') ? detailBox.querySelector('details').open : false;
+    const ny = st.ny || {}, o = st.options || {}, c = st.control || {}, lock = o.lock || {}, lock1 = o.lock1 || {};
     const cur = (st.account && st.account.currency) || '';
-    modBox.replaceChildren(panel('สูตร', { sub: 'ผลนับตั้งแต่เริ่มพอร์ตจำลอง' },
-      h('div', { class: 'table-wrap' }, h('table', { class: 'rtable' },
-        h('thead', null, h('tr', null, ['สูตร', 'สถานะ', 'ล็อต', 'วันนี้', 'เทรด', 'ชนะ/แพ้', 'อัตราชนะ', `สุทธิ ${cur}`].map((t) => h('th', { scope: 'col' }, t)))),
+    const bos = (c.blackouts || []).map((b) => {
+      const from = serverToUtc(b[0], off()), to = serverToUtc(b[1], off());
+      return h('li', null, `${fmtThai(from, 'short')} ถึง ${fmtThai(to, Math.floor(from / 864e5) === Math.floor(to / 864e5) ? 'time' : 'short')}`);
+    });
+    mount(detailBox, h('details', { class: 'panel more-details', open },
+      h('summary', null, h('span', null, h('strong', null, 'รายละเอียดเพิ่มเติม'), h('span', { class: 'muted small' }, ' ผลแต่ละสูตร กรอบ NY ล็อกกำไร เหตุการณ์ล่าสุด'))),
+      st.modules ? h('div', { class: 'table-wrap' }, h('table', { class: 'rtable' },
+        h('thead', null, h('tr', null, ['สูตร', 'สถานะ', 'ล็อต', 'วันนี้', 'เทรด', 'ชนะ/แพ้', 'อัตราชนะ', `สุทธิ ${cur}`].map((x) => h('th', { scope: 'col' }, x)))),
         h('tbody', null, st.modules.map((m) => {
           const wr = m.trades ? (m.wins / m.trades) * 100 : null;
           const today = m.day_stopped ? 'หยุดวันนี้' : m.won_today ? 'ชนะแล้ววันนี้' : m.step ? `ไม้แก้ขั้น ${m.step}` : '—';
@@ -213,53 +257,25 @@ export async function render(root, ctx) {
             h('td', { 'data-label': 'ชนะ/แพ้', class: 'num' }, `${m.wins ?? 0}/${m.losses ?? 0}`),
             h('td', { 'data-label': 'อัตราชนะ', class: 'num' }, wr === null ? '—' : fmtPct(wr, 0)),
             h('td', { 'data-label': 'สุทธิ', class: 'num' }, pnl(m.net)));
-        }))))));
-  }
-
-  function srvToThaiClock(min) {
-    const t = ((min - off() + 420) % 1440 + 1440) % 1440;
-    return minutesToClock(t);
-  }
-
-  function drawDetails() {
-    if (!st) { detailBox.replaceChildren(); return; }
-    const ny = st.ny || {}, o = st.options || {}, c = st.control || {}, lock = o.lock || {}, lock1 = o.lock1 || {};
-    const bos = (c.blackouts || []).map((b) => {
-      const from = serverToUtc(b[0], off()), to = serverToUtc(b[1], off());
-      return h('li', null, `${fmtThai(from, 'short')} ถึง ${fmtThai(to, Math.floor(from / 864e5) === Math.floor(to / 864e5) ? 'time' : 'short')}`,
-        h('span', { class: 'muted small' }, ` (เซิร์ฟเวอร์ ${b[0]} ถึง ${b[1]})`));
-    });
-    detailBox.replaceChildren(
-      panel('NY breakout', { sub: `กรอบราคาแท่ง 16:30 เวลาเซิร์ฟเวอร์ (${srvToThaiClock(990)} น. เวลาไทย)` }, kv([
-        ['กรอบบน', h('span', { class: 'num' }, fmtNum(ny.range_high))],
-        ['กรอบล่าง', h('span', { class: 'num' }, fmtNum(ny.range_low))],
-        ['ระยะ SL', h('span', { class: 'num' }, fmtNum(ny.sl_dist))],
-        ['สถานะ', ny.state || '—'],
-        ['วันที่ตั้งกรอบ', ny.armed_day || '—'],
-      ])),
-      panel('ล็อกกำไร', {}, kv([
-        ['ล็อกใกล้ TP', lock.enabled ? `เปิด: กำไรถึง ${fmtNum(lock.at_pct, 1)}% ย้าย SL ไป ${fmtNum(lock.to_pct, 1)}%` : 'ปิด'],
-        ['ใช้กับ', lockModules(lock.modules)],
-        ['ล็อกขั้นที่ 1', lock1.enabled ? `เปิด: ${fmtNum(lock1.at_pct, 1)}% ย้าย SL ไป ${fmtNum(lock1.to_pct, 1)}%` : 'ปิด'],
-        ['บันทึกเงา', lock.shadow ? 'เปิด' : 'ปิด'],
-      ])),
-      panel('ตัวเลือก', {}, kv([
-        ['ไม้ต่อสูตรต่อวัน', String(o.max_attempts ?? '—')],
-        ['สัญญาณตรงกัน', o.confluence_mult && o.confluence_mult > 1 ? `ล็อต x${fmtNum(o.confluence_mult)} ภายใน ${o.confluence_min} นาที` : 'ปิด'],
-        ['ตัวกรองความผันผวน', o.vol_gate ? (o.vol_gate.enabled ? `เปิด ${fmtNum(o.vol_gate.value)}% (เกณฑ์ ${fmtNum(o.vol_gate.pct)}%) ${o.vol_gate.open ? 'ผ่าน' : 'ไม่ผ่าน'}` : 'ปิด') : '—'],
-        ['ASIA16', o.asia ? (o.asia.enabled ? `เปิด ${fmtNum(o.asia.lots)} ล็อต ${o.asia.state || ''}` : 'ปิด') : '—'],
-      ])),
-      panel('คำสั่งที่ EA ใช้อยู่', { sub: c.applied_at ? `รับเมื่อ ${c.applied_at} (เวลาเซิร์ฟเวอร์)` : null }, kv([
-        ['โหมด', c.mode === 'pause' ? 'หยุดชั่วคราว' : 'ทำงาน'],
-        ['ล็อต', fmtNum(c.lots)],
-        ['ฝั่ง', `${c.allow_long ? 'ซื้อ' : ''}${c.allow_long && c.allow_short ? ' และ ' : ''}${c.allow_short ? 'ขาย' : ''}` || 'ไม่เปิดทั้งสองฝั่ง'],
-        ['สเปรดสูงสุด', fmtNum(c.max_spread)],
-        ['ช่วงงดเข้าไม้', bos.length ? h('ul', { class: 'plain' }, bos) : 'ไม่มี'],
-        ['รหัสไฟล์ควบคุม', c.id || (c.file_exists ? '—' : 'ไม่มีไฟล์ (ใช้ค่า Inputs)')],
-        c.note ? ['หมายเหตุ', c.note] : null,
-      ])),
-      panel('เหตุการณ์ล่าสุด', { cls: 'span-2' }, eventLine('ล่าสุด', st.last_event), eventLine('ข้อผิดพลาดล่าสุด', st.last_error, true)),
-    );
+        })))) : null,
+      h('div', { class: 'grid-2' },
+        panel('NY breakout', { cls: 'flat', sub: `กรอบราคาแท่ง ${srvToThaiClock(990)} น. เวลาไทย` }, kv([
+          ['กรอบบน', h('span', { class: 'num' }, fmtNum(ny.range_high))],
+          ['กรอบล่าง', h('span', { class: 'num' }, fmtNum(ny.range_low))],
+          ['สถานะ', ny.state || '—'],
+        ])),
+        panel('ล็อกกำไร', { cls: 'flat' }, kv([
+          ['ชั้นใกล้ TP', lock.enabled ? `ถึง ${fmtNum(lock.at_pct, 0)}% เลื่อน SL ไป ${fmtNum(lock.to_pct, 0)}%` : 'ปิด'],
+          ['ชั้นแรก', lock1.enabled ? `ถึง ${fmtNum(lock1.at_pct, 0)}% เลื่อน SL ไป ${fmtNum(lock1.to_pct, 0)}%` : 'ปิด'],
+          ['ใช้กับ', lockModules(lock.modules)],
+        ])),
+        panel('คำสั่งที่บอทใช้อยู่', { cls: 'flat', sub: c.applied_at ? `รับเมื่อ ${c.applied_at} (เวลาเซิร์ฟเวอร์)` : null }, kv([
+          ['โหมด', c.mode === 'pause' ? 'หยุด' : 'ทำงาน'],
+          ['ฝั่ง', `${c.allow_long ? 'ซื้อ' : ''}${c.allow_long && c.allow_short ? ' และ ' : ''}${c.allow_short ? 'ขาย' : ''}` || 'ไม่เปิดทั้งสองฝั่ง'],
+          ['ช่วงงดเข้าไม้', bos.length ? h('ul', { class: 'plain' }, bos) : 'ไม่มี'],
+          c.note ? ['หมายเหตุ', c.note] : null,
+        ])),
+        panel('เหตุการณ์ล่าสุด', { cls: 'flat' }, eventLine('ล่าสุด', st.last_event), eventLine('ข้อผิดพลาดล่าสุด', st.last_error, true)))));
   }
 
   function eventLine(label, text, isErr) {
@@ -269,21 +285,23 @@ export async function render(root, ctx) {
     const rest = m ? text.slice(m[0].length) : text;
     return h('div', { class: `event-line ${isErr ? 'err' : ''}` },
       h('p', { class: 'muted small' }, label, m && Number.isFinite(w) ? [' ', timeEl(serverToUtc(text, off()), off(), 'seconds')] : null),
-      h('p', null, rest));
+      h('p', { class: 'break' }, rest));
   }
 
-  function drawAll() { drawHead(); drawLive(true); drawState(true); drawWarn(); drawKpi(); drawPositions(); drawModules(); drawDetails(); }
+  function drawAll() { drawHead(); drawHero(true); drawWarn(); drawKpi(); drawPositions(); drawRecent(true); drawDetails(); }
   drawAll();
 
-  const onStatus = (row) => { if (!row || !row.status) return; st = row.status; drawHead(); drawLive(); drawState(); drawWarn(); drawKpi(); drawPositions(); drawModules(); drawDetails(); };
-  const onControl = (row) => { ctl = row; drawLive(); drawState(); };
-  const onBot = (row) => { bot = { ...bot, ...row }; updateBotRow(bot); drawHead(); drawLive(); drawState(); drawWarn(); };
+  const onStatus = (row) => { if (!row || !row.status) return; st = row.status; drawHero(); drawWarn(); drawKpi(); drawPositions(); drawDetails(); };
+  const onControl = (row) => { ctl = row; drawHero(); };
+  const onBot = (row) => { bot = { ...bot, ...row }; updateBotRow(bot); drawHero(); drawWarn(); };
+  const addRow = debounce(() => drawRecent(), 500);
   const unsub = ctx.api.subscribeBot(bot.id, {
     status: onStatus, control: onControl, bot: onBot,
+    journal: (row) => { rows = prepareRows([...rows, row], off()); addRow(); },
     state: (s) => { rtState = s; drawHead(); },
   });
   const offCtl = on('control-updated', (row) => { if (row && row.bot_id === bot.id) onControl(row); });
-  const ages = setInterval(drawHead, 5000);
+  const ages = setInterval(() => drawHero(), 5000);
   const poll = setInterval(async () => {
     if (rtState === 'SUBSCRIBED') return;
     try {
@@ -296,3 +314,13 @@ export async function render(root, ctx) {
   }, 30000);
   return () => { unsub(); offCtl(); clearInterval(ages); clearInterval(poll); };
 }
+
+// Small illustrations for the hero (inline SVG, theme colours).
+const HERO_ART = {
+  live: `<svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="var(--gold-soft)"/><path d="M14 42l10-12 8 6 14-18" fill="none" stroke="var(--gold-lo)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M40 18h6v6" fill="none" stroke="var(--gold-lo)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  good: `<svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="var(--good-soft)"/><path d="M20 33l8 8 16-17" fill="none" stroke="var(--good-ink)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  paused: `<svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="var(--paused-soft)"/><path d="M26 22v20M38 22v20" stroke="var(--paused)" stroke-width="5" stroke-linecap="round"/></svg>`,
+  warn: `<svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="var(--warn-soft)"/><path d="M32 16l16 30H16z" fill="none" stroke="var(--warn-ink)" stroke-width="4" stroke-linejoin="round"/><path d="M32 28v8M32 41v1" stroke="var(--warn-ink)" stroke-width="4" stroke-linecap="round"/></svg>`,
+  critical: `<svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="var(--crit-soft)"/><path d="M23 23l18 18M41 23L23 41" stroke="var(--crit-ink)" stroke-width="5" stroke-linecap="round"/></svg>`,
+  off: `<svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="var(--surface-2)"/><path d="M22 26a14 14 0 0 1 20 0M26 31a8 8 0 0 1 12 0" fill="none" stroke="var(--muted)" stroke-width="3.5" stroke-linecap="round"/><circle cx="32" cy="38" r="3" fill="var(--muted)"/><path d="M18 18l28 28" stroke="var(--muted)" stroke-width="3.5" stroke-linecap="round"/></svg>`,
+};

@@ -52,6 +52,18 @@ def _guards(monkeypatch, tmp_path):
         raise AssertionError("a real HTTP transport was created in a test")
 
     monkeypatch.setattr(da.HttpTransport, "__init__", no_real_http)
+    try:
+        import dobby_app_core as core
+    except ImportError:  # pragma: no cover
+        core = None
+    if core is not None:
+        def no_real_mt5(*a, **k):
+            raise AssertionError("a test tried to really start MT5 (terminal64.exe)")
+
+        def no_real_process_list(*a, **k):
+            raise AssertionError("a test read the real process list: pass a fake `processes`")
+        monkeypatch.setattr(core, "real_launch", no_real_mt5)
+        monkeypatch.setattr(core, "windows_terminal_processes", no_real_process_list)
     yield
 
 
@@ -97,6 +109,7 @@ class FakeSupabase(object):
         self.n = 0
         self.expires_in = 3600
         self.reject_access_once = False
+        self.web_name = "คอมหลัก"
 
     # -- web side helpers
     def web_set(self, desired):
@@ -189,6 +202,9 @@ class FakeSupabase(object):
             assert params == {"id": "eq." + BOT}
             self.bots_patches.append(body)
             return da.HttpResponse(204, "")
+        if table == "bots" and method == "GET":
+            assert params == {"id": "eq." + BOT, "select": "name"}
+            return da.HttpResponse(200, json.dumps([{"name": self.web_name}] if self.web_name else []))
         if table == "rpc/register_bot":
             self.rpc_calls.append(body)
             self.control = {"version": 1, "desired": body["p_desired"], "updated_at": "2026-11-09T00:00:00Z"}

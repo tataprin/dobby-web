@@ -460,7 +460,9 @@ export class DemoApi {
   isAdmin() { const p = this.me(); return p && p.approved && !p.disabled && p.role === 'admin'; }
   approvedOrThrow() { this.need(); const p = this.me(); if (!p || !p.approved || p.disabled) throw new ApiError('permission'); }
 
-  async listBots() { await this.wait(); this.approvedOrThrow(); return clone(this.db.bots.filter((b) => b.owner === this.uidCur)); }
+  async listBots() { await this.wait(); this.approvedOrThrow(); if (this.noBots) return []; return clone(this.db.bots.filter((b) => b.owner === this.uidCur)); }
+  // Demo only: show the "no bot yet" state (reachable from the guide); the demo bots come back with on = false.
+  setDemoNoBots(on) { this.noBots = !!on; }
   statusRow(botId) {
     const sim = this.db.sims[botId];
     return sim ? { bot_id: botId, updated_at: new Date().toISOString(), status: sim.status(Date.now()) } : null;

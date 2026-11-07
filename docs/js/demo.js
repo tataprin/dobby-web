@@ -2,6 +2,7 @@
 // open position, invites, presets, news and audit rows. Dates are relative to "now" so the demo always looks current;
 // the pattern itself is fixed by the seeds below. "Today" is always treated as a trading day.
 import { templateParams, remoteSubset, normalizeParams } from './params.js';
+import { autoFromBalance } from './simple.js';
 import { wallString, isoUtc } from './util.js';
 
 export const DEMO_OFFSET_MIN = 120; // demo broker server = UTC+2
@@ -102,7 +103,8 @@ export class BotSim {
     if (mod === 'NY') dur = Math.min(dur, (23 * 60 * MIN) - (t % DAY) - 2 * MIN);
     dur = Math.max(12 * MIN, Math.min(dur, maxClose - t));
     const per = 100 * lots, cost = 0.22 * per;
-    const move = outcome === 'TP' ? tpd : outcome === 'LOCK' ? 0.93 * tpd : outcome === 'LOCK1' ? 0.80 * tpd
+    const lockTo = P.InpLockToPct / 100, lock1At = P.InpLock1AtPct / 100, lock1To = P.InpLock1ToPct / 100, lockAt = P.InpLockAtPct / 100;
+    const move = outcome === 'TP' ? tpd : outcome === 'LOCK' ? lockTo * tpd : outcome === 'LOCK1' ? lock1To * tpd
       : outcome === 'TIME' ? (r() - 0.45) * sl : -sl;
     const pnl = r2(move * per - cost);
     const exit = r2(entry + dir * move);
@@ -112,17 +114,19 @@ export class BotSim {
     const close = t + dur;
     const lockOn = P.InpLockEnable && P[`InpLock_${mod === 'C5G' ? 'C5G' : mod === 'NY' ? 'NY' : 'A'}`];
     if (outcome === 'LOCK1' || (outcome === 'LOCK' && r() < 0.4)) {
-      const g = r2(tpd * 0.82 + 0.05);
-      const nsl = r2(entry + dir * tpd * 0.8);
-      this.add(close - 9 * MIN, 'NEAR1', mod, side, lots, r2(entry + dir * g), slP, tpP, 0, step, `gain ${f2(g)} = 82% of TP ${f2(tpd)} (stage 1 ${P.InpLock1Enable ? 'ON' : 'shadow'})`);
-      if (P.InpLock1Enable) this.add(close - 9 * MIN + 5000, 'LOCK1', mod, side, lots, r2(entry + dir * g), nsl, tpP, 0, step, `gain ${f2(g)} >= 82% of TP ${f2(tpd)} -> SL ${f2(nsl)} locks about +${f2(tpd * 0.8 * per)} (80%)`);
+      const g = r2(tpd * lock1At + 0.05);
+      const nsl = r2(entry + dir * tpd * lock1To);
+      const a1 = Math.round(lock1At * 100), t1 = Math.round(lock1To * 100);
+      this.add(close - 9 * MIN, 'NEAR1', mod, side, lots, r2(entry + dir * g), slP, tpP, 0, step, `gain ${f2(g)} = ${a1}% of TP ${f2(tpd)} (stage 1 ${P.InpLock1Enable ? 'ON' : 'shadow'})`);
+      if (P.InpLock1Enable) this.add(close - 9 * MIN + 5000, 'LOCK1', mod, side, lots, r2(entry + dir * g), nsl, tpP, 0, step, `gain ${f2(g)} >= ${a1}% of TP ${f2(tpd)} -> SL ${f2(nsl)} locks about +${f2(tpd * lock1To * per)} (${t1}%)`);
       else this.add(close - 9 * MIN + 5000, 'SHADOWLOCK1', mod, side, lots, r2(entry + dir * g), slP, tpP, 0, step, `stage 1 would move SL to ${f2(nsl)} (off)`);
     }
     if (outcome === 'LOCK' || (outcome === 'TP' && r() < 0.5)) {
-      const g = r2(tpd * 0.95 + 0.02);
-      const nsl = r2(entry + dir * tpd * 0.93);
-      this.add(close - 2 * MIN, 'NEARTP', mod, side, lots, r2(entry + dir * g), slP, tpP, 0, step, `gain ${f2(g)} = 95% of TP ${f2(tpd)} (lock ${lockOn ? 'ON' : 'off'})`);
-      if (lockOn) this.add(close - 2 * MIN + 1000, 'LOCK', mod, side, lots, r2(entry + dir * g), nsl, tpP, 0, step, `gain ${f2(g)} >= 95% of TP ${f2(tpd)} -> SL ${f2(nsl)} locks about +${f2(tpd * 0.93 * per)} (93%)`);
+      const g = r2(tpd * lockAt + 0.02);
+      const nsl = r2(entry + dir * tpd * lockTo);
+      const a2 = Math.round(lockAt * 100), t2 = Math.round(lockTo * 100);
+      this.add(close - 2 * MIN, 'NEARTP', mod, side, lots, r2(entry + dir * g), slP, tpP, 0, step, `gain ${f2(g)} = ${a2}% of TP ${f2(tpd)} (lock ${lockOn ? 'ON' : 'off'})`);
+      if (lockOn) this.add(close - 2 * MIN + 1000, 'LOCK', mod, side, lots, r2(entry + dir * g), nsl, tpP, 0, step, `gain ${f2(g)} >= ${a2}% of TP ${f2(tpd)} -> SL ${f2(nsl)} locks about +${f2(tpd * lockTo * per)} (${t2}%)`);
       else this.add(close - 2 * MIN + 1000, 'SHADOWLOCK', mod, side, lots, r2(entry + dir * g), slP, tpP, 0, step, `lock would move SL to ${f2(nsl)} (off)`);
     }
     if (mod === 'C5G' && this.nextId % 23 === 0 && outcome !== 'SL') {
@@ -373,8 +377,13 @@ export function createDemoDb(nowUtc = Date.now()) {
   const nfpFrom = Date.parse(nextTier1.ts_utc) - 30 * MIN, nfpTo = Date.parse(nextTier1.ts_utc) + 90 * MIN;
   const srv = (ms) => tsEa(ms + DEMO_OFFSET_MIN * MIN).slice(0, 16);
 
-  const p1 = { ...templateParams('std-003'), InpRemoteParams: true, InpRemoteLive: true, InpRemoteMaxLots: 0.05, InpRemoteMaxCapPct: 10 };
-  const p2 = { ...templateParams('safe-006') };
+  // Bot 1 "คอมหลัก": EA v3.04 with the SPEC 7.3 values for a 300 balance (the generic Dobby3_v304_web.set).
+  const p1 = { ...autoFromBalance(templateParams('ea-default'), 300), InpRemoteParams: true, InpRemoteLive: true, InpRemoteMaxLots: 0.50, InpRemoteMaxCapPct: 10 };
+  // Bot 2 "DESKTOP-NPNL85P": an older EA v3.03 (web can only pause/resume and set blackouts; settings are read-only).
+  const p2 = {
+    ...templateParams('std-003'), InpLotsA: 0.02, InpLotsNY: 0.02, InpLotsC5G: 0.02, InpMaxLots: 0.02, InpVirtualStart: 200,
+    InpLock1Enable: true, InpLock1AtPct: 82, InpLock1ToPct: 80, InpUseAsia: true, InpLotsAsia: 0.01, InpMaxAttempts: 2,
+  };
   const sim1 = new BotSim({
     id: 'demo-bot-1', seed: 20261107, idBase: 100000, ea: '3.04', remote: true, params: p1, openPosition: true, accountExtra: 0,
     applied: {
@@ -391,19 +400,20 @@ export function createDemoDb(nowUtc = Date.now()) {
     },
   }, nowUtc);
 
-  const limits1 = { allow_remote_control: true, allow_remote_live: true, allow_remote_params: true, max_lots: 0.05, max_daily_cap_pct: 10 };
-  const limits2 = { allow_remote_control: true, allow_remote_live: false, allow_remote_params: false, max_lots: 0.06, max_daily_cap_pct: 10 };
+  // local limits: SPEC 7.3 defaults (max lots = min(0.50, max(0.02, 2 x L)), daily cap 10)
+  const limits1 = { allow_remote_control: true, allow_remote_live: true, allow_remote_params: true, max_lots: 0.06, max_daily_cap_pct: 10 };
+  const limits2 = { allow_remote_control: true, allow_remote_live: false, allow_remote_params: false, max_lots: 0.04, max_daily_cap_pct: 10 };
   const agentState = (v, limits, sim) => ({
     agent_version: '1.0.0', applied_version: v, applied_at: iso(nowUtc - 26 * HOUR), limits, rejected: [], last_error: null,
     ea_heartbeat_age_s: 2, control_file_id: `W${pad3(v)}`, remote_file_version: sim.remote ? v : null,
   });
   const bots = [
     {
-      id: 'demo-bot-1', owner: DEMO_USER.id, name: 'เครื่องหลัก (ตัวอย่าง)', created_at: iso(nowUtc - 21 * DAY), last_seen: iso(nowUtc - 2000),
+      id: 'demo-bot-1', owner: DEMO_USER.id, name: 'คอมหลัก', created_at: iso(nowUtc - 21 * DAY), last_seen: iso(nowUtc - 2000),
       agent_version: '1.0.0', ea_version: '3.04', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN, agent_state: agentState(14, limits1, sim1),
     },
     {
-      id: 'demo-bot-2', owner: DEMO_USER.id, name: 'โน้ตบุ๊กสำรอง (ตัวอย่าง)', created_at: iso(nowUtc - 20 * DAY), last_seen: iso(nowUtc - 4000),
+      id: 'demo-bot-2', owner: DEMO_USER.id, name: 'DESKTOP-NPNL85P', created_at: iso(nowUtc - 20 * DAY), last_seen: iso(nowUtc - 4000),
       agent_version: '1.0.0', ea_version: '3.03', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN, agent_state: agentState(6, limits2, sim2),
     },
   ];
@@ -411,7 +421,7 @@ export function createDemoDb(nowUtc = Date.now()) {
   const control = [
     ctl('demo-bot-1', 14, {
       live: true, control: { mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: '' },
-      blackouts: [{ from_utc: isoUtc(nfpFrom), to_utc: isoUtc(nfpTo), label: nextTier1.name }], params: null,
+      blackouts: [{ from_utc: isoUtc(nfpFrom), to_utc: isoUtc(nfpTo), label: nextTier1.name }], params: remoteSubset(normalizeParams(p1)),
     }, 26 * HOUR),
     ctl('demo-bot-2', 6, {
       live: false, control: { mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: 'พักไว้ก่อน' },
@@ -436,26 +446,27 @@ export function createDemoDb(nowUtc = Date.now()) {
   ];
 
   const presets = [
-    { id: 'demo-preset-1', owner: DEMO_USER.id, name: 'เครื่องหลัก มาตรฐาน 0.03', params: { ...templateParams('std-003') }, notes: 'ตรงกับที่รันอยู่บนเครื่องหลัก', created_at: iso(nowUtc - 20 * DAY), updated_at: iso(nowUtc - 3 * DAY) },
-    { id: 'demo-preset-2', owner: DEMO_USER.id, name: 'ทดลอง 0.04 ล็อกขั้น 1', params: { ...templateParams('std-003'), InpLotsA: 0.04, InpLotsNY: 0.04, InpLotsC5G: 0.04, InpMaxLots: 0.04, InpLock1Enable: true, InpRemoteMaxLots: 0.05 }, notes: 'ลองใน Strategy Tester ก่อนใช้จริง', created_at: iso(nowUtc - 6 * DAY), updated_at: iso(nowUtc - 6 * DAY) },
+    { id: 'demo-preset-1', owner: DEMO_USER.id, name: 'คอมหลัก ทุน 300 (ค่าอัตโนมัติ)', params: { ...p1 }, notes: 'ตรงกับที่รันอยู่บนคอมหลัก', created_at: iso(nowUtc - 20 * DAY), updated_at: iso(nowUtc - 3 * DAY) },
+    { id: 'demo-preset-2', owner: DEMO_USER.id, name: 'ทดลอง 0.04 ล็อก 1 ชั้น', params: { ...templateParams('std-003'), InpLotsA: 0.04, InpLotsNY: 0.04, InpLotsC5G: 0.04, InpMaxLots: 0.04, InpVirtualStart: 400, InpRemoteMaxLots: 0.05 }, notes: 'ลองใน Strategy Tester ก่อนใช้จริง', created_at: iso(nowUtc - 6 * DAY), updated_at: iso(nowUtc - 6 * DAY) },
   ];
 
   const d14 = control[0].desired;
   const audit = [
     { ts: iso(nowUtc - 26 * HOUR), actor: DEMO_USER.id, bot_id: 'demo-bot-1', action: 'control', before: { ...d14, blackouts: [] }, after: d14 },
     { ts: iso(nowUtc - 50 * HOUR), actor: DEMO_USER.id, bot_id: 'demo-bot-2', action: 'control', before: { ...control[1].desired, live: true, control: { ...control[1].desired.control, note: '' } }, after: control[1].desired },
-    { ts: iso(nowUtc - 3 * DAY), actor: DEMO_USER.id, bot_id: null, action: 'preset_update', before: { name: 'เครื่องหลัก มาตรฐาน 0.03', notes: '' }, after: { name: 'เครื่องหลัก มาตรฐาน 0.03', notes: 'ตรงกับที่รันอยู่บนเครื่องหลัก' } },
+    { ts: iso(nowUtc - 3 * DAY), actor: DEMO_USER.id, bot_id: null, action: 'preset_update', before: { name: 'คอมหลัก ทุน 300 (ค่าอัตโนมัติ)', notes: '' }, after: { name: 'คอมหลัก ทุน 300 (ค่าอัตโนมัติ)', notes: 'ตรงกับที่รันอยู่บนคอมหลัก' } },
     { ts: iso(nowUtc - 4 * DAY), actor: DEMO_USER.id, bot_id: 'demo-bot-1', action: 'control', before: { ...d14, control: { ...d14.control, mode: 'pause' }, blackouts: [] }, after: { ...d14, blackouts: [] } },
     { ts: iso(nowUtc - 4 * DAY - 3 * HOUR), actor: DEMO_USER.id, bot_id: 'demo-bot-1', action: 'control', before: { ...d14, blackouts: [] }, after: { ...d14, control: { ...d14.control, mode: 'pause', note: 'ข่าวแรง พักก่อน' }, blackouts: [] } },
     { ts: iso(nowUtc - 5 * DAY), actor: DEMO_USER.id, bot_id: null, action: 'admin_revoke_invite', before: { code: 'RVK9P6LGEZ', revoked: false }, after: { code: 'RVK9P6LGEZ', revoked: true } },
-    { ts: iso(nowUtc - 6 * DAY), actor: DEMO_USER.id, bot_id: null, action: 'preset_insert', before: null, after: { name: 'ทดลอง 0.04 ล็อกขั้น 1' } },
+    { ts: iso(nowUtc - 6 * DAY), actor: DEMO_USER.id, bot_id: null, action: 'preset_insert', before: null, after: { name: 'ทดลอง 0.04 ล็อก 1 ชั้น' } },
     { ts: iso(nowUtc - 12 * DAY), actor: 'demo-nok', bot_id: null, action: 'invite_redeem', before: { approved: false }, after: { approved: true, role: 'member' } },
     { ts: iso(nowUtc - 21 * DAY), actor: DEMO_USER.id, bot_id: 'demo-bot-1', action: 'control', before: null, after: { ...d14, blackouts: [] } },
   ].sort((a, b) => b.ts.localeCompare(a.ts)).map((a, i) => ({ id: 900 - i, ...a }));
 
   const downloads = [
     { name: 'Dobby3_v304.ex5', size: 214532, updated_at: iso(nowUtc - 2 * DAY) },
-    { name: 'Dobby3_standard_0.03.set', size: 6114, updated_at: iso(nowUtc - 2 * DAY) },
+    { name: 'DobbyApp.exe', size: 18874368, updated_at: iso(nowUtc - 2 * DAY) },
+    { name: 'Dobby3_v304_web.set', size: 6114, updated_at: iso(nowUtc - 2 * DAY) },
     { name: 'dobby_agent.zip', size: 18240, updated_at: iso(nowUtc - 2 * DAY) },
   ];
 

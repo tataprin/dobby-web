@@ -14,6 +14,7 @@ the local limits in agent_config.json. It never trades, never imports MetaTrader
   python dobby_agent.py run [--once] [--dry-run]    the loop (Ctrl+C stops it)
   python dobby_agent.py status                      config (secrets hidden), limits, applied version, EA heartbeat
   python dobby_agent.py test-telegram               send a test message
+  python dobby_agent.py rename --name "คอมหลัก"      fix the bot name stored on this PC (also --name-file, --from-web)
 
 Quick stop of remote control:  python dobby_agent.py limits --allow-control off
 One agent per MT5: `run` and the Dobby App (dobby_app.py) both hold Common\\Files\\Dobby\\dobby_agent.lock.
@@ -2577,6 +2578,114 @@ def cmd_test_telegram(args, rt):
     return EXIT_OK if ok else EXIT_CRASH
 
 
+_THAI = re.compile("[฀-๿]")
+
+
+def clean_bot_name(name):
+    """NFC, single spaces, at most 100 characters (the website's limit)."""
+    import unicodedata
+    return " ".join(unicodedata.normalize("NFC", str(name or "")).split())[:100]
+
+
+def repair_mojibake(name):
+    """Thai typed into a console with the wrong code page arrives as UTF-8 bytes read as cp1252 / cp874 / latin-1
+    (e.g. 'à¸„à¸­à¸¡'). Undo that when the result is clean UTF-8 Thai; otherwise return the name unchanged."""
+    for enc in ("cp1252", "latin-1", "cp874"):
+        try:
+            fixed = name.encode(enc).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if fixed != name and _THAI.search(fixed) and "�" not in fixed:
+            return fixed
+    return name
+
+
+def read_name_file(path):
+    """The first non-empty line of a text file (Notepad: UTF-8 with/without BOM, UTF-16, or Thai ANSI cp874)."""
+    with open(path, "rb") as f:
+        data = f.read(8192)
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = data.decode("utf-16")
+    elif data[:3] == b"\xef\xbb\xbf":
+        text = data[3:].decode("utf-8", "replace")
+    else:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("cp874", "replace")
+    for ln in text.splitlines():
+        if ln.strip():
+            return ln.strip()
+    return ""
+
+
+def name_problem(name):
+    """Thai reason why a name cannot be stored (mangled by a console), or None."""
+    if not name:
+        return "ชื่อว่าง"
+    if "�" in name or "?" in name:
+        return "ชื่อมีตัวอักษรที่อ่านไม่ได้ ('?'): หน้าต่างคำสั่งแปลงภาษาไทยผิด"
+    if any(0xD800 <= ord(c) <= 0xDFFF or ord(c) < 32 for c in name):
+        return "ชื่อมีตัวอักษรที่อ่านไม่ได้"
+    return None
+
+
+def unicode_escape(name):
+    return name.encode("unicode_escape").decode("ascii")
+
+
+def cmd_rename(args, rt):
+    """Fix the bot name stored on this PC (agent_config.json bot_name), e.g. "คอมหลก" -> "คอมหลัก".
+    Unicode-safe sources: --name (the wide Windows command line), --name-file (a text file, any Notepad encoding),
+    --from-web (the name of this bot on the website). The website's name is not changed."""
+    path = _cfg_path(rt)
+    cfg = load_config(path)
+    given = [x for x in (args.name is not None, bool(args.name_file), bool(args.from_web)) if x]
+    if len(given) > 1:
+        rt.out("ใช้ได้ทีละแบบ: --name หรือ --name-file หรือ --from-web")
+        return EXIT_CONFIG
+    if args.from_web:
+        if not _need(cfg, rt, ["supabase_url", "anon_key", "refresh_token", "bot_id"]):
+            return EXIT_CONFIG
+        try:
+            rows = _make_client(cfg, rt).select("bots", {"id": "eq." + cfg["bot_id"], "select": "name"})
+        except AuthError as e:
+            rt.out("เข้าสู่ระบบไม่ได้ (%s): รัน login ใหม่" % redact(str(e)))
+            return EXIT_CONFIG
+        except (ApiError, NetworkError) as e:
+            rt.out("อ่านชื่อจากเว็บไม่ได้: %s" % redact(str(e)))
+            return EXIT_CRASH
+        if not rows or not isinstance(rows[0], dict) or not rows[0].get("name"):
+            rt.out("ไม่พบบอทนี้บนเว็บ (id %s)" % cfg["bot_id"])
+            return EXIT_CONFIG
+        raw, source = rows[0]["name"], "เว็บ"
+    elif args.name_file:
+        try:
+            raw, source = read_name_file(args.name_file), "ไฟล์ %s" % args.name_file
+        except OSError as e:
+            rt.out("อ่านไฟล์ไม่ได้: %s" % e)
+            return EXIT_CONFIG
+    elif args.name is not None:
+        raw, source = args.name, "--name"
+    else:
+        raw, source = rt.input("ชื่อบอทใหม่ (ภาษาไทยได้): "), "พิมพ์"
+    name = clean_bot_name(repair_mojibake(raw or ""))
+    problem = name_problem(name)
+    if problem:
+        rt.out("ไม่ได้เปลี่ยนชื่อ: %s" % problem)
+        rt.out("  ที่ได้รับ: %s" % unicode_escape(raw or ""))
+        rt.out("  ทางเลือก: เขียนชื่อในไฟล์ (Notepad) แล้วใช้  rename --name-file name.txt  หรือใช้ชื่อบนเว็บ  rename --from-web")
+        return EXIT_CONFIG
+    old = cfg.get("bot_name") or ""
+    update_config(path, lambda c: c.__setitem__("bot_name", name))
+    rt.out("เปลี่ยนชื่อบอทในเครื่องนี้แล้ว (จาก%s): %s -> %s" % (source, old or "-", name))
+    rt.out("  ตรวจตัวอักษร: %s" % unicode_escape(name))
+    if name != (raw or "").strip():
+        rt.out("  (ปรับให้ถูกต้องจาก: %s)" % unicode_escape(raw or ""))
+    rt.out("  ชื่อบนเว็บไม่เปลี่ยน agent ที่กำลังรันจะใช้ชื่อใหม่ในรอบถัดไป")
+    return EXIT_OK
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="dobby_agent.py", description="Dobby Web PC agent %s" % AGENT_VERSION,
                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__.split("\n\n")[1])
@@ -2607,11 +2716,15 @@ def build_parser():
     lm.add_argument("--max-lots", type=float)
     lm.add_argument("--max-cap", type=float)
     sub.add_parser("test-telegram", help="send a Telegram test message")
+    rr = sub.add_parser("rename", help="fix the bot name stored on this PC (Unicode-safe; the website is not changed)")
+    rr.add_argument("--name", help="the new name (Thai is fine)")
+    rr.add_argument("--name-file", help="read the name from a text file (UTF-8 / UTF-16 / Thai ANSI)")
+    rr.add_argument("--from-web", action="store_true", help="use this bot's name on the website")
     return p
 
 
 COMMANDS = {"setup": cmd_setup, "login": cmd_login, "register": cmd_register, "run": cmd_run, "status": cmd_status,
-            "limits": cmd_limits, "test-telegram": cmd_test_telegram}
+            "limits": cmd_limits, "test-telegram": cmd_test_telegram, "rename": cmd_rename}
 
 
 def _safe_console():

@@ -1,19 +1,37 @@
 // Downloads (private bucket `downloads`) and the Thai step-by-step setup guide for a friend's PC.
-import { h, icon, fmtBytes, fmtThai, toast, errText, confirmDialog, errorState, loadingState, busy, copyButton, callout, newId } from '../util.js';
+import { h, mount, icon, fmtBytes, fmtThai, toast, errText, confirmDialog, errorState, loadingState, busy, copyButton, callout, newId } from '../util.js';
 import { app, isAdmin } from '../state.js';
 import { cmdBlock } from '../botctl.js';
 import { panel, pageHead } from '../views.js';
 
 export async function render(root, ctx) {
-  root.append(pageHead('ดาวน์โหลดและติดตั้ง', 'ทุกอย่างที่ต้องใช้เพื่อให้บอทบนคอมพิวเตอร์ของคุณขึ้นที่เว็บนี้'));
+  root.append(pageHead('ดาวน์โหลดแอป', 'โหลดแอป Dobby ไปเปิดที่คอม Windows ที่ใช้ MT5 ทำตามตัวช่วยครั้งเดียว แล้วใช้เว็บนี้ได้เลย', null, 'start'));
+  const heroBox = h('div');
   const filesBox = h('div');
-  root.append(filesBox, guide(ctx), advancedGuide(ctx));
+  root.append(heroBox, guide(ctx), filesBox, advancedGuide(ctx));
   filesBox.append(panel('ไฟล์', {}, loadingState()));
   let files = [];
   const load = async () => { files = await ctx.api.listDownloads(); };
 
   async function draw() {
-    try { await load(); } catch (e) { filesBox.replaceChildren(panel('ไฟล์', {}, errorState(e, () => draw()))); return; }
+    try { await load(); } catch (e) { mount(filesBox, panel('ไฟล์', {}, errorState(e, () => draw()))); return; }
+    const appFile = files.find((f) => /^dobbyapp.*\.exe$/i.test(f.name));
+    const fetchFile = async (f, btn) => {
+      busy(btn, true);
+      try {
+        const url = await ctx.api.downloadUrl(f.name);
+        if (!url) toast('โหมดตัวอย่าง: ไม่มีไฟล์จริงให้ดาวน์โหลด', 'info');
+        else { const a = h('a', { href: url, download: f.name, rel: 'noopener' }); document.body.append(a); a.click(); a.remove(); }
+      } catch (ex) { toast(errText(ex), 'error'); }
+      busy(btn, false);
+    };
+    mount(heroBox, h('section', { class: 'dl-hero' },
+      h('div', { class: 'dl-hero-ico', 'aria-hidden': 'true' }, icon('monitor')),
+      h('div', { class: 'grow' },
+        h('h2', null, 'แอป Dobby สำหรับ Windows'),
+        h('p', { class: 'muted' }, appFile ? `${appFile.name} · ${fmtBytes(appFile.size)} · ไฟล์เดียว ไม่ต้องติดตั้ง` : 'ผู้ดูแลยังไม่ได้อัปโหลดไฟล์แอป'),
+        h('p', { class: 'small muted' }, 'ครั้งแรก Windows อาจเตือน "Windows protected your PC" กด More info แล้ว Run anyway ', h('a', { href: '#/guide/windows' }, 'ดูรูป'))),
+      appFile ? h('button', { class: 'btn primary big', type: 'button', onclick: (e) => fetchFile(appFile, e.currentTarget) }, icon('download'), 'ดาวน์โหลดแอป') : null));
     const up = h('input', { type: 'file', class: 'sr-only', id: newId('up') });
     up.addEventListener('change', async () => {
       const f = up.files[0];
@@ -26,8 +44,8 @@ export async function render(root, ctx) {
       toast(`กำลังอัปโหลด ${f.name}…`);
       try { await ctx.api.uploadDownload(f); toast(`อัปโหลด ${f.name} แล้ว`, 'good'); draw(); } catch (e) { toast(errText(e), 'error', 6000); }
     });
-    filesBox.replaceChildren(panel('ไฟล์', {
-      sub: 'ไฟล์ EA (.ex5) และพรีเซ็ตจากผู้ดูแล ดาวน์โหลดได้เฉพาะสมาชิกที่ได้รับอนุมัติ',
+    mount(filesBox, panel('ไฟล์ทั้งหมด', {
+      sub: 'แอป ไฟล์ EA (.ex5) และพรีเซ็ต (.set) จากผู้ดูแล ดาวน์โหลดได้เฉพาะสมาชิกที่ได้รับอนุมัติ',
       actions: isAdmin() ? h('label', { class: 'btn small', for: up.id, tabindex: '0', onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); up.click(); } } }, icon('upload'), 'อัปโหลดไฟล์') : null,
     },
     isAdmin() ? up : null,
@@ -35,18 +53,7 @@ export async function render(root, ctx) {
       h('div', { class: 'grow' }, h('p', { class: 'file-name' }, f.name,
         /^dobbyapp.*\.exe$/i.test(f.name) ? [' ', h('span', { class: 'chip good' }, 'แอป Dobby: เริ่มที่นี่')] : null),
         h('p', { class: 'muted small' }, [f.size != null ? fmtBytes(f.size) : null, f.updated_at ? `อัปเดต ${fmtThai(Date.parse(f.updated_at), 'date')}` : null].filter(Boolean).join(', '))),
-      h('button', {
-        class: 'btn small', type: 'button',
-        onclick: async (e) => {
-          busy(e.currentTarget, true);
-          try {
-            const url = await ctx.api.downloadUrl(f.name);
-            if (!url) toast('โหมดตัวอย่าง: ไม่มีไฟล์จริงให้ดาวน์โหลด', 'info');
-            else { const a = h('a', { href: url, download: f.name, rel: 'noopener' }); document.body.append(a); a.click(); a.remove(); }
-          } catch (ex) { toast(errText(ex), 'error'); }
-          busy(e.currentTarget, false);
-        },
-      }, icon('download'), 'ดาวน์โหลด'),
+      h('button', { class: 'btn small', type: 'button', onclick: (e) => fetchFile(f, e.currentTarget) }, icon('download'), 'ดาวน์โหลด'),
       isAdmin() ? h('button', {
         class: 'icon-btn', type: 'button', 'aria-label': `ลบ ${f.name}`,
         onclick: async () => {
@@ -71,7 +78,7 @@ function guide(ctx) {
         h('p', null, 'ดาวน์โหลด MT5 จากเว็บโบรกเกอร์ของคุณ ติดตั้ง แล้วล็อกอินบัญชีเทรด (File แล้ว Login to Trade Account)'),
         h('p', { class: 'muted small' }, 'แนะนำให้ลองกับบัญชีทดลอง (Demo) ก่อน แล้วค่อยใช้บัญชีจริง')),
       step('ดาวน์โหลดแอป Dobby',
-        h('p', null, 'กดดาวน์โหลดไฟล์ ', h('code', null, 'DobbyApp.exe'), ' จากรายการไฟล์ด้านบน (ไฟล์เดียว ไม่ต้องติดตั้ง) เก็บไว้ที่ไหนก็ได้ เช่น บนเดสก์ท็อป')),
+        h('p', null, 'กดปุ่ม "ดาวน์โหลดแอป" ด้านบน (ไฟล์ ', h('code', null, 'DobbyApp.exe'), ' ไฟล์เดียว ไม่ต้องติดตั้ง) เก็บไว้ที่ไหนก็ได้ เช่น บนเดสก์ท็อป')),
       step('เปิดแอป (ครั้งแรก Windows อาจเตือน)',
         h('p', null, 'ดับเบิลคลิก ', h('code', null, 'DobbyApp.exe'), ' ถ้าขึ้นหน้าจอสีฟ้า ', h('strong', null, '"Windows protected your PC"'),
           ' (Windows ป้องกันพีซีของคุณ) เป็นเพราะแอปยังไม่ได้ลงลายเซ็นดิจิทัล (code signing) ไม่ใช่ไวรัส:'),
@@ -82,20 +89,20 @@ function guide(ctx) {
       step('ทำตามตัวช่วยตั้งค่าในแอป',
         h('ul', null,
           h('li', null, h('strong', null, 'เข้าสู่ระบบ'), ' ด้วยอีเมลและรหัสผ่านเดียวกับเว็บนี้ (แอปเก็บแค่ token ไม่เก็บรหัสผ่าน)'),
-          h('li', null, h('strong', null, 'เลือก MT5'), ' ที่ล็อกอินบัญชีที่จะให้ Dobby เทรด'),
-          h('li', null, h('strong', null, 'ติดตั้ง EA'), ': แอปคัดลอก ', h('code', null, 'Dobby3_v304.ex5'), ' และพรีเซ็ต .set จากรายการด้านบนไปไว้ใน MT5 ให้เอง'),
-          h('li', null, h('strong', null, 'ตั้งชื่อเครื่อง'), ' (ชื่อจะขึ้นที่เว็บ) หรือเลือกบอทเดิมของคุณ'),
-          h('li', null, h('strong', null, 'ความปลอดภัย'), ': ค่าเริ่มต้นปลอดภัย เว็บสั่งหยุด/ทำงานต่อได้ แต่เปิดเทรดจริงและส่งพรีเซ็ตไม่ได้ จนกว่าคุณจะติ๊กอนุญาตในแอป'))),
-      step('ใน MT5: ติด EA ใส่กราฟ (ครั้งเดียว)',
+          h('li', null, h('strong', null, 'เลือกบอท'), ': กด "ใช้ Dobby" (ถ้าเคยมีบอทบนเว็บแล้ว เลือกบอทเดิมได้ จะไม่สร้างซ้ำ)'),
+          h('li', null, h('strong', null, 'ตั้งค่าบอท'), ': ใส่เงินในบัญชีเทรด แล้วกด "ตั้งให้อัตโนมัติ" (เช่น 300 USD = ล็อต 0.03) หรือกด "ปรับเอง"'),
+          h('li', null, h('strong', null, 'เชื่อม MT5'), ': แอปติดตั้ง EA กับพรีเซ็ตให้เอง แล้วกด "เปิด MT5 พร้อม Dobby" (ต้องปิด MT5 ก่อน) หรือเลือก "ทำเองใน MT5" ตามขั้นด้านล่าง'),
+          h('li', null, h('strong', null, 'ความปลอดภัย'), ': แนะนำ "ให้เว็บควบคุมได้ทุกอย่าง" จะได้เปลี่ยนค่าและเปิด/ปิดเทรดจริงจากเว็บได้'),
+          h('li', null, h('strong', null, 'เสร็จแล้ว'), ' → กด "เริ่มทำงาน Dobby" จบ เปิดคอมกับ MT5 ทิ้งไว้'))),
+      step('ถ้าเลือก "ทำเองใน MT5": ติด EA ใส่กราฟ (ครั้งเดียว)',
         h('ul', null,
           h('li', null, 'กด Ctrl+N เปิดหน้าต่าง Navigator คลิกขวาที่ Expert Advisors แล้วกด ', h('strong', null, 'Refresh')),
           h('li', null, 'เปิดกราฟทอง ', h('strong', null, 'XAUUSD กรอบเวลา M15'), ' (หรือชื่อที่โบรกใช้ เช่น XAUUSD.f) ใช้กราฟเดียวเท่านั้น'),
           h('li', null, 'ลาก ', h('strong', null, 'Dobby3_v304'), ' จาก Navigator ไปวางบนกราฟ'),
-          h('li', null, 'แท็บ Inputs: กด ', h('strong', null, 'Load'), ' แล้วเลือกไฟล์ .set (บัญชีจริงต้องมี ', h('code', null, 'InpAllowLive = true'),
-            ' หรือ v3.04 ตั้ง ', h('code', null, 'InpRemoteLive = true'), ' เพื่อให้เว็บเปิด/ปิดได้)'),
+          h('li', null, 'แท็บ Inputs: กด ', h('strong', null, 'Load'), ' แล้วเลือกไฟล์ ', h('code', null, 'Dobby3_v304_web.set'), ' (แอปใส่ไว้ในโฟลเดอร์พรีเซ็ตให้แล้ว)'),
           h('li', null, 'แท็บ Common: ติ๊ก ', h('strong', null, 'Allow Algo Trading'), ' แล้วกด OK'),
           h('li', null, 'กดปุ่ม ', h('strong', null, 'Algo Trading'), ' บนแถบเครื่องมือด้านบนของ MT5 ให้เป็นสีเขียว')),
-        h('p', { class: 'muted small' }, 'แอปไม่เปิด MT5 และไม่แตะการตั้งค่าใน MT5 เอง ขั้นนี้จึงต้องทำด้วยมือครั้งเดียว หน้าแรกของแอปมีขั้นตอนนี้ให้ดูด้วย')),
+        h('p', { class: 'muted small' }, 'ขั้นนี้ทำเฉพาะเมื่อไม่ได้ใช้ปุ่ม "เปิด MT5 พร้อม Dobby" ในแอป หน้าหลักของแอปมีขั้นตอนนี้ให้ดูด้วย')),
       step('กด "เริ่มทำงาน Dobby"',
         h('p', null, 'รายการ ', h('strong', null, 'ความพร้อม'), ' ในแอปต้องเป็นเครื่องหมายถูกสีเขียว: เข้าสู่ระบบ, เชื่อมเครื่อง, EA ทำงาน, Algo Trading, เทรดได้, รับคำสั่งจากเว็บ'),
         h('p', null, 'ภายในหนึ่งนาที เปิด ', h('a', { href: '#/dashboard' }, 'ภาพรวม'), ' จะเห็นยอดเงินและป้าย "ออนไลน์"'),

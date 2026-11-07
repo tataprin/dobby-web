@@ -10,7 +10,7 @@ const TIER = { 1: ['สำคัญมาก', 'tier1'], 2: ['สำคัญ', 
 
 export async function render(root, ctx) {
   const bot = currentBot();
-  root.append(pageHead('ข่าว', 'ข่าวเศรษฐกิจที่มีผลกับราคาทอง เวลาไทย'));
+  root.append(pageHead('ข่าว', 'ข่าวเศรษฐกิจที่มีผลกับราคาทอง (เวลาไทย) กดปุ่มข้างข่าวเพื่อให้บอทงดเข้าไม้ช่วงนั้น', null, 'news'));
   const ctrlBox = h('div'), listBox = h('div'), adminBox = h('div');
   root.append(ctrlBox, listBox, adminBox);
   listBox.append(loadingState());

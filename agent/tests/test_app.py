@@ -512,9 +512,32 @@ def test_png_and_icon_writer(tmp_path):
     assert open(p, "rb").read(4) == b"\x00\x00\x01\x00"
 
 
-def test_app_never_talks_to_mt5():
+def test_app_never_talks_to_mt5_and_starts_it_in_one_place_only():
+    """No MetaTrader5 package; the only process start is core.real_launch (the confirmed "open MT5 with Dobby")."""
+    import ast
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for name in ("dobby_app.py", "dobby_app_core.py"):
+    for name in ("dobby_app.py", "dobby_app_core.py", "dobby_app_ui.py", "dobby_app_gfx.py"):
         src = open(os.path.join(here, name), encoding="utf-8").read()
-        assert "MetaTrader5" not in src and "import subprocess" not in src and "Popen" not in src
-        assert "terminal64" not in src.lower()
+        assert "MetaTrader5" not in src.replace("never imports the MT5 Python package", "")
+        assert "os.system" not in src and "os.popen" not in src
+        if name != "dobby_app_core.py":            # core: os.startfile only opens a folder / the log in Explorer
+            assert "startfile" not in src
+        tree = ast.parse(src)
+        users = set()
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.ClassDef)):
+                for node in ast.walk(fn):
+                    if isinstance(node, (ast.Import, ast.ImportFrom)):
+                        mods = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module]
+                        if "subprocess" in mods:
+                            users.add(fn.name)
+        top = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom)) and "subprocess" in (
+            [a.name for a in n.names] if isinstance(n, ast.Import) else [n.module])]
+        assert not top, "%s imports subprocess at module level" % name
+        assert users == ({"real_launch"} if name == "dobby_app_core.py" else set()), (name, users)
+        if name != "dobby_app_core.py":
+            assert "Popen" not in src and "real_launch" not in src     # the UI only goes through ctx.launch
+        if name in ("dobby_app_ui.py", "dobby_app_gfx.py"):
+            assert "terminal64" not in src.lower()
+    core_src = open(os.path.join(here, "dobby_app_core.py"), encoding="utf-8").read()
+    assert core_src.count("Popen(") == 1 and core_src.count('TERMINAL_EXE = "terminal64.exe"') == 1

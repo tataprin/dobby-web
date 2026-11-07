@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
-"""The commands: setup, login, register, limits, status, run, test-telegram (all offline)."""
+"""The commands: setup, login, register, limits, status, run, test-telegram, rename (all offline)."""
 import json
 import os
+
+import pytest
 
 import dobby_agent as da
 from conftest import BOT, EMAIL, KEY, PASSWORD, URL, Env
@@ -221,6 +223,70 @@ def test_test_telegram(tmp_path):
                                                     % da.AGENT_VERSION]
     da.update_config(e.cfg_path, lambda c: c["telegram"].update({"token": ""}))
     assert run(e, ["test-telegram"])[0] == da.EXIT_CONFIG
+
+
+MAIN = "คอมหลัก"          # the owner's bot; a console that drops the mark stores "คอมหลก"
+
+
+def test_rename_with_name_fixes_a_mangled_local_name(tmp_path):
+    e = Env(tmp_path)
+    da.update_config(e.cfg_path, lambda c: c.__setitem__("bot_name", "คอมหลก"))
+    before = e.config()
+    code, out, _ = run(e, ["rename", "--name", "  " + MAIN + "  "])
+    assert code == 0 and e.config()["bot_name"] == MAIN
+    assert "\\u0e04\\u0e2d\\u0e21\\u0e2b\\u0e25\\u0e31\\u0e01" in out.text          # code points shown to check
+    after = e.config()
+    assert dict(after, bot_name=None) == dict(before, bot_name=None)                   # nothing else touched
+    assert e.fake.calls == []                                                          # local only, no network
+    assert run(e, ["rename", "--name", MAIN + "   PC"])[0] == 0 and e.config()["bot_name"] == MAIN + " PC"
+    assert run(e, ["rename", "--name", "Café  2"])[0] == 0 and e.config()["bot_name"] == "Café 2"   # NFC
+
+
+def test_rename_refuses_names_a_console_mangled(tmp_path):
+    e = Env(tmp_path)
+    for bad in ("???????", "คอม?หลัก", "��", "", "   "):
+        code, out, _ = run(e, ["rename", "--name", bad])
+        assert code == da.EXIT_CONFIG and e.config()["bot_name"] == "Main PC", bad
+    assert "--name-file" in out.text and "--from-web" in out.text
+    assert run(e, ["rename", "--name", "x", "--from-web"])[0] == da.EXIT_CONFIG
+
+
+def test_rename_repairs_utf8_read_with_the_wrong_code_page(tmp_path):
+    e = Env(tmp_path)
+    for enc in ("latin-1", "cp874"):
+        moj = MAIN.encode("utf-8").decode(enc, "ignore") if enc == "cp874" else MAIN.encode("utf-8").decode(enc)
+        if da.repair_mojibake(moj) != MAIN:          # cp874 cannot always carry every byte: only check what it can
+            continue
+        code, out, _ = run(e, ["rename", "--name", moj])
+        assert code == 0 and e.config()["bot_name"] == MAIN, enc
+    assert da.repair_mojibake("Main PC") == "Main PC" and da.repair_mojibake(MAIN) == MAIN
+    assert da.repair_mojibake("café") == "café"
+
+
+@pytest.mark.parametrize("encoding,bom", [("utf-8", b""), ("utf-8", b"\xef\xbb\xbf"), ("utf-16-le", b"\xff\xfe"),
+                                          ("cp874", b"")])
+def test_rename_from_a_text_file(tmp_path, encoding, bom):
+    e = Env(tmp_path)
+    p = str(tmp_path / "name.txt")
+    with open(p, "wb") as f:
+        f.write(bom + ("\r\n" + MAIN + "\r\nignored\r\n").encode(encoding))
+    code, out, _ = run(e, ["rename", "--name-file", p])
+    assert code == 0 and e.config()["bot_name"] == MAIN
+    assert run(e, ["rename", "--name-file", str(tmp_path / "missing.txt")])[0] == da.EXIT_CONFIG
+
+
+def test_rename_from_the_website_and_interactive(tmp_path):
+    e = Env(tmp_path)
+    code, out, _ = run(e, ["rename", "--from-web"])
+    assert code == 0 and e.config()["bot_name"] == MAIN
+    get = [c for c in e.fake.rest_calls("GET") if c["url"].endswith("/rest/v1/bots")]
+    assert get and get[0]["params"] == {"id": "eq." + BOT, "select": "name"}
+    e.fake.web_name = ""
+    assert run(e, ["rename", "--from-web"])[0] == da.EXIT_CONFIG
+    da.update_config(e.cfg_path, lambda c: c.__setitem__("refresh_token", ""))
+    assert run(e, ["rename", "--from-web"])[0] == da.EXIT_CONFIG and e.config()["bot_name"] == MAIN
+    code, out, prompts = run(e, ["rename"], inputs=["คอมที่ทำงาน"])
+    assert code == 0 and e.config()["bot_name"] == "คอมที่ทำงาน" and "ชื่อบอทใหม่" in prompts[0]
 
 
 def test_no_metatrader_import_and_version():

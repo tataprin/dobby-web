@@ -1,7 +1,7 @@
 // Shared bot helpers: desired-state JSON, online/pending state, agent rejections, effective EA state.
 import { app, emit } from './state.js';
 import { ApiError } from './api.js';
-import { h, icon, agoSeconds, copyButton, serverToUtc, callout } from './util.js';
+import { h, icon, agoSeconds, copyButton, serverToUtc, callout, fmtThai } from './util.js';
 
 // desired JSON (bot_control.desired), as written by this website:
 // { live: bool,
@@ -190,6 +190,61 @@ export function activeBlackout(st, offsetMin) {
     if (from <= now && now < to) return { from, to };
   }
   return null;
+}
+
+// The dashboard hero: one big plain-Thai status and one sentence why.
+// tone: live | good | paused | warn | critical | off
+export function heroState(bot, st, ctl) {
+  const info = onlineInfo(bot, st);
+  const name = bot ? bot.name : 'เครื่อง';
+  if (!info.agentOnline) {
+    if (!Number.isFinite(info.seenAge)) {
+      return { tone: 'off', title: 'ยังไม่เชื่อมต่อ', text: `เครื่อง ${name} ยังไม่เคยส่งข้อมูล เปิดแอป Dobby ที่เครื่องนั้นแล้วกด "เริ่มทำงาน"`, help: 'offline' };
+    }
+    return { tone: 'off', title: 'ออฟไลน์', text: `เครื่อง ${name} ไม่ได้ส่งข้อมูลมา ${agoSeconds(Math.round(info.seenAge))} ตรวจว่าคอมเปิดอยู่ ต่ออินเทอร์เน็ต และแอป Dobby ยังทำงาน (EA ใน MT5 อาจยังเทรดอยู่)`, help: 'offline' };
+  }
+  if (!info.eaOnline) {
+    return { tone: 'warn', title: 'MT5 ไม่ตอบ', text: `แอป Dobby ทำงาน แต่ EA ใน MT5 ไม่ได้อัปเดตมา ${Number.isFinite(info.hbAge) ? agoSeconds(Math.round(info.hbAge)) : 'นาน'} ตรวจว่า MT5 เปิดอยู่และ EA ติดกราฟ XAUUSD M15`, help: 'offline' };
+  }
+  const eff = effectiveState(st, bot, ctl);
+  const acc = (st && st.account) || {};
+  if (eff.tone === 'good') {
+    const real = acc.mode === 'REAL';
+    return { tone: 'live', title: real ? 'บอทกำลังเทรดจริง' : 'บอทกำลังทำงาน (บัญชีทดลอง)', text: eff.text, live: true };
+  }
+  if (eff.tone === 'paused') return { tone: 'paused', title: 'หยุดอยู่', text: `${eff.label}: ${eff.text}` };
+  if (eff.tone === 'off') return { tone: 'off', title: 'ยังไม่มีสถานะ', text: eff.text, help: 'offline' };
+  return { tone: eff.tone, title: eff.label, text: eff.text };
+}
+
+// SPEC 7.4: ส่งแล้ว -> เครื่องรับแล้ว (agent_state.applied_version) -> EA ใช้ค่าใหม่แล้ว (status.remote).
+const PARAM_REJECT = /param|lots_over|cap_over|ea_v304|unknown_key|out_of_bounds/;
+export function applyProgress(bot, ctl, st, matches) {
+  const d = normDesired(ctl && ctl.desired);
+  if (!ctl || !d.params) return null;
+  const info = onlineInfo(bot, st);
+  const as = (bot && bot.agent_state) || {};
+  const rej = (Array.isArray(as.rejected) ? as.rejected : as.rejected ? [as.rejected] : [])
+    .map((r) => (typeof r === 'string' ? r : (r && (r.code || r.reason)) || '')).filter((c) => PARAM_REJECT.test(c));
+  const got = appliedVersion(bot) >= ctl.version;
+  const r = st && st.remote;
+  const s1 = { label: 'ส่งแล้ว', state: 'done', note: ctl.updated_at ? fmtThai(Date.parse(ctl.updated_at), 'time') + ' น.' : '' };
+  let s2, s3;
+  // the EA already runs these values: the PC got them (a later pause/blackout may have bumped the version since)
+  if (matches) s2 = { label: 'เครื่องรับแล้ว', state: 'done' };
+  else if (got && rej.length) s2 = { label: 'เครื่องรับแล้ว', state: 'fail', note: 'เครื่องไม่ยอมใช้ค่านี้ ดูเหตุผลด้านล่าง' };
+  else if (got) s2 = { label: 'เครื่องรับแล้ว', state: 'done' };
+  else s2 = { label: 'เครื่องรับแล้ว', state: info.agentOnline ? 'active' : 'wait', note: info.agentOnline ? 'กำลังส่งไปที่เครื่อง…' : 'รอเครื่องออนไลน์' };
+  if (matches) s3 = { label: 'EA ใช้ค่าใหม่แล้ว', state: 'done' };
+  else if (!r) s3 = { label: 'EA ใช้ค่าใหม่แล้ว', state: 'fail', note: 'EA รุ่นนี้รับค่าจากเว็บไม่ได้' };
+  else if (r.rejects) s3 = { label: 'EA ใช้ค่าใหม่แล้ว', state: 'fail', note: 'EA ไม่ยอมรับค่า ดูเหตุผลด้านล่าง' };
+  else if (r.pending) s3 = { label: 'EA ใช้ค่าใหม่แล้ว', state: 'wait', note: r.waiting === 'pending order' ? 'รอให้ไม่มีคำสั่งรอเปิด' : 'รอให้ไม่มีไม้ค้าง (EA เปลี่ยนค่าตอนไม่มีไม้เปิด)' };
+  else if (s2.state === 'done') s3 = { label: 'EA ใช้ค่าใหม่แล้ว', state: 'active', note: 'กำลังโหลดค่าใหม่…' };
+  else if (s2.state === 'fail') s3 = { label: 'EA ใช้ค่าใหม่แล้ว', state: 'todo' };
+  else s3 = { label: 'EA ใช้ค่าใหม่แล้ว', state: 'todo' };
+  const done = s3.state === 'done';
+  const failed = s2.state === 'fail' || s3.state === 'fail';
+  return { steps: [s1, s2, s3], done, failed };
 }
 
 export function effectiveState(st, bot, ctl) {

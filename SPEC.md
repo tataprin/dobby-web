@@ -319,3 +319,44 @@ Always show the disclaimer: past simulation, not a forecast; 2025-like market mu
 ## 6. Ownership of the EA control file
 With the agent running, the website is the main way to change the bot. `monitor/dobby2_control.py` keeps working
 (its changes are adopted by the agent, 3.4 step 5).
+
+## 7. Simple bot settings (shared by the website and the app; added 2026-11-07 after user feedback)
+Goal: a friend never sees EA input names unless they open "ขั้นสูง". Both UIs show the SAME model and the same Thai labels.
+
+### 7.1 Bot catalog
+One entry today: **Dobby** — "บอททอง XAUUSD กราฟ 15 นาที 3 สูตร (A_new, NY, C5G) + ASIA16 เสริม". The UI shows it as a
+card the user picks ("ใช้ Dobby"); the list is ready for more bots later (no DB change: the kind is implied).
+
+### 7.2 Simple settings -> EA keys (all keys are on the SPEC 4.2 remote allow-list)
+| simple field (Thai label) | EA keys |
+|---|---|
+| ทุนในบัญชี (USD) | InpVirtualStart |
+| สูตร A_new / NY / C5G เปิด-ปิด | InpUseA / InpUseNY / InpUseC5G |
+| ล็อตรวม (ทุกสูตรเท่ากัน) **or** แยกล็อตแต่ละสูตร | InpLotsA / InpLotsNY / InpLotsC5G; InpMaxLots = the largest module lot |
+| สูตรเอเชีย (ASIA16) เปิด-ปิด, ล็อต | InpUseAsia, InpLotsAsia |
+| ล็อกกำไร: ไม่ล็อก / 1 ชั้น (ใกล้ TP) / 2 ชั้น | 0: InpLockEnable=false, InpLock1Enable=false; 1: InpLockEnable=true (At/To), InpLock1Enable=false; 2: both on |
+| ชั้นใกล้ TP: ถึง X% ของ TP → เลื่อน SL ไป Y% | InpLockAtPct / InpLockToPct |
+| ชั้นแรก: ถึง X% ของ TP → เลื่อน SL ไป Y% | InpLock1AtPct / InpLock1ToPct (must be below the near-TP stage) |
+| ขาดทุนสูงสุดต่อวัน (% ของทุน) | InpDailyCapPct |
+| ขั้นสูง: recovery ×, จำนวนครั้งต่อวัน, confluence ×/นาที, spread สูงสุด, vol gate | InpRecoveryMult, InpMaxAttempts, InpConfluenceMult/Min, InpMaxSpread, InpVolGate/Pct |
+Strategy geometry (SL/TP caps and ratios, NY times, ...) is not shown in the simple editor at all.
+
+### 7.3 "ตั้งให้อัตโนมัติจากทุน" (auto from balance B)
+- module lot L = max(0.01, floor(B / 100) / 100), capped at 0.50 (300 -> 0.03, 1000 -> 0.10, 150 -> 0.01)
+- A_new, NY, C5G on with lot L; ASIA16 off (lot 0.01); InpMaxLots = L; InpVirtualStart = B
+- locks: 2 stages — first 85 -> 83, near TP 95 -> 93 (the owner's live choice on 2026-11-07)
+- recovery 1.5, attempts 4, confluence 1.5 / 60 min, daily cap 10 %, max spread 1.00, vol gate off
+- shown next to it: the lot-calculator estimate (SPEC 5.1) for B and L, in one plain sentence + "ดูรายละเอียด"
+- the PC's local max lots default = min(0.50, max(0.02, 2 x L)); local max daily cap = 10
+
+### 7.4 Applying
+- Website "ตั้งค่าบอท": shows what the bot uses NOW (status.remote.effective for EA v3.04; for v3.03 the fields it can
+  read from status.params/options, marked "อ่านอย่างเดียว — บอทนี้เป็น v3.03"), lets the user edit with toggles/steppers,
+  and "บันทึกและส่งให้บอท" PATCHes bot_control.desired.params with the full set of remote keys. Progress shown in 3 steps:
+  ส่งแล้ว -> เครื่องรับแล้ว (agent_state.applied_version) -> EA ใช้ค่าใหม่แล้ว (status.remote.applied_version /
+  effective matches; "รอให้ไม่มีไม้ค้าง" while status.remote.pending).
+- App wizard: creates the bot with desired = {live: true, control: {mode: "run"}, params: <the chosen settings>} and turns
+  on the local limits allow_remote_control/live/params (explained in one sentence; the user can untick).
+- The generic MT5 preset for EA v3.04 that every friend loads: "Dobby3_v304_web.set" = EA defaults + the 7.3 values for
+  B = 300 + InpRemoteParams=true, InpRemoteLive=true, InpRemoteMaxLots=0.50, InpRemoteMaxCapPct=10, InpAllowLive=false.
+  The web settings replace its lots/balance/locks as soon as the EA is flat.

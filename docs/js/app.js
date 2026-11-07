@@ -2,6 +2,7 @@
 import { createApi, isConfigured, wantsDemo } from './api.js';
 import { app, on, emit, isAdmin, loadBots, selectBot, currentBot, prefs } from './state.js';
 import { h, icon, ingot, mount, loadingState, errorState, emptyState, errText, openModal } from './util.js';
+import { maybeStartTour } from './tour.js';
 
 // ------------------------------------------------------------------ theme
 const THEMES = ['system', 'light', 'dark'];
@@ -18,7 +19,7 @@ function applyTheme() {
   if (p === 'system') delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = p;
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = resolvedTheme() === 'dark' ? '#121821' : '#f4f6f9';
+  if (meta) meta.content = resolvedTheme() === 'dark' ? '#0e1116' : '#f4f3ee';
   document.querySelectorAll('[data-theme-btn]').forEach(updateThemeBtn);
   emit('theme', resolvedTheme());
 }
@@ -34,7 +35,7 @@ function themeButton() {
 }
 function updateThemeBtn(b) {
   const p = themePref();
-  b.replaceChildren(icon(p === 'system' ? 'auto' : p === 'light' ? 'sun' : 'moon'));
+  mount(b, icon(p === 'system' ? 'auto' : p === 'light' ? 'sun' : 'moon'));
   b.setAttribute('aria-label', `ธีม: ${THEME_LABEL[p]} (กดเพื่อเปลี่ยน)`);
   b.title = `ธีม: ${THEME_LABEL[p]}`;
 }
@@ -44,27 +45,31 @@ const P = {
   login: () => import('./pages/login.js'),
   gate: () => import('./pages/gate.js'),
   dashboard: () => import('./pages/dashboard.js'),
+  bot: () => import('./pages/botsettings.js'),
   history: () => import('./pages/history.js'),
-  control: () => import('./pages/control.js'),
-  presets: () => import('./pages/presets.js'),
   news: () => import('./pages/news.js'),
+  machines: () => import('./pages/machines.js'),
+  guide: () => import('./pages/guide.js'),
+  presets: () => import('./pages/presets.js'),
   users: () => import('./pages/users.js'),
   downloads: () => import('./pages/downloads.js'),
   audit: () => import('./pages/audit.js'),
   settings: () => import('./pages/settings.js'),
 };
 
+// Main navigation (sidebar top group; `tab` = mobile bottom bar) and the smaller "เพิ่มเติม" group (`more`).
 export const NAV = [
   { name: 'dashboard', title: 'ภาพรวม', icon: 'home', tab: true },
+  { name: 'bot', title: 'ตั้งค่าบอท', icon: 'sliders', tab: true },
   { name: 'history', title: 'ประวัติ', icon: 'history', tab: true },
-  { name: 'control', title: 'ควบคุม', icon: 'sliders', tab: true },
-  { name: 'presets', title: 'พรีเซ็ต', icon: 'doc', tab: true },
-  { name: 'calc', title: 'คำนวณล็อต', icon: 'calc' },
   { name: 'news', title: 'ข่าว', icon: 'news' },
-  { name: 'downloads', title: 'ดาวน์โหลดและติดตั้ง', icon: 'box' },
-  { name: 'audit', title: 'บันทึกการเปลี่ยนแปลง', icon: 'list' },
-  { name: 'users', title: 'ผู้ใช้', icon: 'users', admin: true },
-  { name: 'settings', title: 'ตั้งค่า', icon: 'gear' },
+  { name: 'machines', title: 'เครื่องของฉัน', short: 'เครื่อง', icon: 'monitor', tab: true },
+  { name: 'guide', title: 'วิธีใช้', icon: 'book' },
+  { name: 'presets', title: 'พรีเซ็ตที่บันทึกไว้', icon: 'doc', more: true },
+  { name: 'downloads', title: 'ดาวน์โหลดแอป', icon: 'download', more: true },
+  { name: 'users', title: 'ผู้ใช้', icon: 'users', admin: true, more: true },
+  { name: 'audit', title: 'บันทึกการเปลี่ยนแปลง', icon: 'list', more: true },
+  { name: 'settings', title: 'ตั้งค่าบัญชี', icon: 'user', more: true },
 ];
 
 const ROUTES = {
@@ -74,15 +79,23 @@ const ROUTES = {
   mfa: { load: P.gate, fn: 'renderMfa', access: 'mfa' },
   disabled: { load: P.gate, fn: 'renderDisabled', access: 'disabled' },
   dashboard: { load: P.dashboard },
+  bot: { load: P.bot },
   history: { load: P.history },
-  control: { load: P.control },
-  presets: { load: P.presets },
-  calc: { load: P.presets, fn: 'renderCalc' },
   news: { load: P.news },
+  machines: { load: P.machines },
+  guide: { load: P.guide },
+  presets: { load: P.presets, nav: 'presets' },
+  calc: { load: P.presets, fn: 'renderCalc', nav: 'presets', title: 'คำนวณล็อต' },
   users: { load: P.users, admin: true },
   downloads: { load: P.downloads },
   audit: { load: P.audit },
   settings: { load: P.settings },
+};
+// Old and alternative addresses keep working (bookmarks, links shared in chats).
+const ALIASES = {
+  control: 'bot', botsettings: 'bot', 'bot-settings': 'bot', params: 'bot',
+  bots: 'machines', devices: 'machines', machine: 'machines',
+  help: 'guide', howto: 'guide', account: 'settings', download: 'downloads', setup: 'downloads', home: 'dashboard',
 };
 
 export function parseHash() {
@@ -126,19 +139,20 @@ let shell = null;
 let cleanup = null;
 let seq = 0;
 
-function navLink(item, cls) {
-  return h('a', { href: `#/${item.name}`, class: cls, dataset: { route: item.name } }, icon(item.icon), h('span', null, item.title));
+function navLink(item, cls, short = false) {
+  return h('a', { href: `#/${item.name}`, class: cls, dataset: { route: item.name } }, icon(item.icon), h('span', null, short && item.short ? item.short : item.title));
 }
+const visible = (n) => !n.admin || isAdmin();
 
 function botPicker() {
   const box = h('div', { class: 'botpick' });
   const draw = () => {
-    box.replaceChildren();
+    mount(box);
     if (!app.bots.length) return;
-    if (app.bots.length === 1) { box.append(h('span', { class: 'botname', title: 'บอทของคุณ' }, app.bots[0].name)); return; }
+    if (app.bots.length === 1) { box.append(h('a', { class: 'botname', href: '#/machines', title: 'เครื่องของฉัน' }, icon('monitor'), h('span', null, app.bots[0].name))); return; }
     const sel = h('select', { class: 'input select', 'aria-label': 'เลือกบอท', onchange: (e) => selectBot(e.target.value) },
       app.bots.map((b) => h('option', { value: b.id, selected: b.id === app.botId }, b.name)));
-    box.append(sel);
+    box.append(h('span', { class: 'botpick-ico', 'aria-hidden': 'true' }, icon('monitor')), sel);
   };
   draw();
   on('bots-loaded', draw);
@@ -147,24 +161,30 @@ function botPicker() {
 }
 
 function openMoreSheet() {
-  const items = NAV.filter((n) => !n.tab && (!n.admin || isAdmin()));
+  const main = NAV.filter((n) => !n.tab && !n.more && visible(n));
+  const more = NAV.filter((n) => n.more && visible(n));
+  const link = (it) => h('a', { href: `#/${it.name}`, onclick: () => m.close() }, h('span', { class: 'sheet-ico' }, icon(it.icon)), h('span', null, it.title));
   const m = openModal({
     title: 'เมนู',
     body: h('nav', { class: 'sheet-nav', 'aria-label': 'เมนูทั้งหมด' },
-      items.map((it) => h('a', { href: `#/${it.name}`, onclick: () => m.close() }, icon(it.icon), h('span', null, it.title))),
+      main.map(link),
+      h('p', { class: 'nav-group' }, 'เพิ่มเติม'),
+      more.map(link),
       h('div', { class: 'sheet-row' }, h('span', null, 'ธีม'), themeSegment(() => {})),
       h('button', { class: 'btn ghost block', type: 'button', onclick: () => { m.close(); signOut(); } }, icon('logout'), 'ออกจากระบบ')),
   });
 }
 
-export function themeSegment(onChange) {
-  const box = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'ธีม' });
+export function themeSegment(onChange, iconsOnly = false) {
+  const box = h('div', { class: `segmented${iconsOnly ? ' icons' : ''}`, role: 'radiogroup', 'aria-label': 'ธีม' });
   const draw = () => {
-    box.replaceChildren(...THEMES.map((t) => h('button', {
+    mount(box, ...THEMES.map((t) => h('button', {
       type: 'button', role: 'radio', 'aria-checked': themePref() === t ? 'true' : 'false', class: themePref() === t ? 'on' : '',
+      'aria-label': THEME_LABEL[t], title: THEME_LABEL[t],
       onclick: () => { setTheme(t); draw(); onChange && onChange(t); },
-    }, icon(t === 'system' ? 'auto' : t === 'light' ? 'sun' : 'moon'), THEME_LABEL[t])));
+    }, icon(t === 'system' ? 'auto' : t === 'light' ? 'sun' : 'moon'), iconsOnly ? null : THEME_LABEL[t])));
   };
+  on('theme', () => { if (box.isConnected) draw(); });
   draw();
   return box;
 }
@@ -177,26 +197,38 @@ export async function signOut() {
 
 function demoBanner() {
   if (app.mode !== 'demo') return null;
-  return h('div', { class: 'demo-banner', role: 'note' },
+  const box = h('div', { class: 'demo-banner', role: 'note' });
+  const draw = () => mount(box, 
     h('strong', null, 'โหมดตัวอย่าง'),
-    h('span', null, 'ข้อมูลทั้งหมดเป็นข้อมูลสมมติ ไม่ได้เชื่อมกับบอทจริง ทุกปุ่มกดได้ และการเปลี่ยนแปลงหายเมื่อโหลดหน้าใหม่'),
+    h('span', null, app.api && app.api.noBots ? 'กำลังแสดงบัญชีที่ยังไม่มีบอท' : 'ข้อมูลสมมติทั้งหมด ทุกปุ่มกดได้ และหายเมื่อโหลดหน้าใหม่'),
+    app.api && app.api.noBots ? h('a', { href: '#/dashboard', onclick: async (e) => { e.preventDefault(); app.api.setDemoNoBots(false); await loadBots(); nav('#/dashboard'); } }, 'แสดงบอทตัวอย่างอีกครั้ง') : null,
     isConfigured() ? h('a', { href: location.pathname }, 'ออกจากโหมดตัวอย่าง') : null);
+  draw();
+  on('bots-loaded', draw);
+  return box;
 }
 
 function buildShell() {
   const main = h('main', { id: 'main', class: 'main', tabindex: '-1' });
   const userBox = h('div', { class: 'side-user' });
-  const drawUser = () => userBox.replaceChildren(
-    h('div', { class: 'side-user-name' }, (app.profile && app.profile.display_name) || (app.user && app.user.email) || ''),
-    h('div', { class: 'muted small' }, app.user ? app.user.email : '', isAdmin() ? ' (ผู้ดูแล)' : ''),
-    h('button', { class: 'btn ghost small', type: 'button', onclick: signOut }, icon('logout'), 'ออกจากระบบ'));
+  const drawUser = () => mount(userBox, 
+    h('div', { class: 'side-user-row' },
+      h('span', { class: 'avatar', 'aria-hidden': 'true' }, ((app.profile && app.profile.display_name) || (app.user && app.user.email) || '?').slice(0, 1).toUpperCase()),
+      h('div', { class: 'grow' },
+        h('div', { class: 'side-user-name' }, (app.profile && app.profile.display_name) || (app.user && app.user.email) || ''),
+        h('div', { class: 'muted small side-user-mail' }, app.user ? app.user.email : '', isAdmin() ? ' · ผู้ดูแล' : ''))),
+    h('div', { class: 'row gap between' }, themeSegment(() => {}, true),
+      h('button', { class: 'btn ghost small', type: 'button', onclick: signOut }, icon('logout'), 'ออกจากระบบ')));
   drawUser();
   const sideNav = h('nav', { class: 'side-nav', 'aria-label': 'เมนูหลัก' });
-  const drawNav = () => sideNav.replaceChildren(...NAV.filter((n) => !n.admin || isAdmin()).map((n) => navLink(n, 'side-link')));
+  const drawNav = () => mount(sideNav, 
+    ...NAV.filter((n) => !n.more && visible(n)).map((n) => navLink(n, 'side-link')),
+    h('p', { class: 'nav-group' }, 'เพิ่มเติม'),
+    ...NAV.filter((n) => n.more && visible(n)).map((n) => navLink(n, 'side-link small-link')));
   drawNav();
   const tabbar = h('nav', { class: 'tabbar', 'aria-label': 'เมนูหลัก' },
-    NAV.filter((n) => n.tab).map((n) => navLink(n, 'tab-link')),
-    h('button', { class: 'tab-link', type: 'button', onclick: openMoreSheet, dataset: { route: 'more' } }, icon('more'), h('span', null, 'เมนู')));
+    NAV.filter((n) => n.tab).map((n) => navLink(n, 'tab-link', true)),
+    h('button', { class: 'tab-link', type: 'button', onclick: openMoreSheet, dataset: { route: 'more' } }, icon('menu'), h('span', null, 'เมนู')));
   const el = h('div', { class: 'shell' },
     h('a', { class: 'skip', href: '#main', onclick: (e) => { e.preventDefault(); main.focus(); } }, 'ข้ามไปที่เนื้อหา'),
     h('aside', { class: 'sidebar' },
@@ -206,7 +238,9 @@ function buildShell() {
       h('header', { class: 'topbar' },
         h('a', { class: 'brand brand-top', href: '#/dashboard', 'aria-label': 'Dobby หน้าแรก' }, ingot(), h('span', null, 'Dobby')),
         botPicker(),
-        h('div', { class: 'top-actions' }, themeButton())),
+        h('div', { class: 'top-actions' },
+          h('a', { class: 'icon-btn top-help', href: '#/guide', 'aria-label': 'วิธีใช้', title: 'วิธีใช้' }, icon('help')),
+          themeButton())),
       demoBanner(),
       main),
     tabbar);
@@ -216,7 +250,7 @@ function buildShell() {
 function setActiveNav(name) {
   if (!shell) return;
   const tabNames = NAV.filter((n) => n.tab).map((n) => n.name);
-  const routeName = name === 'calc' ? 'calc' : name;
+  const routeName = (ROUTES[name] && ROUTES[name].nav) || name;
   shell.el.querySelectorAll('[data-route]').forEach((a) => {
     const r = a.dataset.route;
     const active = r === routeName || (r === 'more' && !tabNames.includes(routeName));
@@ -240,6 +274,11 @@ export async function route() {
   if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
   const parsed = parseHash();
   let name = parsed.name;
+  if (ALIASES[name]) {
+    name = ALIASES[name];
+    const qs = parsed.query.toString();
+    history.replaceState(null, '', `#/${[name, ...parsed.parts].map(encodeURIComponent).join('/')}${qs ? `?${qs}` : ''}`);
+  }
   const u = app.user;
   let target = name;
   if (!u) {
@@ -261,20 +300,22 @@ export async function route() {
     root = shell.main;
     setActiveNav(name);
   } else root = bareRoot();
-  const navItem = NAV.find((n) => n.name === name);
-  document.title = navItem ? `${navItem.title} | Dobby` : 'Dobby';
+  const navItem = NAV.find((n) => n.name === (def.nav || name));
+  const pageTitle = def.title || (navItem && navItem.title);
+  document.title = pageTitle ? `${pageTitle} | Dobby` : 'Dobby';
   mount(root, loadingState());
   window.scrollTo(0, 0);
   if (def.admin && !isAdmin()) { mount(root, emptyState('สำหรับผู้ดูแลระบบเท่านั้น', 'บัญชีนี้ไม่มีสิทธิ์เปิดหน้านี้')); return; }
   try {
     const mod = await def.load();
     if (my !== seq) return;
-    root.replaceChildren();
+    mount(root);
     const ctx = { app, api: app.api, parts: parsed.parts, query: parsed.query, nav, refreshSession, route, signOut };
     const fn = mod[def.fn || 'render'];
     const c = await fn(root, ctx);
     if (my !== seq) { if (typeof c === 'function') c(); return; }
     cleanup = typeof c === 'function' ? c : null;
+    if (shelled) maybeStartTour();
   } catch (e) {
     console.error(e);
     if (my === seq) mount(root, errorState(e, () => route()));

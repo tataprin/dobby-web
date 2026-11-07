@@ -22,10 +22,18 @@ export function render(root, ctx) {
     body.replaceChildren(tab === 'signin' ? signInForm(ctx) : tab === 'signup' ? signUpForm(ctx) : forgotForm(ctx));
   };
   draw();
-  root.append(h('section', { class: 'auth-card' },
-    h('h1', null, 'Dobby Web'),
-    h('p', { class: 'lead' }, 'ดูบอททองของคุณแบบสด ดูประวัติ และสั่งงานบอทจากมือถือ'),
-    tabs, body));
+  root.append(h('div', { class: 'auth-col' },
+    h('section', { class: 'auth-card' },
+      h('h1', null, 'Dobby Web'),
+      h('p', { class: 'lead' }, 'ดูบอททองของคุณแบบสด ดูประวัติ และสั่งงานบอทจากมือถือ'),
+      tabs, body),
+    h('section', { class: 'auth-help', 'aria-label': 'ครั้งแรก' },
+      h('p', { class: 'auth-help-title' }, 'ครั้งแรก? ทำ 3 ขั้นนี้'),
+      h('ol', { class: 'teach-steps' },
+        h('li', null, h('strong', null, 'สมัครด้วยรหัสเชิญ'), h('span', null, 'ขอรหัส 10 ตัวจากเจ้าของบอท แล้วกดแท็บ "สมัครด้วยรหัสเชิญ"')),
+        h('li', null, h('strong', null, 'โหลดแอป Dobby ไปเปิดที่คอม'), h('span', null, 'คอม Windows ที่เปิด MT5 ไว้ ทำตามตัวช่วยในแอป แล้วกดเริ่ม')),
+        h('li', null, h('strong', null, 'ใช้เว็บนี้ได้เลย'), h('span', null, 'ดูสด สั่งงาน และดูประวัติจากมือถือ'))),
+      ctx.app.mode === 'demo' ? null : h('a', { class: 'btn ghost small', href: `${location.pathname}?demo=1#/dashboard` }, icon('play'), 'ลองดูโหมดตัวอย่างก่อน'))));
 }
 
 function demoHint(ctx, text) {
