@@ -61,6 +61,17 @@ export async function render(root, ctx) {
     const [b, a] = mins();
     return normDesired(ctl.desired).blackouts.some((x) => Date.parse(x.from_utc) <= t - b * MIN && Date.parse(x.to_utc) >= t + a * MIN);
   }
+  // the windows set by hand that hold the news moment and have not ended: what "ยกเลิกงด" removes
+  function hitsOf(t) {
+    if (!ctl) return [];
+    const now = Date.now();
+    return normDesired(ctl.desired).blackouts.filter((x) => Date.parse(x.from_utc) <= t && Date.parse(x.to_utc) >= t && Date.parse(x.to_utc) > now)
+      .sort((a, b) => a.from_utc.localeCompare(b.from_utc));
+  }
+  // the PC's automatic news pause (SPEC 9.3) is not in the list above: removing a hand-set window does not lift it
+  const autoHolds = (t) => (Array.isArray(bot && bot.agent_state && bot.agent_state.auto_blackouts) ? bot.agent_state.auto_blackouts : [])
+    .some((w) => Date.parse(w.from_utc) <= t && Date.parse(w.to_utc) >= t && Date.parse(w.to_utc) > Date.now());
+  const span = (from, to) => `${fmtThai(from, 'short')} ถึง ${fmtThai(to, fmtThai(from, 'date') === fmtThai(to, 'date') ? 'time' : 'short')} น.`;
 
   function drawList() {
     const now = Date.now();
@@ -86,6 +97,7 @@ export async function render(root, ctx) {
     const t = Date.parse(n.ts_utc);
     const [label, cls] = TIER[n.tier] || TIER[3];
     const done = covered(t);
+    const undo = bot && hitsOf(t).length ? h('button', { class: 'btn small ghost', type: 'button', onclick: (e) => unblackout(n, e.currentTarget) }, icon('x'), 'ยกเลิกงด') : null;
     const live = t <= Date.now() && Date.now() < t + 90 * MIN;
     const off = bot ? bot.server_utc_offset_min ?? 0 : null;
     return h('li', { class: `news-item ${cls}` },
@@ -100,6 +112,7 @@ export async function render(root, ctx) {
       h('div', { class: 'news-actions' },
         bot ? (done ? h('span', { class: 'chip good' }, icon('check'), 'งดไว้แล้ว')
           : h('button', { class: 'btn small', type: 'button', disabled: t + mins()[1] * MIN < Date.now(), onclick: (e) => blackout(n, e.currentTarget) }, icon('clock'), `งดเข้าไม้ −${mins()[0]}/+${mins()[1]} นาที`)) : null,
+        undo,
         isAdmin() && !n.auto ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': `แก้ไข ${n.name}`, onclick: () => editNews(n) }, icon('edit')) : null,
         isAdmin() && !n.auto ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': `ลบ ${n.name}`, onclick: () => delNews(n) }, icon('trash')) : null));
   }
@@ -115,6 +128,30 @@ export async function render(root, ctx) {
         d.blackouts.sort((x, y) => x.from_utc.localeCompare(y.from_utc));
       });
       toast(`งดเข้าไม้ ${fmtThai(t - b * MIN, 'time')} ถึง ${fmtThai(t + a * MIN, 'time')} น. แล้ว`, 'good');
+      drawList();
+    } catch (e) { busy(btn, false); toast(errText(e), 'error', 6000); }
+  }
+
+  // Lifts the pause around one news: removes every hand-set window that holds its moment. Asks first only when one of
+  // them was not made for this news (another news, "งด 2 ชม." or a window set by hand), since that one goes too.
+  async function unblackout(n, btn) {
+    const t = Date.parse(n.ts_utc);
+    const hits = hitsOf(t);
+    if (!hits.length) { drawList(); return; }
+    if (hits.some((x) => (x.label || '') !== n.name)) {
+      const ok = await confirmDialog('ยกเลิกงดช่วงข่าวนี้?', h('div', { class: 'stack' },
+        h('p', null, hits.length > 1 ? 'ช่วงงดเหล่านี้ครอบเวลาข่าวนี้อยู่ จะถูกลบทั้งหมด:' : 'ช่วงงดนี้ครอบเวลาข่าวนี้อยู่ และจะถูกลบ:'),
+        hits.map((x) => h('p', { class: 'small' }, h('strong', null, span(Date.parse(x.from_utc), Date.parse(x.to_utc))), ' ', x.label || 'ไม่มีชื่อ'))),
+      { ok: 'ยกเลิกงด', cancel: 'ไม่ลบ' });
+      if (!ok) return;
+    }
+    const key = (x) => `${x.from_utc}|${x.to_utc}`;
+    const gone = new Set(hits.map(key));
+    busy(btn, true);
+    try {
+      ctl = await patchDesired(bot.id, (d) => { d.blackouts = d.blackouts.filter((x) => !gone.has(key(x))); });
+      if (autoHolds(t)) toast('ยกเลิกงดแล้ว แต่งดข่าวอัตโนมัติยังงดช่วงนี้อยู่ ปิดได้ที่ ตั้งค่าบอท > งดเข้าไม้', 'info', 8000);
+      else toast('ยกเลิกงดแล้ว บอทเปิดไม้ช่วงข่าวนี้ได้ตามปกติ', 'good');
       drawList();
     } catch (e) { busy(btn, false); toast(errText(e), 'error', 6000); }
   }

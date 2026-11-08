@@ -339,7 +339,9 @@ Pages (hash router):
    advanced, Thai label, help) with validation; diff vs live; export .set (UTF-16LE BOM, `key=value||value||0||value||N`,
    bools `key=true||false||0||true||N`); "Apply to bot" = write desired.params with the remote keys (non-remote keys
    listed as "load the .set locally"); **lot calculator** (balance + lot -> scaled r37 numbers, see 5.1).
-6. **News** — upcoming news_events in Thai time; one-click blackout per bot (default −30/+90 min); admin can add/edit.
+6. **News** — upcoming news_events in Thai time; one-click blackout per bot (default −30/+90 min); "ยกเลิกงด" next to a
+   news removes every hand-set window that holds its moment (asks first when one of them was made for something else;
+   the PC's automatic news pause is separate and stays); admin can add/edit.
 7. **Users** (admin) — admin_overview, create invite (role, days, note) with copy button, list/revoke invites, set
    role/approve/disable.
 8. **Downloads & setup** — files from the `downloads` bucket (admin upload), Thai step-by-step guide for a friend's PC
