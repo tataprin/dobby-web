@@ -75,7 +75,7 @@ export function tvChartPanel() {
   const el = panel('กราฟทองจาก TradingView', {
     cls: 'tv-panel', actions: tools, sub: 'ราคาจาก OANDA อาจต่างจากราคาที่โบรกของบอทเล็กน้อย',
   }, frame, h('div', { class: 'tv-foot' },
-    h('p', { class: 'muted small' }, 'จุดเข้าออกของบอทดูได้ที่กราฟด้านบน'),
+    h('p', { class: 'muted small' }, 'จุดเข้าออกและ TP ของบอทดูย้อนหลังได้ที่ ', h('a', { href: '#/history?tab=trades' }, 'กราฟไม้ย้อนหลัง')),
     h('a', { class: 'link-quiet tv-out', href: FULL_CHART, target: '_blank', rel: 'noopener noreferrer' }, 'เปิดใน TradingView', icon('external'))));
 
   function load() {

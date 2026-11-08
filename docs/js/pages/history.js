@@ -13,6 +13,7 @@ import { flowsView } from '../history-flows.js';
 import { summaryView } from '../history-summary.js';
 import { roundsPanel } from '../history-rounds.js';
 import { roundsOf, currentRound, roundLabel, eaStartUtc } from '../rounds.js';
+import { historyChart } from '../historychart.js';
 
 const CHART_CDN = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/auto/+esm';
 let chartMod = null;
@@ -39,6 +40,7 @@ export async function render(root, ctx) {
   const period = { kind: prefs.get('summary-kind', 'week') === 'month' ? 'month' : 'week', offset: 0 };
   let tab = TABS.some((t) => t.id === ctx.query.get('tab')) ? ctx.query.get('tab') : prefs.get('history-tab', 'overview');
   let chart = null;
+  let hchart = null; // the price chart with every trade (รายการเทรด), kept across redraws so its window and bars stay
   let journalShown = 100;
 
   root.append(pageHead('ประวัติ', h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name),
@@ -378,15 +380,25 @@ export async function render(root, ctx) {
       h('option', { value: '' }, allTags.length ? 'ทุกแท็ก' : 'ยังไม่มีแท็ก'), allTags.map((t) => h('option', { value: t, selected: t === f.tag }, `แท็ก: ${t}`)));
     const actions = h('div', { class: 'panel-actions' }, tagSel, csvBtn);
     const reset = (label) => h('button', { class: 'btn small ghost', type: 'button', onclick: () => { f.serverDay = ''; f.tag = ''; draw(); } }, icon('x'), label);
+    // the chart has its own window of days; it follows the strategy and tag filters (not the dates), and a day picked on
+    // the calendar
+    if (!hchart) hchart = historyChart({ api: ctx.api, bot, offsetMin: off, onTrade: (t) => { location.hash = tradeHref(t.key); } });
+    const chartTrades = () => {
+      const all = pairTrades(rows.filter((r) => !f.module || r.tag === f.module));
+      hchart.setTrades(f.tag ? all.filter((t) => t.key && ((byKey.get(t.key) || {}).tags || []).includes(f.tag)) : all,
+        [f.module ? `เฉพาะสูตร ${f.module}` : '', f.tag ? `ที่ติดแท็ก ${f.tag}` : ''].filter(Boolean).join(' '));
+      if (f.serverDay) hchart.showDay(f.serverDay);
+    };
     if (!list.length) {
-      body.replaceChildren(panel('รายการเทรด', { actions }, h('p', { class: 'muted' }, f.tag ? `ไม่มีไม้ที่ติดแท็ก "${f.tag}" ในช่วงนี้` : 'ไม่มีเทรดในช่วงนี้'),
+      body.replaceChildren(hchart, panel('รายการเทรด', { actions }, h('p', { class: 'muted' }, f.tag ? `ไม่มีไม้ที่ติดแท็ก "${f.tag}" ในช่วงนี้` : 'ไม่มีเทรดในช่วงนี้'),
         f.serverDay || f.tag ? reset('ดูทั้งหมด') : null));
+      chartTrades();
       return;
     }
     const filterChips = f.serverDay || f.tag ? h('div', { class: 'row gap wrap' },
       f.serverDay ? h('span', { class: 'chip pending' }, `เฉพาะวันที่ ${f.serverDay} (เวลาเซิร์ฟเวอร์)`) : null,
       f.tag ? h('span', { class: 'chip pending' }, `แท็ก ${f.tag}`) : null, reset('ล้างตัวกรอง')) : null;
-    body.replaceChildren(panel('รายการเทรด', { actions, sub: `${list.length} ไม้ กดที่ไม้เพื่อดูกราฟ เหตุผลที่เปิด และบันทึก` }, filterChips,
+    body.replaceChildren(hchart, panel('รายการเทรด', { actions, sub: `${list.length} ไม้ กดที่ไม้เพื่อดูกราฟ เหตุผลที่เปิด และบันทึก` }, filterChips,
       h('div', { class: 'table-wrap' }, h('table', { class: 'rtable trades' },
         h('thead', null, h('tr', null, ['เปิด', 'สูตร', 'ฝั่ง', 'ล็อต', 'ราคาเข้า', 'ราคาออก', 'ผล', 'ถือ', 'กำไร'].map((t) => h('th', { scope: 'col' }, t)))),
         h('tbody', null, list.map((t) => {
@@ -410,6 +422,7 @@ export async function render(root, ctx) {
           h('td', { 'data-label': 'ถือ' }, !t.open && Number.isFinite(t.openUtc) ? duration(t.closeUtc - t.openUtc) : '—'),
           h('td', { 'data-label': 'กำไร', class: 'num' }, t.open ? '—' : pnl(t.pnl)));
         }))))));
+    chartTrades();
   }
 
   // ---------------- สรุป + เงินฝาก-ถอน
@@ -480,7 +493,7 @@ export async function render(root, ctx) {
     journal: (row) => { rows = prepareRows([...rows, row], off); if (tab !== 'overview' || !chart) addRow(); else addRow(); },
   });
   const offTheme = on('theme', () => { if (tab === 'overview') draw(); });
-  return () => { unsub(); offTheme(); if (chart) chart.destroy(); };
+  return () => { unsub(); offTheme(); if (chart) chart.destroy(); if (hchart) hchart.destroy(); };
 }
 
 function evTone(e) {

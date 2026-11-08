@@ -184,6 +184,25 @@ profit / TP, cinnabar = loss / SL).
 - **Data**: the iframe is created only when the panel comes within 240 px of the screen, so a phone that never scrolls
   down never downloads it.
 
+## Trade-history chart (2026-11-08)
+
+- **Where**: ประวัติ > รายการเทรด, above the list: "กราฟราคากับไม้ของบอท". The hero shows today and the trade page one
+  trade; this is the view between them: every trade of 1, 3 or 5 broker trading days on the broker's own price.
+- **Data**: the `bars` table (M15 close + VWAP, kept about 45 days), fetched in 10-day chunks as the reader steps back
+  (each well under the 3000-row limit), and the page's journal (already loaded 95 days back). Without the `bars` table
+  it falls back to the last 24 h in `agent_state.bars`.
+- **Days and axis**: a "day" is the broker's server day (the EA's day: daily cap, VWAP reset). The x axis runs over bars,
+  not clock time, so weekends and the daily break take no space; a dashed line marks each new day, the date sits under
+  each day (one day: Thai times every 3 h, 6 h on phones). VWAP is drawn per day so it never joins across a reset.
+- **Marks** (the trade page's language at a smaller scale): faint holding band, TP jade dashed and SL cinnabar dashed
+  over the holding period, the SL stepping up in gold at each lock stage, a dotted link from the entry (▲ / ▼) to the
+  exit ring coloured by the result. No right-edge level labels (too many trades); the tooltip carries side, strategy,
+  lots, entry, TP, SL, lock count, exit, result and "กดเพื่อดูไม้นี้"; a click (second tap on touch) opens the trade page.
+- **Controls**: the 44 px segmented control (1 วัน / 3 วัน / 5 วัน, remembered as `dobby-hist-chart-days`), then a
+  nav row: 40 px icon buttons ‹ › around the range (16 px semibold) and a "ล่าสุด" ghost button when not at the latest.
+  It follows the page's strategy and tag filters (said in the sub-line), not the dates; a day picked on the calendar
+  jumps the chart to that day. 260 px tall on phones, 340 from 560 px.
+
 ## Principles
 1. **The market is always visible** — a live XAUUSD ticker in the header (22 px price on desktop); the dashboard hero is
    today's price line with Dobby's own trades stamped on it (bars from `bots.agent_state.bars`, SPEC 8).
