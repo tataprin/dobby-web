@@ -9,7 +9,7 @@ import { modChip, sideEl, kv, panel, noBotState, onOff, pageHead } from '../view
 import { minutesToClock } from '../params.js';
 import { prepareRows, pairTrades, REASON_LABELS, tradeHref, rebaseBalances, statsOf } from '../journal.js';
 import { strategyHealth, riskStats, sinceStart, dietz } from '../analytics.js';
-import { roundsOf, currentRound, roundTitle } from '../rounds.js';
+import { roundsOf, currentRound, roundTitle, botPnlOf } from '../rounds.js';
 import { riskStrip } from '../insights.js';
 import { currentValues, summaryText } from '../simple.js';
 import { hallmark } from '../hallmark.js';
@@ -121,7 +121,7 @@ export async function render(root, ctx) {
     const pending = isPending(bot, ctl);
     const info = onlineInfo(bot, st);
     const updated = st && Number.isFinite(st.heartbeat_gmt_unix) ? st.heartbeat_gmt_unix * 1000 : bot.last_seen ? Date.parse(bot.last_seen) : NaN;
-    const summary = st ? summaryText(currentValues(st).values, cur() || 'USD') : '';
+    const summary = st ? summaryText(currentValues(st).values, cur() || 'USD', botPnlOf(st)) : '';
     const ageBucket = Number.isFinite(updated) ? Math.min(12, Math.floor((Date.now() - updated) / 10000)) : -1;
     const v = (st && st.virtual) || {};
     const stamp = stampOf(hs, info, st);

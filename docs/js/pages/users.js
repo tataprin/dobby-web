@@ -13,6 +13,7 @@ import { panel, pageHead, modChip, sideEl } from '../views.js';
 import { normDesired, onlineInfo, heroState, rejectionInfo, activeBlackout, isPending } from '../botctl.js';
 import { currentValues, summaryText, lockText, pctText, STRATS, ASIA } from '../simple.js';
 import { EVENT_LABELS, REASON_LABELS } from '../journal.js';
+import { botPnlOf } from '../rounds.js';
 
 // a rejection in a 28 px chip (the full reason is the chip's title and on the bot's ตั้งค่าบอท page)
 const shortReject = (code) => (/lots/.test(code) ? 'ล็อตถูกลดตามเพดานเครื่อง' : /live/.test(code) ? 'เครื่องไม่ให้เปิดเทรดจริง'
@@ -157,7 +158,7 @@ async function renderBots(root, ctx) {
         fact('ล่าสุด', lastClose ? [modChip(lastClose.tag), ' ', REASON_LABELS[(/reason=(\w+)/.exec(lastClose.detail || '') || [])[1]] || 'ปิดไม้', ' ',
           h('span', { class: `num pnl ${toneOf(lastClose.pnl)}` }, fmtSigned(lastClose.pnl)), h('span', { class: 'muted' }, ` ${when(lastClose.ts_server)}`)]
           : lastRow ? [EVENT_LABELS[lastRow.event] || lastRow.event, h('span', { class: 'muted' }, ` ${when(lastRow.ts_server)}`)] : '—')),
-      v ? h('p', { class: 'fbot-summary' }, h('strong', null, 'ค่าที่ใช้อยู่ '), summaryText(v, cur)) : null,
+      v ? h('p', { class: 'fbot-summary' }, h('strong', null, 'ค่าที่ใช้อยู่ '), summaryText(v, cur, botPnlOf(st))) : null,
       h('div', { class: 'fbot-presets' }, h('span', { class: 'muted small' }, 'พรีเซ็ต'),
         mine.length ? mine.map((p) => h('a', { class: 'chip quiet-chip', href: `#/presets/${encodeURIComponent(p.id)}` }, icon('doc'), p.name)) : h('span', { class: 'muted small' }, 'ยังไม่มี')),
       h('div', { class: 'fbot-foot' },

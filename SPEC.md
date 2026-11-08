@@ -576,9 +576,13 @@ comes from the journal, never from the EA's own counters, so it stays right when
   (virtual.balance - virtual.start) makes the bot count exactly the account balance. Sent as desired.params like any
   setting (the EA applies it when flat); ticked by default only when it lowers the capital (a smaller daily cap).
   Lots do not depend on it. Undoing a round does not send the old value back.
-- ตั้งค่าบอท: the field is "ทุนตั้งต้น" (InpVirtualStart). With a bot P&L, a hint shows the capital the bot counts
-  (start + P&L) and warns when it differs from the account balance; "ให้บอทนับทุนเท่ายอดเงินในบัญชี" sets the start that
-  makes them equal; the auto lot, the risk hint and the daily-cap amount use the counted capital.
+- ตั้งค่าบอท: the field is "ทุนของบอท" = the capital the bot counts (InpVirtualStart + the bot's P&L, 2 decimals). Typing
+  X stores InpVirtualStart = X - P&L (the stepper's minimum keeps it >= 10), so typing the account balance never counts
+  the profit twice. Under it: "เท่ากับยอดเงินในบัญชี" (within 1), a warning when it is above the balance (bigger daily
+  cap), plain text when below; "ใช้ยอดเงินในบัญชี" sets it to the balance; with a P&L a line names the P&L and the
+  InpVirtualStart sent. The auto lot, the risk hint and the daily-cap amount use it. Everywhere a bot's settings are
+  summarised (ค่าที่บอทใช้อยู่ตอนนี้, the change list, ภาพรวม, the admin's member list, the deposit dialog, the round
+  dialog) the capital is this counted figure; presets (no bot) keep "ทุนตั้งต้น" = InpVirtualStart.
 - v_balance on one footing (journal.js rebaseBalances): charts and drawdowns walk back from the newest close (anchor:
   the status' virtual balance when it is not older than that close) subtracting each later trade's P&L, so a change of
   InpVirtualStart (a deposit adjustment, a round's capital) never shows as a jump. The journal table stays raw.

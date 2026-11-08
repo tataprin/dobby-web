@@ -85,15 +85,15 @@ export async function startRoundDialog(c, btn) {
   let capital = null;
   if (!fix) capital = null;
   else if (!fix.needed) capital = h('p', { class: 'muted small' }, `ทุนที่บอทนับ (${fmtNum(fix.virtual)}) ตรงกับยอดเงินในบัญชีแล้ว ไม่ต้องปรับ`);
-  else if (!fix.possible) capital = callout('warn', 'ปรับทุนให้ตรงยอดในบัญชีไม่ได้', h('p', null, `กำไรที่บอทนับไว้ (${fmtNum(fix.botPnl)}) มากกว่ายอดเงินในบัญชี เช่น ถอนกำไรออกไปแล้ว เปลี่ยนทุนตั้งต้นเองที่ตั้งค่าบอท`));
+  else if (!fix.possible) capital = callout('warn', 'ปรับทุนให้ตรงยอดในบัญชีไม่ได้', h('p', null, `กำไรที่บอทนับไว้ (${fmtNum(fix.botPnl)}) มากกว่ายอดเงินในบัญชี เช่น ถอนกำไรออกไปแล้ว ปรับทุนของบอทเองที่ตั้งค่าบอท`));
   else if (!canSend) capital = callout('warn', 'EA รุ่นนี้รับทุนจากเว็บไม่ได้', h('p', null, `ทุนที่บอทนับ ${fmtNum(fix.virtual)} ไม่ตรงกับยอดในบัญชี ${fmtNum(fix.balance)} ถ้าจะให้ตรง เปลี่ยน InpVirtualStart เป็น ${fmtNum(fix.next)} ที่เครื่อง ${c.bot.name} เอง`));
   else if (!fresh) capital = callout('warn', 'ยังปรับทุนตอนนี้ไม่ได้', h('p', null, `สถานะล่าสุดจากบอทเก่าเกิน 15 นาที${Number.isFinite(hb) ? ` (${fmtThai(hb, 'short')} น.)` : ''} รอให้แอปที่เครื่องออนไลน์ แล้วเริ่มรอบใหม่อีกครั้ง หรือเริ่มรอบไปก่อนแล้วปรับทุนทีหลังที่ตั้งค่าบอท`));
   else {
     capital = h('div', { class: 'stack' },
       h('label', { class: 'check agree' }, fixBox, h('span', null, `ให้บอทนับทุนเท่ายอดเงินในบัญชี (${fmtNum(fix.balance)} ${cur})`)),
       h('ul', { class: 'explain-list' },
-        h('li', null, icon('info'), h('span', null, `ตอนนี้บอทนับทุน ${fmtNum(fix.virtual)} คือทุนตั้งต้น ${fmtNum(fix.start)} บวกกำไรของบอท ${fix.botPnl >= 0 ? '+' : '−'}${fmtNum(Math.abs(fix.botPnl))}${since ? ` ตั้งแต่ ${fmtThai(Date.parse(`${since}T12:00:00Z`), 'dm')}` : ''} แต่ยอดเงินในบัญชีมี ${fmtNum(fix.balance)} ${fix.diff > 0 ? 'กำไรก้อนนี้อยู่ในยอดเงินในบัญชีแล้วจึงถูกนับซ้ำ' : 'เช่น มีเงินฝากที่ยังไม่ได้บวกเข้าทุน'} ${capNote}`)),
-        h('li', null, icon('send'), h('span', null, `เว็บจะส่งทุนตั้งต้นใหม่ ${fmtNum(fix.next)} ให้บอท (แทน ${fmtNum(fix.start)}) บอทจะนับทุน ${fmtNum(fix.balance)} ล็อตไม่เปลี่ยน`)),
+        h('li', null, icon('info'), h('span', null, `ตอนนี้บอทนับทุน ${fmtNum(fix.virtual)} คือค่าที่ตั้งไว้ ${fmtNum(fix.start)} บวกกำไรของบอท ${fix.botPnl >= 0 ? '+' : '−'}${fmtNum(Math.abs(fix.botPnl))}${since ? ` ตั้งแต่ ${fmtThai(Date.parse(`${since}T12:00:00Z`), 'dm')}` : ''} แต่ยอดเงินในบัญชีมี ${fmtNum(fix.balance)} ${fix.diff > 0 ? 'กำไรก้อนนี้อยู่ในยอดเงินในบัญชีแล้วจึงถูกนับซ้ำ' : 'เช่น มีเงินฝากที่ยังไม่ได้บวกเข้าทุน'} ${capNote}`)),
+        h('li', null, icon('send'), h('span', null, `บอทจะนับทุน ${fmtNum(fix.balance)} เท่ายอดเงินในบัญชี ล็อตไม่เปลี่ยน (เว็บส่งค่า ${fmtNum(fix.next)} แทน ${fmtNum(fix.start)} เพราะบอทบวกกำไรของตัวเองให้อีกที หน้าตั้งค่าบอทจะแสดงทุนของบอท ${fmtNum(fix.balance)})`)),
         h('li', null, icon('clock'), h('span', null, 'บอทใช้ค่าใหม่ตอนไม่มีไม้ค้าง ดูความคืบหน้าได้ที่ตั้งค่าบอท'))));
   }
 
@@ -124,7 +124,7 @@ export async function startRoundDialog(c, btn) {
           }
         }
         m.close();
-        if (!withFix || sent) toast(sent ? `เริ่มรอบที่ ${closing.n + 1} แล้ว และส่งทุนตั้งต้น ${fmtNum(fix.next)} ให้บอทแล้ว บอทใช้เมื่อไม่มีไม้ค้าง` : `เริ่มรอบที่ ${closing.n + 1} แล้ว`, 'good', 6500);
+        if (!withFix || sent) toast(sent ? `เริ่มรอบที่ ${closing.n + 1} แล้ว และส่งให้บอทนับทุน ${fmtNum(fix.balance)} แล้ว บอทใช้เมื่อไม่มีไม้ค้าง` : `เริ่มรอบที่ ${closing.n + 1} แล้ว`, 'good', 6500);
         await c.changed(closing.n + 1);
       },
     },
@@ -189,7 +189,7 @@ async function undoDialog(c, s, rounds) {
   const r = s.round, prev = rounds[r.n - 2];
   const cur = (c.st && c.st.account && c.st.account.currency) || 'USD';
   const capNote = r.base && Number.isFinite(Number(r.base.capital_next)) && r.base.capital_next !== null
-    ? ` ทุนตั้งต้นที่ส่งให้บอทตอนเริ่มรอบ (${fmtNum(r.base.capital_next)}) ไม่เปลี่ยนกลับ เปลี่ยนเองได้ที่ตั้งค่าบอท` : '';
+    ? ' ทุนของบอทที่ส่งไปตอนเริ่มรอบไม่เปลี่ยนกลับ ปรับเองได้ที่ตั้งค่าบอท' : '';
   const ok = await confirmDialog(`ยกเลิก${roundTitle(r)}?`,
     s.stats.trades ? `ไม้ของ${roundTitle(r)} (${counts(s.stats)} ${s.net >= 0 ? '+' : '−'}${fmtNum(Math.abs(s.net))} ${cur}) จะกลับไปรวมกับ${roundLabel(prev)} ประวัติการเทรดไม่หายไป${capNote}`
       : `${roundTitle(r)} ยังไม่มีไม้ที่ปิด ตัวเลขจะกลับไปนับรวมกับ${roundLabel(prev)}${capNote}`,

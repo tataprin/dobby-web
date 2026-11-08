@@ -48,6 +48,11 @@ export async function render(root, ctx) {
   }
 
   const cur = () => (st && st.account && st.account.currency) || 'USD';
+  const pnlNow = () => botPnlOf(st); // the bot's own P&L since its start date: the capital it counts = InpVirtualStart + this
+  const balNow = () => (st && st.account && st.account.balance > 0 ? Number(st.account.balance) : null);
+  // a new status with another P&L or balance (a trade closed) redraws the capital row and its hints
+  const moneyOf = () => `${pnlNow()}|${balNow()}`;
+  let moneyKey = '';
   const off = () => bot.server_utc_offset_min ?? 0;
   const eaVer = () => (st && st.ea_version) || bot.ea_version || '';
   const canSend = () => (st ? !!st.remote : parseFloat(eaVer()) >= 3.04);
@@ -76,7 +81,7 @@ export async function render(root, ctx) {
   let unlocked = false; // v3.03: edit only to download a .set
   let justSent = false;
   const draft = friend ? null : readDraft(bot.id);
-  if (draft && draft.v && JSON.stringify(draft.base) === JSON.stringify(baseVals) && describeChanges(baseVals, normalizeParams(draft.v)).length) {
+  if (draft && draft.v && JSON.stringify(draft.base) === JSON.stringify(baseVals) && describeChanges(baseVals, normalizeParams(draft.v), cur(), pnlNow()).length) {
     v = normalizeParams(draft.v);
     lotMode = lotsSame(v) ? 'same' : 'per';
     if (B.readOnly) unlocked = true;
@@ -84,8 +89,14 @@ export async function render(root, ctx) {
   }
   const editable = () => !friend && (!B.readOnly || unlocked);
   const locked = () => !editable();
-  const changes = () => describeChanges(baseVals, v, cur());
-  const errors = () => validateSimple(v, ceilings());
+  const changes = () => describeChanges(baseVals, v, cur(), pnlNow());
+  const errors = () => {
+    const e = validateSimple(v, ceilings());
+    const p = pnlNow();
+    // the field takes the capital the bot counts, so a number at or under the bot's profit leaves no start
+    if (e.InpVirtualStart && p > 0 && Number.isFinite(v.InpVirtualStart) && v.InpVirtualStart <= 0) e.InpVirtualStart = `ทุนของบอทต้องมากกว่ากำไรที่บอทนับไว้ (${fmtNum(p)} ${cur()})`;
+    return e;
+  };
 
   // ---------------- layout
   const headBox = h('div');
@@ -148,7 +159,7 @@ export async function render(root, ctx) {
     const prog = canSend() ? applyProgress(bot, ctl, st, B.matches) : null;
     const as = bot.agent_state || {};
     if (!changed('now', [B.now, B.pending, B.readOnly, B.hasStatus, prog, justSent, d.params, as.rejected, as.last_error,
-      st && st.remote && st.remote.rejects, st && st.control && st.control.warn, ctl.version, appliedVersion(bot), cur()]) && force !== true) return;
+      st && st.remote && st.remote.rejects, st && st.control && st.control.warn, ctl.version, appliedVersion(bot), cur(), pnlNow()]) && force !== true) return;
     const showProg = prog && (!prog.done || justSent);
     mount(nowBox,
       h('div', { class: 'set-sec-head' }, h('h2', null, 'ค่าที่บอทใช้อยู่ตอนนี้'),
@@ -156,10 +167,10 @@ export async function render(root, ctx) {
           : B.readOnly ? h('span', { class: 'chip warn' }, icon('lock'), `อ่านอย่างเดียว (บอทรุ่น ${eaVer() || '3.03'})`)
             : h('span', { class: 'chip good' }, icon('check'), 'เปลี่ยนจากเว็บได้')),
       h('div', { class: 'group', 'aria-live': 'polite' },
-        B.hasStatus ? h('dl', { class: 'now-grid' }, summaryRows(B.now, cur()).map(([k, val]) => h('div', { class: 'now-item' }, h('dt', null, k), h('dd', null, val))))
+        B.hasStatus ? h('dl', { class: 'now-grid' }, summaryRows(B.now, cur(), pnlNow()).map(([k, val]) => h('div', { class: 'now-item' }, h('dt', null, k), h('dd', null, val))))
           : h('p', { class: 'muted group-note' }, 'ยังไม่ได้รับค่าจากบอท เมื่อเครื่องออนไลน์ ค่าจะขึ้นที่นี่'),
         showProg ? h('div', { class: 'now-progress' },
-          B.pending ? h('p', { class: 'small' }, h('strong', null, 'ค่าใหม่ที่ส่งไป '), summaryText(normalizeParams({ ...B.now, ...d.params }), cur())) : null,
+          B.pending ? h('p', { class: 'small' }, h('strong', null, 'ค่าใหม่ที่ส่งไป '), summaryText(normalizeParams({ ...B.now, ...d.params }), cur(), pnlNow())) : null,
           progressSteps(prog.steps),
           prog.done ? h('p', { class: 'good-text small' }, icon('check'), ' บอทใช้ค่าใหม่แล้ว') : null) : null,
         rejectionsBlock(bot, st),
@@ -258,29 +269,49 @@ export async function render(root, ctx) {
     }
 
     // --- ทุนและล็อต
-    // EA v3.04 counts virtual = InpVirtualStart + its own P&L since its start date (SPEC 9.8), so the capital the bot
-    // counts, the auto lot, the risk hint and the daily cap use that sum, and "use the balance" sets the start that
-    // makes the sum equal the account balance.
-    const botPnl = botPnlOf(st);
-    const counted = () => Math.round((Number(v.InpVirtualStart) + botPnl) * 100) / 100;
-    const balStep = reg(stepper({ label: 'ทุนตั้งต้น', get: getKey('InpVirtualStart'), set: setKey('InpVirtualStart'), step: 10, min: 10, max: 10000000, decimals: 0, unit: cur(), disabled: locked }));
+    // EA v3.04 counts virtual = InpVirtualStart + its own P&L since its start date (SPEC 9.8). The field shows and takes
+    // that sum, "ทุนของบอท" (what the daily cap, the auto lot and the risk hint use), and stores InpVirtualStart = typed -
+    // P&L, so typing the account balance never counts the bot's profit twice.
+    const counted = () => Math.round((Number(v.InpVirtualStart) + pnlNow()) * 100) / 100;
+    const startFor = (x) => Math.round((x - pnlNow()) * 100) / 100; // the InpVirtualStart that makes the bot count x
+    moneyKey = moneyOf();
+    const balStep = reg(stepper({
+      label: 'ทุนของบอท', get: counted, step: 10, min: Math.max(10, Math.ceil(10 + pnlNow())), max: 10000000, decimals: 2,
+      format: (x) => (Number.isInteger(x) ? String(x) : x.toFixed(2)),
+      unit: cur(), disabled: locked,
+      set: (x) => { v.InpVirtualStart = Number.isFinite(x) ? startFor(x) : NaN; onChange(); },
+    }));
     balStep.classList.add('big');
-    const acc = st && st.account;
-    const balTarget = acc && acc.balance > 0 ? (botPnl ? Math.round((acc.balance - botPnl) * 100) / 100 : Math.round(acc.balance)) : null;
-    const useBal = balTarget !== null && balTarget >= 10 ? h('button', { class: 'linklike', type: 'button', onclick: () => { if (editable()) { v.InpVirtualStart = balTarget; onChange(); } } },
-      botPnl ? `ให้บอทนับทุนเท่ายอดเงินในบัญชี (${fmtNum(acc.balance)} ${cur()})` : `ใช้ยอดเงินในบัญชีตอนนี้ (${fmtNum(acc.balance)} ${cur()})`) : null;
-    if (useBal) { useBal.update = () => { useBal.disabled = locked(); }; reg(useBal); }
-    const countText = h('span', { class: 'hint' });
-    countText.update = () => {
-      countText.hidden = !botPnl;
-      if (!botPnl) return;
-      const n = counted();
-      const off = acc && acc.balance > 0 && Math.abs(n - acc.balance) >= 1;
-      const since = st && st.virtual && st.virtual.start_date ? ` ตั้งแต่ ${fmtThai(Date.parse(`${st.virtual.start_date.slice(0, 10).replace(/\./g, '-')}T12:00:00Z`), 'dm')}` : '';
-      mount(countText, `บอทนับทุน ${fmtNum(n)} = ทุนตั้งต้นนี้ ${botPnl >= 0 ? '+' : '−'} กำไรของบอท ${fmtNum(Math.abs(botPnl))}${since}`,
-        off ? h('span', { class: 'warn-text' }, ` ไม่ตรงกับยอดเงินในบัญชี ${fmtNum(acc.balance)}`) : null);
+    const useBal = h('button', { class: 'linklike', type: 'button', onclick: () => {
+      const b = balNow();
+      if (editable() && b !== null && startFor(b) >= 10) { v.InpVirtualStart = startFor(b); onChange(); }
+    } });
+    const balNote = h('span', { class: 'hint' });
+    balNote.update = () => {
+      const n = counted(), bal = balNow();
+      const known = bal !== null && Number.isFinite(n);
+      const same = known && Math.abs(n - bal) < 1;
+      balNote.hidden = !known;
+      useBal.hidden = !known || same || startFor(bal) < 10;
+      useBal.disabled = locked();
+      if (!known) return;
+      useBal.textContent = `ใช้ยอดเงินในบัญชี (${fmtNum(bal)} ${cur()})`;
+      // more than the account holds = a bigger daily cap than meant (warn); less is a choice (plain)
+      mount(balNote, same ? h('span', { class: 'good-text' }, icon('check'), ` เท่ากับยอดเงินในบัญชี ${fmtNum(bal)} ${cur()}`)
+        : n > bal ? h('span', { class: 'warn-text' }, `มากกว่ายอดเงินในบัญชี (${fmtNum(bal)} ${cur()}) จุดหยุดรายวันจะใหญ่กว่าที่ควร`)
+          : `น้อยกว่ายอดเงินในบัญชี (${fmtNum(bal)} ${cur()})`);
     };
-    reg(countText);
+    reg(balNote);
+    const pnlNote = h('span', { class: 'hint' });
+    pnlNote.update = () => {
+      const p = pnlNow();
+      pnlNote.hidden = !p;
+      if (!p) return;
+      const since = st && st.virtual && st.virtual.start_date ? ` ตั้งแต่ ${fmtThai(Date.parse(`${st.virtual.start_date.slice(0, 10).replace(/\./g, '-')}T12:00:00Z`), 'dm')}` : '';
+      mount(pnlNote, `รวม${p > 0 ? 'กำไร' : 'ขาดทุน'}ของบอท ${p > 0 ? '+' : '−'}${fmtNum(Math.abs(p))}${since} แล้ว บอทบวกส่วนนี้เอง เว็บจึงส่ง `,
+        h('code', { class: 'ea-key' }, `InpVirtualStart ${fmtNum(v.InpVirtualStart)}`), ' ให้บอท');
+    };
+    reg(pnlNote);
     const autoBtn = h('button', { class: 'btn auto-btn', type: 'button', onclick: () => doAuto() }, icon('wand'), 'ตั้งให้อัตโนมัติจากทุน');
     autoBtn.update = () => { autoBtn.disabled = locked(); };
     reg(autoBtn);
@@ -339,7 +370,7 @@ export async function render(root, ctx) {
     const secMoney = h('section', { class: 'ed-sec', id: 'set-money' },
       secHead('ทุนและล็อต', 'บอทใช้ทุนนี้คำนวณกำไรขาดทุนและจุดหยุดรายวัน'),
       h('div', { class: 'group' },
-        setRow(h('label', { class: 'set-label', for: balStep.input.id }, 'ทุนตั้งต้น'), [useBal, countText], balStep, errLines('InpVirtualStart')),
+        setRow(h('label', { class: 'set-label', for: balStep.input.id }, 'ทุนของบอท'), [balNote, useBal, pnlNote], balStep, errLines('InpVirtualStart')),
         setRow(h('span', { class: 'set-label' }, 'ตั้งให้อัตโนมัติจากทุน'), [autoText], autoBtn),
         risk,
         setRow(h('span', { class: 'set-label' }, 'วิธีตั้งล็อต'), [], lotSeg),
@@ -502,10 +533,10 @@ export async function render(root, ctx) {
     const keep = v.InpVirtualStart;
     const B0 = Math.round(counted());
     v = autoFromBalance(v, B0);
-    if (botPnl) v.InpVirtualStart = keep;
+    if (pnlNow()) v.InpVirtualStart = keep;
     lotMode = 'same';
     onChange();
-    toast(`ตั้งค่าอัตโนมัติสำหรับทุน ${fmtNum(B0, 0)} แล้ว: ${summaryText(v, cur())} ตรวจแล้วกด "บันทึกและส่งให้บอท"`, 'good', 6500);
+    toast(`ตั้งค่าอัตโนมัติสำหรับทุน ${fmtNum(B0, 0)} แล้ว: ${summaryText(v, cur(), pnlNow())} ตรวจแล้วกด "บันทึกและส่งให้บอท"`, 'good', 6500);
   }
 
   // ---------------- action bar
@@ -852,7 +883,7 @@ export async function render(root, ctx) {
       baseVals = clone(B.editBase);
       if (!wasDirty) { v = clone(B.editBase); lotMode = lotsSame(v) ? 'same' : 'per'; }
       onChange();
-    }
+    } else if (moneyOf() !== moneyKey) { moneyKey = moneyOf(); onChange(); }
   }
   function refreshAll() { resync(); drawHead(); drawNow(); drawLive(); drawPause(); drawSides(); drawBlackouts(); auto.update(); drawBar(); }
 

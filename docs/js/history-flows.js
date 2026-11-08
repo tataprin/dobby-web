@@ -4,6 +4,7 @@
 import { h, mount, icon, fmtNum, fmtThai, money, toast, errText, confirmDialog, openModal, field, busy, callout, newId,
   utcToThaiInput, thaiInputToUtc, isoUtc } from './util.js';
 import { flowTotals, sinceStart } from './analytics.js';
+import { botPnlOf } from './rounds.js';
 import { normDesired, patchDesired } from './botctl.js';
 import { currentValues, autoLot, mainLot, toDesiredParams } from './simple.js';
 import { normalizeParams } from './params.js';
@@ -74,7 +75,7 @@ export function flowsView(c) {
   }
 
   async function del(f) {
-    const ok = await confirmDialog('ลบรายการนี้?', `${kind(f.amount)} ${fmtNum(Math.abs(f.amount))} ${cur} เมื่อ ${when(f)} น. ทุนตั้งต้นของบอทไม่ถูกเปลี่ยน`, { ok: 'ลบ', danger: true });
+    const ok = await confirmDialog('ลบรายการนี้?', `${kind(f.amount)} ${fmtNum(Math.abs(f.amount))} ${cur} เมื่อ ${when(f)} น. ทุนของบอทไม่ถูกเปลี่ยน`, { ok: 'ลบ', danger: true });
     if (!ok) return;
     try { await c.api.deleteCashFlow(bot.id, f.id); toast('ลบแล้ว', 'good'); await c.reload(); } catch (e) { toast(errText(e), 'error', 6000); }
   }
@@ -130,20 +131,23 @@ export function flowsView(c) {
     const d = normDesired(ctl.desired);
     const canSend = st ? !!st.remote : parseFloat(bot.ea_version || '0') >= 3.04;
     const vals = currentValues(st, d.params).values;
+    // the bot counts InpVirtualStart + its own P&L (SPEC 9.8): the dialog shows that sum, the start moves by the amount
+    const pnl = botPnlOf(st);
     const now = Number(vals.InpVirtualStart) || 0;
-    const next = Math.round(now + amount);
-    const lot = autoLot(next), curLot = mainLot(vals);
+    const next = Math.round((now + amount) * 100) / 100;
+    const countNow = Math.round((now + pnl) * 100) / 100, countNext = Math.round((next + pnl) * 100) / 100;
+    const lot = autoLot(countNext), curLot = mainLot(vals);
     const tooLow = next < 10;
     openModal({
-      title: 'ปรับทุนตั้งต้นของบอทด้วยไหม?',
+      title: 'ปรับทุนของบอทด้วยไหม?',
       body: h('div', { class: 'stack' },
-        h('p', null, `ทุนตั้งต้นของบอทตอนนี้ ${fmtNum(now, 0)} ${cur} ถ้ารวมรายการนี้ (${amount >= 0 ? '+' : '−'}${fmtNum(Math.abs(amount))}) จะเป็น ${fmtNum(next, 0)} ${cur}`),
-        h('p', { class: 'muted small' }, 'บอทใช้ทุนตั้งต้นคิดจุดหยุดรายวันและ % กำไร EA จะคำนวณประวัติใหม่ด้วยทุนใหม่ ส่วนกำไรจากการเทรดไม่เปลี่ยน'),
-        h('p', null, `ถ้าใช้ล็อตอัตโนมัติจากทุน (ทุก 100 ${cur} = 0.01 ล็อต) ทุน ${fmtNum(next, 0)} ได้ล็อต ${fmtNum(lot)} ต่อไม้ (ตอนนี้ใช้ ${fmtNum(curLot)}) ถ้าต้องการเปลี่ยนล็อตด้วย ไปที่ตั้งค่าบอท > ตั้งให้อัตโนมัติจากทุน`),
-        tooLow ? callout('warn', 'ทุนใหม่ต่ำเกินไป', h('p', null, 'ทุนตั้งต้นต้องไม่ต่ำกว่า 10 เปลี่ยนเองที่หน้าตั้งค่าบอทถ้าต้องการ')) : null,
-        !canSend ? callout('warn', 'EA รุ่นนี้รับค่าจากเว็บไม่ได้', h('p', null, `เปลี่ยน InpVirtualStart เป็น ${fmtNum(next, 0)} ที่เครื่อง ${bot.name} เอง (EA v3.04 ส่งจากเว็บได้)`)) : null),
+        h('p', null, `ทุนของบอทตอนนี้ ${fmtNum(countNow)} ${cur} ถ้ารวมรายการนี้ (${amount >= 0 ? '+' : '−'}${fmtNum(Math.abs(amount))}) จะเป็น ${fmtNum(countNext)} ${cur}`),
+        h('p', { class: 'muted small' }, 'บอทใช้ทุนนี้คิดจุดหยุดรายวันและ % กำไร EA จะคำนวณประวัติใหม่ด้วยทุนใหม่ ส่วนกำไรจากการเทรดไม่เปลี่ยน'),
+        h('p', null, `ถ้าใช้ล็อตอัตโนมัติจากทุน (ทุก 100 ${cur} = 0.01 ล็อต) ทุน ${fmtNum(countNext, 0)} ได้ล็อต ${fmtNum(lot)} ต่อไม้ (ตอนนี้ใช้ ${fmtNum(curLot)}) ถ้าต้องการเปลี่ยนล็อตด้วย ไปที่ตั้งค่าบอท > ตั้งให้อัตโนมัติจากทุน`),
+        tooLow ? callout('warn', 'ทุนใหม่ต่ำเกินไป', h('p', null, 'ปรับทุนของบอทเองที่หน้าตั้งค่าบอทถ้าต้องการ')) : null,
+        !canSend ? callout('warn', 'EA รุ่นนี้รับค่าจากเว็บไม่ได้', h('p', null, `เปลี่ยน InpVirtualStart เป็น ${next} ที่เครื่อง ${bot.name} เอง (EA v3.04 ส่งจากเว็บได้)`)) : null),
       actions: canSend && !tooLow ? [{ label: 'ไม่ต้อง' }, {
-        label: `ปรับทุนเป็น ${fmtNum(next, 0)}`, kind: 'primary', icon: 'check',
+        label: `ปรับทุนเป็น ${fmtNum(countNext)}`, kind: 'primary', icon: 'check',
         onClick: async (close) => {
           try {
             await patchDesired(bot.id, (n) => {
@@ -152,7 +156,7 @@ export function flowsView(c) {
               n.params = toDesiredParams(base);
             });
             close();
-            toast(`ส่งทุนตั้งต้น ${fmtNum(next, 0)} ให้บอทแล้ว EA จะใช้เมื่อไม่มีไม้เปิด (ดูความคืบหน้าที่ตั้งค่าบอท)`, 'good', 6000);
+            toast(`ส่งทุน ${fmtNum(countNext)} ให้บอทแล้ว EA จะใช้เมื่อไม่มีไม้เปิด (ดูความคืบหน้าที่ตั้งค่าบอท)`, 'good', 6000);
           } catch (e) { toast(errText(e), 'error', 7000); }
         },
       }] : [{ label: 'ปิด' }],

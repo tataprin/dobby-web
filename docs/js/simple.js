@@ -122,6 +122,10 @@ export function strategiesText(v) {
   if (on.length === STRATS.length) return `เปิด ${on.length} สูตร`;
   return `เปิด ${on.length} สูตร (${on.map((s) => s.title).join(', ')})`;
 }
+// The capital the bot counts. EA v3.04: virtual = InpVirtualStart + the bot's own P&L since its start date (SPEC 9.8),
+// so on a bot the summaries show that sum (pnl from rounds.js botPnlOf); a preset (no bot) shows InpVirtualStart.
+const capitalOf = (v, pnl) => Math.round((Number(v.InpVirtualStart) + (Number(pnl) || 0)) * 100) / 100;
+const capitalText = (v, pnl) => { const x = capitalOf(v, pnl); return fmtNum(x, Number.isInteger(x) ? 0 : 2); };
 // Short parts (presets, lists): "เปิด 3 สูตร", "ล็อต 0.03 ทุกสูตร", "ทุน 300 USD", "ล็อก 2 ชั้น (85→83, 95→93)", ...
 export function summaryParts(v, currency = 'USD') {
   return [
@@ -135,23 +139,23 @@ export function summaryParts(v, currency = 'USD') {
 }
 // One plain Thai sentence: "เปิด 3 สูตร ล็อต 0.03 ทุกสูตร จากทุน 300 USD ล็อกกำไร 2 ชั้น (85→83 และ 95→93) ปิดสูตรเอเชีย
 // และหยุดเปิดไม้เมื่อขาดทุนถึง 10% ต่อวัน"
-export function summaryText(v, currency = 'USD') {
+export function summaryText(v, currency = 'USD', pnl = 0) {
   const m = lockMode(v);
   const near = `${pctText(v.InpLockAtPct)}→${pctText(v.InpLockToPct)}`;
   const first = `${pctText(v.InpLock1AtPct)}→${pctText(v.InpLock1ToPct)}`;
   const lock = m === 0 ? 'ไม่ล็อกกำไร' : m === 1 ? `ล็อกกำไร 1 ชั้น (${near})` : `ล็อกกำไร 2 ชั้น (${first} และ ${near})`;
   const asia = v.InpUseAsia ? `เปิดสูตรเอเชีย ${fmtNum(v.InpLotsAsia)} ล็อต` : 'ปิดสูตรเอเชีย';
-  return `${strategiesText(v)} ${lotsText(v)} จากทุน ${fmtNum(v.InpVirtualStart, 0)} ${currency} ${lock} ${asia} และหยุดเปิดไม้เมื่อขาดทุนถึง ${pctText(v.InpDailyCapPct)}% ต่อวัน`.replace(/\s+/g, ' ').trim();
+  return `${strategiesText(v)} ${lotsText(v)} จากทุน ${capitalText(v, pnl)} ${currency} ${lock} ${asia} และหยุดเปิดไม้เมื่อขาดทุนถึง ${pctText(v.InpDailyCapPct)}% ต่อวัน`.replace(/\s+/g, ' ').trim();
 }
 
-// Label / value pairs for "ค่าที่บอทใช้อยู่ตอนนี้".
-export function summaryRows(v, currency = 'USD') {
+// Label / value pairs for "ค่าที่บอทใช้อยู่ตอนนี้" (pnl given: a bot, "ทุนของบอท" = the capital it counts) and presets.
+export function summaryRows(v, currency = 'USD', pnl = null) {
   const on = enabledStrats(v);
   const m = lockMode(v);
   return [
     ['สูตรที่เปิด', on.length ? on.map((s) => s.title).join(', ') : 'ปิดทุกสูตร'],
     ['ล็อตต่อไม้', on.length ? lotsText(v).replace(/^ล็อต /, '') : '—'],
-    ['ทุนตั้งต้น', `${fmtNum(v.InpVirtualStart, 0)} ${currency}`.trim()],
+    pnl === null ? ['ทุนตั้งต้น', `${fmtNum(v.InpVirtualStart, 0)} ${currency}`.trim()] : ['ทุนของบอท', `${capitalText(v, pnl)} ${currency}`.trim()],
     ['ล็อกกำไร', m === 0 ? 'ไม่ล็อก' : m === 1 ? `1 ชั้น ${pctText(v.InpLockAtPct)}→${pctText(v.InpLockToPct)}` : `2 ชั้น ${pctText(v.InpLock1AtPct)}→${pctText(v.InpLock1ToPct)}, ${pctText(v.InpLockAtPct)}→${pctText(v.InpLockToPct)}`],
     ['สูตรเอเชีย', v.InpUseAsia ? `เปิด ${fmtNum(v.InpLotsAsia)} ล็อต` : 'ปิด'],
     ['ขาดทุนสูงสุดต่อวัน', `${pctText(v.InpDailyCapPct)}%`],
@@ -161,7 +165,7 @@ export function summaryRows(v, currency = 'USD') {
 const onOffText = (b) => (b ? 'เปิด' : 'ปิด');
 // Field descriptors used to list (and count) changes in plain Thai.
 const FIELDS = [
-  { label: 'ทุนตั้งต้น', text: (v, c) => `${fmtNum(v.InpVirtualStart, 0)} ${c}` },
+  { label: 'ทุนของบอท', text: (v, c, pnl) => `${capitalText(v, pnl)} ${c}` },
   ...STRATS.map((s) => ({ label: `สูตร ${s.title}`, text: (v) => onOffText(v[s.use]) })),
   { label: 'ล็อต', text: (v) => lotsText(v).replace(/^ล็อต /, '') },
   { label: 'สูตรเอเชีย', text: (v) => (v.InpUseAsia ? `เปิด ล็อต ${fmtNum(v.InpLotsAsia)}` : 'ปิด') },
@@ -174,10 +178,10 @@ const FIELDS = [
   { label: 'สเปรดสูงสุด', text: (v) => `${fmtNum(v.InpMaxSpread)} $`, adv: true },
   { label: 'ตัวกรองความผันผวน (vol gate)', text: (v) => (v.InpVolGate ? `เปิด ${fmtNum(v.InpVolGatePct)}%` : `ปิด (${fmtNum(v.InpVolGatePct)}%)`), adv: true },
 ];
-export function describeChanges(from, to, currency = 'USD') {
+export function describeChanges(from, to, currency = 'USD', pnl = 0) {
   const out = [];
   for (const f of FIELDS) {
-    const a = f.text(from, currency), b = f.text(to, currency);
+    const a = f.text(from, currency, pnl), b = f.text(to, currency, pnl);
     if (a !== b) out.push({ label: f.label, from: a, to: b, adv: !!f.adv });
   }
   const keyDiff = REMOTE_KEYS.filter((k) => !sameValue(from[k], to[k]));

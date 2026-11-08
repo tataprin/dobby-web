@@ -91,12 +91,12 @@ export function toneLabel(tone) {
 // Each control returns an element with .update() that refreshes it from get() without rebuilding (keeps focus).
 const roundTo = (x, d) => Math.round(x * 10 ** d) / 10 ** d;
 
-export function stepper({ label, get, set, step = 1, min = -Infinity, max = Infinity, decimals = 0, unit = '', disabled = () => false, id, trim = false }) {
+export function stepper({ label, get, set, step = 1, min = -Infinity, max = Infinity, decimals = 0, unit = '', disabled = () => false, id, trim = false, format = null }) {
   const inId = id || newId('st');
   const input = h('input', {
     id: inId, class: 'stepper-in', type: 'text', inputmode: decimals ? 'decimal' : 'numeric', autocomplete: 'off', 'aria-label': label,
   });
-  const fmt = (x) => (Number.isFinite(x) ? (trim ? String(roundTo(x, decimals)) : x.toFixed(decimals)) : '');
+  const fmt = (x) => (Number.isFinite(x) ? (format ? format(x) : trim ? String(roundTo(x, decimals)) : x.toFixed(decimals)) : '');
   const bump = (dir) => {
     const cur = Number(get());
     const base = Number.isFinite(cur) ? cur : min;
