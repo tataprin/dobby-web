@@ -159,6 +159,25 @@ profit / TP, cinnabar = loss / SL).
   rows (from struck through, to), the caution in 14 px slate, one primary button and the sentence "ยังไม่มีอะไรเปลี่ยน
   จนกว่าคุณจะกดส่งในหน้าตั้งค่าบอท". Gold stays meaningful: it marks the one action that leads to a change.
 
+## TradingView gold chart (2026-11-08)
+
+- **What**: an extra panel on ภาพรวม, under the open trade + recent trades row: "กราฟทองจาก TradingView" with OANDA's
+  XAUUSD candles (TradingView has no TMGM feed). The hero line stays the source of truth for Dobby's trades (the
+  broker's own M15 bars with the marks); the sub-line says the OANDA price can differ a little from the bot's broker,
+  and the foot points back to the hero for the entries and exits, with a quiet "เปิดใน TradingView" link.
+- **Security**: no TradingView script runs in the site's page (it holds the Supabase session). `js/tvchart.js` builds
+  the widget URL itself (`www.tradingview-widget.com/embed-widget/advanced-chart/`, settings in the hash) and shows it
+  in a sandboxed iframe (`allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox`: no top
+  navigation) with `referrerpolicy="no-referrer"`. If a Content-Security-Policy is ever added, it needs
+  `frame-src https://www.tradingview-widget.com`.
+- **Look**: candles in jade / cinnabar, the widget background and grid from `--sheet` / `--slate` at 10 %, TradingView's
+  light or dark theme following the site theme (the iframe is rebuilt on a theme change). The widget's own toolbars,
+  volume and symbol search are off; its 1 px frame is clipped so there is no box inside the panel.
+- **Controls**: one 44 px segmented control (15 นาที / 1 ชม. / 4 ชม. / 1 วัน, remembered per browser as
+  `dobby-tv-interval`), full width on phones. The frame is 400 px tall on phones, 480 from 768 px.
+- **Data**: the iframe is created only when the panel comes within 240 px of the screen, so a phone that never scrolls
+  down never downloads it.
+
 ## Principles
 1. **The market is always visible** — a live XAUUSD ticker in the header (22 px price on desktop); the dashboard hero is
    today's price line with Dobby's own trades stamped on it (bars from `bots.agent_state.bars`, SPEC 8).

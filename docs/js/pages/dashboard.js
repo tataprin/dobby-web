@@ -14,6 +14,7 @@ import { riskStrip } from '../insights.js';
 import { currentValues, summaryText } from '../simple.js';
 import { hallmark } from '../hallmark.js';
 import { priceChart, readBars } from '../pricechart.js';
+import { tvChartPanel } from '../tvchart.js';
 
 const DAY = 86400000;
 
@@ -73,7 +74,8 @@ export async function render(root, ctx) {
   const posBox = h('section', { class: 'panel dsec', 'aria-label': 'ไม้ที่เปิดอยู่' });
   const recentBox = h('section', { class: 'panel dsec', 'aria-label': 'เทรดล่าสุด' });
   const detailBox = h('div', { hidden: true });
-  root.append(headBox, hero, warnBox, figsBox, riskBox, h('div', { class: 'dash-cols' }, posBox, recentBox), detailBox);
+  const tvBox = tvChartPanel(); // TradingView's gold chart, an extra view (loads when scrolled near)
+  root.append(headBox, hero, warnBox, figsBox, riskBox, h('div', { class: 'dash-cols' }, posBox, recentBox), tvBox, detailBox);
   setTimeout(() => hero.classList.remove('intro'), 1600);
 
   // journal for the chart marks, the recent trades list and the risk strip (last 30 days, server time, or since the
@@ -445,5 +447,5 @@ export async function render(root, ctx) {
       if (s) onStatus(s);
     } catch { /* keep the last data */ }
   }, 30000);
-  return () => { unsub(); offCtl(); offTheme(); clearInterval(ages); clearInterval(poll); chart.destroy(); };
+  return () => { unsub(); offCtl(); offTheme(); clearInterval(ages); clearInterval(poll); chart.destroy(); tvBox.destroy(); };
 }
