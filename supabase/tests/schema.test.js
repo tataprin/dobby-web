@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import { freshDb, SCHEMA_SQL, SEED_SQL, CODE_RE } from './helpers.js';
 
 const TABLES = ['profiles', 'invites', 'bots', 'bot_status', 'journal', 'bot_control', 'presets', 'audit',
-  'news_events', 'bars', 'cash_flows', 'trade_notes', 'ai_config', 'ai_conversations', 'ai_messages', 'ai_usage'];
+  'news_events', 'bars', 'cash_flows', 'trade_notes', 'rounds', 'ai_config', 'ai_conversations', 'ai_messages', 'ai_usage'];
 const SEQUENCES = ['journal_id_seq', 'audit_id_seq', 'news_events_id_seq', 'cash_flows_id_seq',
-  'ai_messages_id_seq', 'ai_usage_id_seq'];
+  'ai_messages_id_seq', 'ai_usage_id_seq', 'rounds_id_seq'];
 const RPCS = ['is_approved()', 'is_admin()', 'owns_bot(uuid)', 'live_gate_status()', 'redeem_invite(text)',
   'create_invite(text,integer,text)', 'revoke_invite(text)', 'admin_set_user(uuid,text,boolean,boolean)',
   'set_display_name(text)', 'admin_overview()', 'register_bot(text,jsonb)', 'ai_quota()'];
@@ -16,6 +16,7 @@ const SERVICE_RPCS = ['ai_start_turn(uuid,uuid)',
 const INTERNAL = ['gen_invite_code()', 'handle_new_user()', 'bot_control_before()', 'bot_control_audit()',
   'presets_before()', 'presets_audit()', 'bots_before()', 'bots_audit_delete()', 'bot_status_before()',
   'journal_skip_duplicate()', 'cash_flows_before()', 'cash_flows_audit()', 'trade_notes_before()',
+  'rounds_before()', 'rounds_audit()',
   'ai_used_today(uuid)', 'ai_month_cost()', 'ai_config_before()', 'ai_config_audit()',
   'ai_messages_touch_conversation()'];
 
@@ -61,6 +62,7 @@ test('authenticated gets exactly the intended table privileges (no TRUNCATE, no 
     bot_control: ['SELECT', 'UPDATE'],
     bars: ['SELECT', 'INSERT', 'UPDATE'],
     cash_flows: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'], trade_notes: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
+    rounds: ['SELECT', 'INSERT', 'DELETE'],                  // + UPDATE on the name column only (below)
     ai_config: ['SELECT', 'UPDATE'],
     ai_conversations: ['SELECT', 'INSERT', 'DELETE'],        // + UPDATE on the title column only (below)
     ai_messages: ['SELECT', 'INSERT', 'DELETE'],
@@ -77,10 +79,14 @@ test('authenticated gets exactly the intended table privileges (no TRUNCATE, no 
     const [r] = await ctx.sql(`select has_column_privilege('authenticated', 'public.ai_conversations', $1, 'UPDATE') as ok`, [col]);
     assert.equal(r.ok, col === 'title', `authenticated UPDATE on ai_conversations.${col}`);
   }
+  for (const col of ['id', 'bot_id', 'started_at', 'name', 'base', 'created_at', 'created_by']) {
+    const [r] = await ctx.sql(`select has_column_privilege('authenticated', 'public.rounds', $1, 'UPDATE') as ok`, [col]);
+    assert.equal(r.ok, col === 'name', `authenticated UPDATE on rounds.${col}`);
+  }
   // sequences: only the ones behind client inserts
   for (const s of SEQUENCES) {
     const [r] = await ctx.sql(`select has_sequence_privilege('authenticated', $1, 'USAGE') as ok`, [`public.${s}`]);
-    assert.equal(r.ok, ['journal_id_seq', 'news_events_id_seq', 'cash_flows_id_seq', 'ai_messages_id_seq'].includes(s),
+    assert.equal(r.ok, ['journal_id_seq', 'news_events_id_seq', 'cash_flows_id_seq', 'ai_messages_id_seq', 'rounds_id_seq'].includes(s),
       `authenticated USAGE on ${s}`);
   }
 });

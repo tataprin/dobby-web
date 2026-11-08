@@ -61,15 +61,16 @@ export function riskPanel(r, cur, rangeLabel) {
 }
 
 // ภาพรวม: one quiet strip (drawdown, losing streak, strategy health) with the way to the full view
-export function riskStrip(r, health, cur) {
+// period: 'ใน 30 วัน' (the dashboard's journal window) or 'ในรอบนี้' (SPEC 9.8)
+export function riskStrip(r, health, cur, period = 'ใน 30 วัน') {
   const judged = health.filter((x) => ['ok', 'watch', 'bad'].includes(x.status));
   const flagged = health.filter((x) => x.status === 'watch' || x.status === 'bad');
   const hv = !judged.length ? 'ยังน้อยเกินไป' : flagged.length ? flagged.map((x) => `${HEALTH_LABEL[x.status]} ${x.module}`).join(', ') : 'ปกติทุกสูตร';
   return h('section', { class: 'panel risk-strip', 'aria-label': 'ความเสี่ยง' },
     h('div', { class: 'dsec-head' }, h('h2', null, 'ความเสี่ยง'), h('a', { class: 'link-quiet', href: '#/history?tab=overview' }, 'ดูทั้งหมด')),
     h('div', { class: 'rk-grid three' },
-      cellEl('ลดลงจากจุดสูงสุด', r.curDd === null ? '—' : money(-r.curDd, { signed: true, unit: cur }), r.curDd === null ? 'ยังไม่มีไม้ที่ปิด' : `มากสุดใน 30 วัน −${fmtNum(r.maxDd)}`),
-      cellEl('แพ้ติดกัน', h('span', { class: 'fig-text' }, `${r.streak} ไม้`), `นานสุดใน 30 วัน ${r.longestStreak} ไม้`),
+      cellEl('ลดลงจากจุดสูงสุด', r.curDd === null ? '—' : money(-r.curDd, { signed: true, unit: cur }), r.curDd === null ? (period === 'ในรอบนี้' ? 'ยังไม่มีไม้ที่ปิดในรอบนี้' : 'ยังไม่มีไม้ที่ปิด') : r.maxDd > 0.005 ? `มากสุด${period} −${fmtNum(r.maxDd)}` : `ยังไม่เคยลดลง${period}`),
+      cellEl('แพ้ติดกัน', h('span', { class: 'fig-text' }, `${r.streak} ไม้`), `นานสุด${period} ${r.longestStreak} ไม้`),
       cellEl('สุขภาพสูตร', h('span', { class: `fig-text${flagged.some((x) => x.status === 'bad') ? ' danger-text' : flagged.length ? ' warn-text' : ''}` }, hv),
         judged.length ? `เทียบ ${HEALTH_WINDOW} ไม้ล่าสุดกับผลทดสอบ` : `ต้องมีอย่างน้อย ${HEALTH_MIN} ไม้ต่อสูตร`)));
 }

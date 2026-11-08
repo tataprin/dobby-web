@@ -100,6 +100,11 @@ Re-run the whole `schema.sql` once (new tables `bars`, `cash_flows`, `trade_note
 of the 2026-11-07 version created them. Agent 1.2.0 keeps working before that; it only warns and retries its bars / cash-flow
 uploads every 10 minutes.
 
+### Counting rounds 2026-11-08 (SPEC 9.8)
+Re-run the whole `schema.sql` once (new table `rounds`). Until then the website shows no rounds and "เริ่มนับรอบใหม่"
+says the database is not ready; nothing else changes. Then redeploy the Edge Function `chat` (paste the new
+`functions/chat/index.ts`, Verify JWT stays off) so the AI assistant gets the `get_rounds` tool.
+
 ### AI assistant (one time, dashboard only; Thai steps above)
 1. Edge Functions -> Deploy a new function -> Via Editor, name `chat`, paste `functions/chat/index.ts`, deploy, then
    turn **Verify JWT off** (the function checks the user's token itself with `/auth/v1/user`).

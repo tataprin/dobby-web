@@ -162,6 +162,21 @@ create table if not exists public.trade_notes (
   primary key (bot_id, trade_key)
 );
 
+-- SPEC 9.8: counting rounds (รอบ). Only a way to split the history on the website: the bot never reads it. A round
+-- runs from started_at to the next round's started_at; started_at null = round 1, from the very beginning. base =
+-- what the status showed at the start (account balance, virtual balance and start), for the % and for the AI.
+create table if not exists public.rounds (
+  id         bigserial primary key,
+  bot_id     uuid not null references public.bots(id) on delete cascade,
+  started_at timestamptz,
+  name       text check (name is null or char_length(name) <= 60),
+  base       jsonb not null default '{}'::jsonb check (jsonb_typeof(base) = 'object'),
+  created_at timestamptz not null default now(),
+  created_by uuid default auth.uid()
+);
+create unique index if not exists rounds_bot_start_idx on public.rounds (bot_id, started_at);
+create unique index if not exists rounds_bot_first_idx on public.rounds (bot_id) where started_at is null;
+
 -- SPEC 10.1: AI assistant. ai_config is exactly one row (id = 1), seeded here; "on conflict do nothing" keeps the
 -- admin's settings on every re-run. (Changing the allowed model list later: drop constraint ai_config_model_check
 -- and add the new one.)
@@ -236,6 +251,7 @@ alter table public.news_events enable row level security;
 alter table public.bars               enable row level security;
 alter table public.cash_flows         enable row level security;
 alter table public.trade_notes        enable row level security;
+alter table public.rounds             enable row level security;
 alter table public.ai_config          enable row level security;
 alter table public.ai_conversations   enable row level security;
 alter table public.ai_messages        enable row level security;
@@ -949,6 +965,57 @@ create trigger trade_notes_before
   before insert or update on public.trade_notes
   for each row execute function public.trade_notes_before();
 
+-- rounds (SPEC 9.8): created_at / created_by are the server's, a start is never in the future, at most 200 rounds per
+-- bot, and only the name changes afterwards (also enforced by the column grant); every change is audited.
+create or replace function public.rounds_before()
+returns trigger
+language plpgsql security invoker set search_path = public
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.created_at := now();
+    new.created_by := auth.uid();
+    if new.started_at is not null and new.started_at > now() then
+      new.started_at := now();
+    end if;
+    if (select count(*) from public.rounds r where r.bot_id = new.bot_id) >= 200 then
+      raise exception 'too many rounds for this bot' using errcode = 'check_violation';
+    end if;
+  else
+    new.bot_id := old.bot_id;
+    new.started_at := old.started_at;
+    new.base := old.base;
+    new.created_at := old.created_at;
+    new.created_by := old.created_by;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists rounds_before on public.rounds;
+create trigger rounds_before
+  before insert or update on public.rounds
+  for each row execute function public.rounds_before();
+
+create or replace function public.rounds_audit()
+returns trigger
+language plpgsql security definer set search_path = public
+as $$
+begin
+  insert into public.audit (actor, bot_id, action, before, after)
+    values (auth.uid(), case when tg_op = 'DELETE' then old.bot_id else new.bot_id end,
+            'round_' || lower(tg_op),
+            case when tg_op in ('UPDATE', 'DELETE') then to_jsonb(old) else null end,
+            case when tg_op in ('INSERT', 'UPDATE') then to_jsonb(new) else null end);
+  return null;
+end;
+$$;
+
+drop trigger if exists rounds_audit on public.rounds;
+create trigger rounds_audit
+  after insert or update or delete on public.rounds
+  for each row execute function public.rounds_audit();
+
 -- ai_config (SPEC 10.1): updated_at / updated_by are the server's; every change is audited as ai_config_update
 create or replace function public.ai_config_before()
 returns trigger
@@ -1006,11 +1073,12 @@ create trigger ai_messages_touch_conversation
 -- -----------------------------------------------------------------------------------------------------
 revoke all on table public.profiles, public.invites, public.bots, public.bot_status, public.journal,
                     public.bot_control, public.presets, public.audit, public.news_events,
-                    public.bars, public.cash_flows, public.trade_notes,
+                    public.bars, public.cash_flows, public.trade_notes, public.rounds,
                     public.ai_config, public.ai_conversations, public.ai_messages, public.ai_usage
   from anon, authenticated;
 revoke all on sequence public.journal_id_seq, public.audit_id_seq, public.news_events_id_seq,
-                       public.cash_flows_id_seq, public.ai_messages_id_seq, public.ai_usage_id_seq
+                       public.cash_flows_id_seq, public.ai_messages_id_seq, public.ai_usage_id_seq,
+                       public.rounds_id_seq
   from anon, authenticated;
 
 grant select                         on table public.profiles, public.invites, public.audit to authenticated;
@@ -1019,12 +1087,14 @@ grant select, insert, update         on table public.bot_status, public.journal 
 grant select, update                 on table public.bot_control to authenticated;  -- NO insert: register_bot only
 grant select, insert, update         on table public.bars to authenticated;         -- no delete: cascade only
 grant select, insert, update, delete on table public.cash_flows, public.trade_notes to authenticated;
+grant select, insert, delete         on table public.rounds to authenticated;
+grant update (name)                  on table public.rounds to authenticated;      -- only the name changes
 grant select, update                 on table public.ai_config to authenticated;    -- update: admin (policy)
 grant select, insert, delete         on table public.ai_conversations, public.ai_messages to authenticated;
 grant update (title)                 on table public.ai_conversations to authenticated;  -- only the title changes
 grant select                         on table public.ai_usage to authenticated;     -- writes: service_role RPCs only
 grant usage, select on sequence public.journal_id_seq, public.news_events_id_seq, public.cash_flows_id_seq,
-                                public.ai_messages_id_seq
+                                public.ai_messages_id_seq, public.rounds_id_seq
   to authenticated;
 
 -- RPCs and helpers used by policies: authenticated only
@@ -1075,6 +1145,8 @@ revoke execute on function public.journal_skip_duplicate() from public, anon, au
 revoke execute on function public.cash_flows_before()      from public, anon, authenticated;
 revoke execute on function public.cash_flows_audit()       from public, anon, authenticated;
 revoke execute on function public.trade_notes_before()     from public, anon, authenticated;
+revoke execute on function public.rounds_before()          from public, anon, authenticated;
+revoke execute on function public.rounds_audit()           from public, anon, authenticated;
 revoke execute on function public.ai_used_today(uuid)      from public, anon, authenticated;
 revoke execute on function public.ai_month_cost()          from public, anon, authenticated;
 revoke execute on function public.ai_config_before()       from public, anon, authenticated;
@@ -1255,6 +1327,27 @@ create policy trade_notes_update on public.trade_notes for update to authenticat
               and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
 drop policy if exists trade_notes_delete on public.trade_notes;
 create policy trade_notes_delete on public.trade_notes for delete to authenticated
+  using ((select public.is_approved())
+         and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+
+-- rounds (SPEC 9.8): same rule as cash_flows (the approved owner writes, the admin reads every row)
+drop policy if exists rounds_select on public.rounds;
+create policy rounds_select on public.rounds for select to authenticated
+  using (((select public.is_approved())
+          and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+         or (select public.is_admin()));
+drop policy if exists rounds_insert on public.rounds;
+create policy rounds_insert on public.rounds for insert to authenticated
+  with check ((select public.is_approved())
+              and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+drop policy if exists rounds_update on public.rounds;
+create policy rounds_update on public.rounds for update to authenticated
+  using ((select public.is_approved())
+         and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+  with check ((select public.is_approved())
+              and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+drop policy if exists rounds_delete on public.rounds;
+create policy rounds_delete on public.rounds for delete to authenticated
   using ((select public.is_approved())
          and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
 

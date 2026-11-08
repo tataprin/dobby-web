@@ -4,13 +4,15 @@ import { h, mount, icon, fmtNum, fmtSigned, fmtPct, pnl, fmtThai, timeEl, utcToS
   duration, downloadCsv, errorState, loadingState, emptyState, debounce, toneOf, field, callout } from '../util.js';
 import { app, currentBot, on, ownsBot } from '../state.js';
 import { prepareRows, pairTrades, moduleStats, dailyPnl, equitySeries, journalCsvRows, JOURNAL_HEADER, MODULES,
-  EVENT_LABELS, REASON_LABELS, tradeHref } from '../journal.js';
+  EVENT_LABELS, REASON_LABELS, tradeHref, rebaseBalances } from '../journal.js';
 import { modChip, sideEl, panel, pageHead, noBotState } from '../views.js';
 import { prefs } from '../state.js';
 import { strategyHealth, riskStats, periodBounds } from '../analytics.js';
 import { healthPanel, riskPanel } from '../insights.js';
 import { flowsView } from '../history-flows.js';
 import { summaryView } from '../history-summary.js';
+import { roundsPanel } from '../history-rounds.js';
+import { roundsOf, currentRound, roundLabel, eaStartUtc } from '../rounds.js';
 
 const CHART_CDN = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/auto/+esm';
 let chartMod = null;
@@ -31,8 +33,9 @@ export async function render(root, ctx) {
   let rows = [], loadedAll = false;
   const today = thaiDayKey(Date.now());
   const ago = (d) => thaiDayKey(Date.now() - d * DAY);
-  const f = { from: ago(29), to: today, module: '', event: '', serverDay: '', tag: '' };
-  let st = null, flows = [], flowsErr = null, notes = [];
+  // round: the number of the round shown (0 = the dates decide)
+  const f = { from: ago(29), to: today, module: '', event: '', serverDay: '', tag: '', round: 0 };
+  let st = null, flows = [], flowsErr = null, notes = [], roundRows = [], rounds = [];
   const period = { kind: prefs.get('summary-kind', 'week') === 'month' ? 'month' : 'week', offset: 0 };
   let tab = TABS.some((t) => t.id === ctx.query.get('tab')) ? ctx.query.get('tab') : prefs.get('history-tab', 'overview');
   let chart = null;
@@ -56,9 +59,15 @@ export async function render(root, ctx) {
   }
 
   try {
-    const [, s] = await Promise.all([load(false), ctx.api.botStatus(bot.id).catch(() => null), loadFlows(), loadNotes()]);
+    const [s] = await Promise.all([ctx.api.botStatus(bot.id).catch(() => null), loadFlows(), loadNotes(), loadRounds()]);
     st = s ? s.status : null;
+    // with rounds, every round's numbers need the whole journal
+    await load(rounds.length > 0);
   } catch (e) { body.replaceChildren(errorState(e, () => ctx.route())); return; }
+  async function loadRounds() {
+    try { roundRows = await ctx.api.listRounds(bot.id); } catch { roundRows = []; } // table not deployed yet: no rounds
+    rounds = roundsOf(roundRows);
+  }
   async function loadFlows() {
     try { flows = await ctx.api.listCashFlows(bot.id); flowsErr = null; } catch (e) { flows = []; flowsErr = e; }
   }
@@ -71,6 +80,28 @@ export async function render(root, ctx) {
   const fromIn = h('input', { class: 'input', type: 'date', value: f.from });
   const toIn = h('input', { class: 'input', type: 'date', value: f.to });
   const modSel = h('select', { class: 'input select' }, h('option', { value: '' }, 'ทุกสูตร'), MODULES.map((m) => h('option', { value: m }, m)));
+  const roundSel = h('select', { class: 'input select' });
+  const fillRounds = () => mount(roundSel, rounds.slice().reverse().map((r) => h('option', { value: String(r.n), selected: f.round === r.n },
+    r.current ? `รอบนี้ (${roundLabel(r)})` : roundLabel(r))), h('option', { value: '0', selected: !f.round }, 'ตามวันที่'));
+  // one round: its days in the date boxes; its exact start time decides which trades count
+  function roundDates() {
+    const r = rounds[f.round - 1];
+    if (!r) return;
+    f.from = Number.isFinite(r.from) ? thaiDayKey(r.from) : '';
+    f.to = Number.isFinite(r.to) ? thaiDayKey(r.to - 1) : today;
+    fromIn.value = f.from; toIn.value = f.to;
+  }
+  async function selectRound(n) {
+    f.round = rounds[n - 1] ? n : 0; f.serverDay = '';
+    if (f.round) {
+      roundDates();
+      if (!loadedAll) { body.replaceChildren(loadingState()); try { await safeLoad(true); } catch { return; } }
+    }
+    fillRounds();
+    journalShown = 100;
+    draw();
+  }
+  roundSel.addEventListener('change', () => selectRound(Number(roundSel.value)));
   // the event filter only applies to "บันทึกทั้งหมด", so it sits in that panel's head
   const evSel = h('select', { class: 'input select ev-sel', 'aria-label': 'เหตุการณ์' }, h('option', { value: '' }, 'ทุกเหตุการณ์'));
   const fillEvents = () => {
@@ -82,7 +113,7 @@ export async function render(root, ctx) {
   const quick = (label, days) => { const b = h('button', {
     type: 'button', role: 'radio', dataset: { days: String(days) },
     onclick: async () => {
-      f.to = today; f.serverDay = '';
+      f.to = today; f.serverDay = ''; f.round = 0; fillRounds();
       f.from = days ? ago(days - 1) : '';
       fromIn.value = f.from; toIn.value = f.to;
       if (!days && !loadedAll) { body.replaceChildren(loadingState()); await safeLoad(true); }
@@ -92,13 +123,14 @@ export async function render(root, ctx) {
   // the quick range that matches the dates (none when the dates were typed)
   const markQuick = () => quickBtns.forEach((b) => {
     const d = Number(b.dataset.days);
-    const on = f.to === today && (d ? f.from === ago(d - 1) : !f.from);
+    const on = !f.round && f.to === today && (d ? f.from === ago(d - 1) : !f.from);
     b.className = on ? 'on' : ''; b.setAttribute('aria-checked', on ? 'true' : 'false');
   });
   async function safeLoad(all) {
     try { await load(all); fillEvents(); } catch (e) { body.replaceChildren(errorState(e, () => ctx.route())); throw e; }
   }
   const onFilter = debounce(async () => {
+    if (fromIn.value !== f.from || toIn.value !== f.to) { f.round = 0; fillRounds(); }
     f.from = fromIn.value; f.to = toIn.value; f.module = modSel.value; f.event = evSel.value; f.serverDay = '';
     if (!loadedAll && f.from && thaiDateInputToUtc(f.from) < Date.now() - 94 * DAY) { body.replaceChildren(loadingState()); try { await safeLoad(true); } catch { return; } }
     journalShown = 100;
@@ -107,7 +139,11 @@ export async function render(root, ctx) {
   [fromIn, toIn, modSel, evSel].forEach((el) => el.addEventListener('change', onFilter));
   const fld = (label, ctrl, cls) => { const w = field(label, ctrl, { cls }); return w; };
   const modField = fld('สูตร', modSel, 'f-sel');
-  filterBox.append(
+  const roundField = fld('รอบ', roundSel, 'f-sel');
+  const showRoundField = () => { roundField.hidden = !rounds.length; };
+  if (rounds.length) { f.round = currentRound(rounds).n; roundDates(); }
+  fillRounds(); showRoundField();
+  filterBox.append(roundField, 
     fld('ตั้งแต่', fromIn, 'f-date f-half'), fld('ถึง', toIn, 'f-date f-half'),
     h('div', { class: 'field f-range' }, h('span', { class: 'label' }, 'ช่วงเวลา'),
       h('div', { class: 'segmented wide', role: 'radiogroup', 'aria-label': 'ช่วงเวลา' }, quick('7 วัน', 7), quick('30 วัน', 30), quick('ทั้งหมด', 0))),
@@ -121,20 +157,22 @@ export async function render(root, ctx) {
 
   // ---------------- filtering
   function range() {
+    const r = f.round ? rounds[f.round - 1] : null;
+    if (r) return [r.from, Number.isFinite(r.to) ? r.to - 1 : Infinity];
     const a = f.from ? thaiDateInputToUtc(f.from) : -Infinity;
     const b = f.to ? thaiDateInputToUtc(f.to, true) : Infinity;
     return [a, b];
   }
-  function filtered(useEvent) {
+  function filtered(useEvent, src = rows) {
     const [a, b] = range();
-    return rows.filter((r) => r.utc >= a && r.utc <= b && (!f.module || r.tag === f.module) && (!useEvent || !f.event || r.event === f.event));
+    return src.filter((r) => r.utc >= a && r.utc <= b && (!f.module || r.tag === f.module) && (!useEvent || !f.event || r.event === f.event));
   }
 
   // Trades are paired over ALL rows of the module (so a trade crossing the range edge stays whole), then kept when
   // they closed (or, still open, opened) inside the range. A calendar click narrows to one server day.
-  function tradesInRange() {
+  function tradesInRange(src = rows) {
     const [a, b] = range();
-    return pairTrades(rows.filter((r) => !f.module || r.tag === f.module)).filter((t) => {
+    return pairTrades(src.filter((r) => !f.module || r.tag === f.module)).filter((t) => {
       if (f.serverDay) return !t.open && t.day === f.serverDay;
       const at = t.open ? t.openUtc : t.closeUtc;
       return at >= a && at <= b;
@@ -147,31 +185,37 @@ export async function render(root, ctx) {
     filterBox.hidden = !FILTERED.has(tab);
     if (tab === 'flows') { drawFlows(); return; }
     if (tab === 'summary') { drawSummary(); return; }
-    const all = filtered(false);
-    const trades = tradesInRange();
+    // overview: v_balance on one footing (the EA recomputes it when its starting capital changes); the journal stays raw
+    const eq = tab === 'overview' ? rebaseBalances(rows, st) : rows;
+    const all = filtered(false, eq);
+    const trades = tradesInRange(eq);
     if (!rows.length) {
       body.replaceChildren(emptyState('ยังไม่มีบันทึก', 'เมื่อ EA เริ่มทำงานและเอเจนต์ส่งบันทึกขึ้นมา รายการจะขึ้นที่นี่'));
       return;
     }
-    if (tab === 'overview') drawOverview(all, trades);
+    if (tab === 'overview') drawOverview(all, trades, eq);
     else if (tab === 'trades') drawTrades(trades);
     else drawJournal(filtered(true));
   }
 
   // ---------------- overview
-  function drawOverview(all, trades) {
+  function drawOverview(all, trades, eq) {
     const stats = moduleStats(trades);
     const closed = trades.filter((t) => !t.open);
+    const sel = f.round ? rounds[f.round - 1] : null;
+    const rp = roundsBlock(eq);
     if (!closed.length) {
-      body.replaceChildren(emptyState('ไม่มีเทรดที่ปิดแล้วในช่วงนี้', 'ลองขยายช่วงวันที่ หรือเลือก "ทั้งหมด"'));
+      body.replaceChildren(rp, sel ? emptyState(`ยังไม่มีไม้ที่ปิดใน${roundLabel(sel)}`, 'ไม้แรกที่ปิดหลังเริ่มรอบจะขึ้นที่นี่ ดูรอบก่อนหน้าได้จากตารางรอบด้านบน')
+        : emptyState('ไม่มีเทรดที่ปิดแล้วในช่วงนี้', 'ลองขยายช่วงวันที่ หรือเลือก "ทั้งหมด"'));
       return;
     }
     const chartBox = h('div', { class: 'chart-box' }, loadingState('กำลังวาดกราฟ…'));
     const series = equitySeries(all);
     // health looks at the last 20 trades of each strategy whatever the date filter; risk follows the range
     const health = strategyHealth(pairTrades(rows));
-    const rangeLabel = f.serverDay ? f.serverDay : f.from ? `${f.from} ถึง ${f.to || today}` : 'ทั้งหมด';
+    const rangeLabel = f.serverDay ? f.serverDay : sel ? roundLabel(sel) : f.from ? `${f.from} ถึง ${f.to || today}` : 'ทั้งหมด';
     body.replaceChildren(
+      rp,
       riskPanel(riskStats(trades, st), cur(), rangeLabel),
       healthPanel(health, { owner: ownsBot(bot) }),
       statsPanel(stats),
@@ -184,6 +228,23 @@ export async function render(root, ctx) {
               h('td', { 'data-label': 'กำไร', class: 'num' }, pnl(p.pnl)), h('td', { 'data-label': 'พอร์ตจำลอง', class: 'num' }, fmtNum(p.v))))))))),
       calendarPanel(all));
     drawChart(chartBox, series);
+  }
+
+  // the rounds panel (SPEC 9.8) at the top of ภาพรวม
+  function roundsBlock(eq) {
+    const first = eaStartUtc(st, off);
+    return roundsPanel({
+      api: ctx.api, bot, ro: !ownsBot(bot), st, rows: roundRows, trades: pairTrades(eq), flows,
+      firstUtc: rows.length && !(first <= rows[0].utc) ? rows[0].utc : first,
+      selected: f.round, select: (n) => selectRound(n),
+      ensureAll: async () => { if (!loadedAll) await safeLoad(true); },
+      changed: async (n) => {
+        await loadRounds();
+        showRoundField();
+        if (!rounds.length) { f.round = 0; fillRounds(); draw(); return; }
+        await selectRound(n && rounds[n - 1] ? n : currentRound(rounds).n);
+      },
+    });
   }
 
   function statsPanel(stats) {

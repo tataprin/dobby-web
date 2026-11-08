@@ -113,6 +113,7 @@ export function thaiError(e) {
   }
   if (code === 'PGRST205' || code === '42P01' || low.includes('could not find the table') || (low.includes('relation') && low.includes('does not exist'))) return pick('not_deployed');
   if (low.includes('duplicate key') || code === '23505') return new ApiError('duplicate', msg, 'มีรายการนี้อยู่แล้ว');
+  if (low.includes('too many rounds')) return new ApiError('too_many_rounds', msg, 'บอทนี้มีครบ 200 รอบแล้ว ยกเลิกรอบเก่าก่อนถึงจะเริ่มรอบใหม่ได้');
   if (code === 'reauthentication_needed' || low.includes('reauthentication')) {
     return new ApiError('reauthentication_needed', msg, 'ต้องยืนยันตัวตนใหม่ก่อนเปลี่ยนรหัสผ่าน ออกจากระบบแล้วเข้าใหม่ แล้วลองอีกครั้ง');
   }
@@ -387,6 +388,24 @@ export class SupabaseApi {
   async deleteTradeNote(botId, key) {
     await this.assertOwn(botId);
     unwrap(await this.sb.from('trade_notes').delete().eq('bot_id', botId).eq('trade_key', key));
+  }
+  // SPEC 9.8 rounds, oldest first (round 1 = started_at null)
+  async listRounds(botId) {
+    const rows = unwrap(await this.sb.from('rounds').select('*').eq('bot_id', botId).order('started_at', { ascending: true, nullsFirst: true }).limit(300));
+    return rows;
+  }
+  // rows: [{ started_at: iso | null, name, base }] inserted in one statement (round 1 + the new round on the first use)
+  async addRounds(botId, rows) {
+    await this.assertOwn(botId);
+    return unwrap(await this.sb.from('rounds').insert(rows.map((r) => ({ bot_id: botId, started_at: r.started_at, name: r.name || null, base: r.base || {} }))).select());
+  }
+  async renameRound(botId, id, name) {
+    await this.assertOwn(botId);
+    return unwrap(await this.sb.from('rounds').update({ name: name || null }).eq('id', id).eq('bot_id', botId).select().single());
+  }
+  async deleteRound(botId, id) {
+    await this.assertOwn(botId);
+    unwrap(await this.sb.from('rounds').delete().eq('id', id).eq('bot_id', botId));
   }
 
   // ---- AI assistant (SPEC 10)
@@ -775,6 +794,13 @@ export class DemoApi {
     const changes = Object.keys(next).filter((k) => REMOTE_KEYS.includes(k) && next[k] !== sim.params[k]);
     const apply = () => {
       const txt = changes.map((k) => `${k} ${formatValue(PARAM_BY_KEY[k], sim.params[k])}->${formatValue(PARAM_BY_KEY[k], next[k])}`).join(', ') || 'no change';
+      // like the EA: a new InpVirtualStart recomputes the virtual balance; the account balance does not move
+      const dv = Number.isFinite(Number(next.InpVirtualStart)) ? Number(next.InpVirtualStart) - sim.params.InpVirtualStart : 0;
+      if (dv) {
+        sim.vb += dv;
+        if (Number.isFinite(sim.dayStart)) sim.dayStart += dv;
+        sim.cfg.accountExtra = (sim.cfg.accountExtra || 0) - dv;
+      }
       sim.params = { ...sim.params, ...remoteSubset(next) };
       sim.remote.applied_version = version; sim.remote.pending = false; sim.remote.waiting = '';
       sim.add(Date.now() + DEMO_OFFSET_MIN * 60000, 'REMOTE', 'A_new', 'NONE', sim.params.InpLotsA, null, null, null, 0, 0, `REMOTE APPLY v${version}: ${txt}`);
@@ -939,6 +965,40 @@ export class DemoApi {
   async deleteTradeNote(botId, key) {
     await this.wait(); this.ownBot(botId, true);
     this.db.notes = this.db.notes.filter((x) => !(x.bot_id === botId && x.trade_key === key));
+  }
+  async listRounds(botId) {
+    await this.wait(80); this.readBot(botId);
+    const key = (r) => (r.started_at ? Date.parse(r.started_at) : -Infinity);
+    return clone(this.db.rounds.filter((r) => r.bot_id === botId).sort((a, b) => key(a) - key(b)));
+  }
+  async addRounds(botId, rows) {
+    await this.wait(); this.ownBot(botId, true);
+    const mine = this.db.rounds.filter((r) => r.bot_id === botId);
+    const now = Date.now();
+    const out = rows.map((r) => {
+      const started = r.started_at === null ? null : new Date(Math.min(Date.parse(r.started_at), now)).toISOString();
+      if (mine.some((x) => x.started_at === started)) throw new ApiError('duplicate', 'duplicate round', 'มีรอบที่เริ่มเวลานี้อยู่แล้ว');
+      const name = r.name ? String(r.name).slice(0, 60) : null;
+      return { id: Math.max(0, ...this.db.rounds.map((x) => x.id)) + 1 + rows.indexOf(r), bot_id: botId, started_at: started, name, base: clone(r.base || {}), created_at: new Date(now).toISOString(), created_by: this.uidCur };
+    });
+    this.db.rounds.push(...out);
+    for (const r of out) this.audit(botId, 'round_insert', null, r);
+    return clone(out);
+  }
+  async renameRound(botId, id, name) {
+    await this.wait(); this.ownBot(botId, true);
+    const row = this.db.rounds.find((r) => r.id === id && r.bot_id === botId);
+    if (!row) throw new ApiError('not_found');
+    const before = clone(row);
+    row.name = name ? String(name).slice(0, 60) : null;
+    this.audit(botId, 'round_update', before, row);
+    return clone(row);
+  }
+  async deleteRound(botId, id) {
+    await this.wait(); this.ownBot(botId, true);
+    const row = this.db.rounds.find((r) => r.id === id && r.bot_id === botId);
+    this.db.rounds = this.db.rounds.filter((r) => !(r.id === id && r.bot_id === botId));
+    if (row) this.audit(botId, 'round_delete', row, null);
   }
 
   // ---- AI assistant (SPEC 10.4): a local simulation built from the demo data; no AI is called

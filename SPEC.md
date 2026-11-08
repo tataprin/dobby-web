@@ -551,6 +551,43 @@ unregisters the old service worker, and schema.sql drops `push_subscriptions`, `
 `bots.offline_notified_at` if an earlier run created them. The web manifest and icons stay (home-screen name and icon).
 Telegram alerts from the agent (agent/README_TH.md) are unchanged.
 
+### 9.8 Counting rounds: table `rounds` (added 2026-11-08)
+```
+rounds  id bigserial, bot_id uuid -> bots on delete cascade, started_at timestamptz (null = round 1),
+        name text (<= 60), base jsonb object, created_at, created_by
+        unique (bot_id, started_at); one started_at-null row per bot
+```
+A round only splits the history on the website so the owner can start counting from zero again; the bot never reads
+it. Round 1 runs from the beginning to the first start; each round runs to the next round's start; the last one is
+"รอบนี้". A trade belongs to the round in which it CLOSED. Every round number (trades, wins, win rate, net, drawdown)
+comes from the journal, never from the EA's own counters, so it stays right when the EA recomputes its virtual balance.
+- ประวัติ: the รอบการนับ panel on ภาพรวม lists every round with its numbers (newest first, click to show it); the
+  filter bar gets a "รอบ" select (default: the current round; "ตามวันที่" = the date boxes decide). The owner starts a
+  new round (a dialog shows the round it closes, optional names for both), renames any round and undoes the latest one
+  (delete; its trades merge back into the round before). The first start inserts the round-1 row (started_at null)
+  together with the new round.
+- ภาพรวม: with rounds, the fourth figure is "รอบนี้" (net since the round began, % against `base.balance` with modified
+  Dietz for confirmed flows, trades and win rate) instead of "ตั้งแต่เริ่ม"; the risk strip counts this round's trades.
+  The journal is fetched from the earlier of 30 days ago and the round's start.
+- `base` = the status when the round began: account balance / equity / currency, virtual balance / start, EA start
+  date, EA trades / wins, and `capital_next` (the InpVirtualStart sent with it, or null). Used for the % and the AI.
+- Capital fix offered with a new round (EA v3.04, owner, status younger than 15 min, |virtual - balance| >= 1 and the
+  result >= 10): virtual = InpVirtualStart + the bot's P&L since the EA's start date, so InpVirtualStart = balance -
+  (virtual.balance - virtual.start) makes the bot count exactly the account balance. Sent as desired.params like any
+  setting (the EA applies it when flat); ticked by default only when it lowers the capital (a smaller daily cap).
+  Lots do not depend on it. Undoing a round does not send the old value back.
+- ตั้งค่าบอท: the field is "ทุนตั้งต้น" (InpVirtualStart). With a bot P&L, a hint shows the capital the bot counts
+  (start + P&L) and warns when it differs from the account balance; "ให้บอทนับทุนเท่ายอดเงินในบัญชี" sets the start that
+  makes them equal; the auto lot, the risk hint and the daily-cap amount use the counted capital.
+- v_balance on one footing (journal.js rebaseBalances): charts and drawdowns walk back from the newest close (anchor:
+  the status' virtual balance when it is not older than that close) subtracting each later trade's P&L, so a change of
+  InpVirtualStart (a deposit adjustment, a round's capital) never shows as a jump. The journal table stays raw.
+- RLS like cash_flows: the approved owner selects / inserts / deletes and updates the name only (column grant); the
+  admin selects. Server: created_at / created_by stamped, started_at never in the future, at most 200 rounds per bot,
+  audit rows round_insert / round_update / round_delete. Before schema.sql is re-run the website shows no rounds and
+  starting one says the database is not ready.
+- AI: tool get_rounds (rounds with dates and numbers); the system prompt explains rounds and the counted capital.
+
 ## 10. AI assistant "ผู้ช่วย Dobby" (Claude) — added 2026-11-08
 Every approved user gets a chat assistant on every page that answers questions about their own account (the admin:
 also every member's bot, view only, the same rule as SPEC 2.3). It reads the data through tools that query Supabase

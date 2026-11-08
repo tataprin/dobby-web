@@ -7,8 +7,9 @@ import { app, currentBot, updateBotRow, on, ownsBot } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, rejectionsBlock, isPending, heroState } from '../botctl.js';
 import { modChip, sideEl, kv, panel, noBotState, onOff, pageHead } from '../views.js';
 import { minutesToClock } from '../params.js';
-import { prepareRows, pairTrades, REASON_LABELS, tradeHref } from '../journal.js';
-import { strategyHealth, riskStats, sinceStart } from '../analytics.js';
+import { prepareRows, pairTrades, REASON_LABELS, tradeHref, rebaseBalances, statsOf } from '../journal.js';
+import { strategyHealth, riskStats, sinceStart, dietz } from '../analytics.js';
+import { roundsOf, currentRound, roundTitle } from '../rounds.js';
 import { riskStrip } from '../insights.js';
 import { currentValues, summaryText } from '../simple.js';
 import { hallmark } from '../hallmark.js';
@@ -38,7 +39,7 @@ function stampOf(hs, info, st) {
 export async function render(root, ctx) {
   const bot0 = currentBot();
   if (!bot0) { root.append(pageHead('ภาพรวม', null, null, 'dashboard'), noBotState()); return; }
-  let bot = bot0, st = null, ctl = null, rtState = '', rows = [], journalReady = false, flows = [];
+  let bot = bot0, st = null, ctl = null, rtState = '', rows = [], journalReady = false, flows = [], rounds = [];
   const ro = !ownsBot(bot0); // the admin viewing someone else's bot: no pause, no blackout, nothing is sent
   root.append(loadingState('กำลังโหลดสถานะบอท…'));
   const off = () => bot.server_utc_offset_min ?? 0;
@@ -75,11 +76,15 @@ export async function render(root, ctx) {
   root.append(headBox, hero, warnBox, figsBox, riskBox, h('div', { class: 'dash-cols' }, posBox, recentBox), detailBox);
   setTimeout(() => hero.classList.remove('intro'), 1600);
 
-  // journal for the chart marks, the recent trades list and the risk strip (last 30 days, server time); confirmed cash
-  // flows for the % of "ตั้งแต่เริ่ม" (SPEC 9.2)
+  // journal for the chart marks, the recent trades list and the risk strip (last 30 days, server time, or since the
+  // current round began when that is earlier: SPEC 9.8); confirmed cash flows for the % of "ตั้งแต่เริ่ม" (SPEC 9.2)
   (async () => {
+    try { rounds = roundsOf(await ctx.api.listRounds(bot.id)); } catch { rounds = []; } // table not deployed: no rounds
+    if (rounds.length) drawFigs();
     try {
-      const fromServer = utcToServer(Date.now() - 30 * DAY, off()).replace(/\./g, '-').replace(' ', 'T');
+      const r = currentRound(rounds);
+      const fromUtc = Math.min(Date.now() - 30 * DAY, r ? r.from : Infinity);
+      const fromServer = utcToServer(fromUtc, off()).replace(/\./g, '-').replace(' ', 'T');
       rows = prepareRows(await ctx.api.journal(bot.id, { fromServer }), off());
     } catch { rows = []; }
     journalReady = true;
@@ -87,6 +92,7 @@ export async function render(root, ctx) {
     drawChart(true);
     drawRisk();
     drawPositions(true);
+    if (rounds.length) drawFigs();
   })();
   ctx.api.listCashFlows(bot.id).then((f) => { flows = f || []; drawFigs(); }).catch(() => {});
   // the line waits for the journal (so the marks stamp in with it), but not forever
@@ -206,6 +212,17 @@ export async function render(root, ctx) {
     const wr = v.trades ? Math.round((v.wins / v.trades) * 100) : null;
     const fig = (label, value, foot, cls = '', title = null) => h('div', { class: `fig ${cls}`.trim(), title },
       h('p', { class: 'fig-label' }, label), h('p', { class: 'fig-value' }, value), h('div', { class: 'fig-foot' }, foot));
+    // SPEC 9.8: after a new round, "รอบนี้" (the closed trades since the round began, from the journal) replaces "ตั้งแต่เริ่ม"
+    const R = roundNow();
+    const lastFig = R ? fig('รอบนี้', R.ready ? money(R.s.net, { signed: true, unit: c }) : '—', [
+      h('p', null, R.pct !== null && R.ready ? [h('span', { class: 'num' }, fmtPct(R.pct, 1, true)), ` จากทุน ${fmtNum(R.startCap, 0)}`]
+        : `${roundTitle(R.r)}${R.r.name ? ` ${R.r.name}` : ''}`),
+      h('p', null, `เริ่ม ${fmtThai(R.r.from, 'dm')} `, !R.ready ? 'กำลังนับ…' : R.s.trades ? `${R.s.trades} ไม้ ชนะ ${fmtPct(R.s.winRate, 0)}` : 'ยังไม่มีไม้ที่ปิด'),
+    ], '', `${roundTitle(R.r)}${R.r.name ? ` ${R.r.name}` : ''} ดูทุกรอบได้ที่หน้าประวัติ`)
+      : fig('ตั้งแต่เริ่ม', money(since, { signed: true, unit: c }),
+        h('p', null, v.start ? [h('span', { class: 'num' }, fmtPct(ss && ss.pct !== null ? ss.pct : (since / v.start) * 100, 1, true)),
+          ss && ss.weighted ? ' ไม่นับเงินฝาก-ถอน' : ` จากทุน ${fmtNum(v.start, 0)}`] : 'ยังไม่มีทุนตั้งต้น'),
+        '', wr === null ? null : `${v.trades} ไม้ ชนะ ${wr}%`);
     mount(figsBox, h('section', { class: 'figs', 'aria-label': 'ยอดเงินและกำไร' },
       fig('ยอดเงินในบัญชี', money(a.balance, { unit: c }), h('p', null, a.mode === 'REAL' ? 'บัญชีจริงที่โบรก' : a.mode ? `บัญชี ${a.mode} ที่โบรก` : 'ยอดที่โบรก')),
       fig('มูลค่าพอร์ตตอนนี้', money(a.equity, { unit: c }),
@@ -217,20 +234,30 @@ export async function render(root, ctx) {
           : (v.day_pnl || 0) >= 0 ? ['จุดหยุดรายวัน ', h('span', { class: 'num' }, `−${fmtNum(capAmt, 0)}`), ` (${fmtNum(capPct, 0)}%)`]
             : ['ใช้ไป ', h('span', { class: 'num' }, fmtPct(used * 100, 0)), ' ของจุดหยุด ', h('span', { class: 'num' }, `−${fmtNum(capAmt, 0)}`)]),
       ], `tone-${tone}`),
-      fig('ตั้งแต่เริ่ม', money(since, { signed: true, unit: c }),
-        h('p', null, v.start ? [h('span', { class: 'num' }, fmtPct(ss && ss.pct !== null ? ss.pct : (since / v.start) * 100, 1, true)),
-          ss && ss.weighted ? ' ไม่นับเงินฝาก-ถอน' : ` จากทุน ${fmtNum(v.start, 0)}`] : 'ยังไม่มีทุนตั้งต้น'),
-        '', wr === null ? null : `${v.trades} ไม้ ชนะ ${wr}%`)));
+      lastFig));
+  }
+
+  // the current round's numbers from the journal (null without rounds)
+  function roundNow() {
+    const r = currentRound(rounds);
+    if (!r) return null;
+    const closed = journalReady ? pairTrades(rows).filter((t) => !t.open && t.closeUtc >= r.from) : [];
+    const s = statsOf(closed);
+    const startCap = Number(r.base && r.base.balance) > 0 ? Number(r.base.balance) : null;
+    return { r, s, startCap, ready: journalReady, pct: startCap ? dietz(s.net, startCap, flows, r.from, Date.now()) : null };
   }
 
   // the compact risk strip (SPEC 9.5; the full panels are in ประวัติ > ภาพรวม)
   function drawRisk() {
     if (!journalReady) return;
-    const trades = pairTrades(rows);
-    if (!changed('risk', [trades.length, trades.length ? trades[trades.length - 1].closeUtc : 0, st && st.virtual && st.virtual.balance])) return;
+    // v_balance on one footing (the EA recomputes it when its starting capital changes); a round counts its own trades
+    const trades = pairTrades(rebaseBalances(rows, st));
+    const r = currentRound(rounds);
+    const mine = r ? trades.filter((t) => (t.open ? t.openUtc : t.closeUtc) >= r.from) : trades;
+    if (!changed('risk', [trades.length, trades.length ? trades[trades.length - 1].closeUtc : 0, st && st.virtual && st.virtual.balance, r && r.from])) return;
     const closed = trades.filter((t) => !t.open);
     riskBox.hidden = !closed.length;
-    mount(riskBox, closed.length ? riskStrip(riskStats(trades, st), strategyHealth(trades), cur()) : '');
+    mount(riskBox, closed.length ? riskStrip(riskStats(mine, st), strategyHealth(trades), cur(), r ? 'ในรอบนี้' : 'ใน 30 วัน') : '');
   }
 
   function drawPositions(force) {
@@ -399,7 +426,7 @@ export async function render(root, ctx) {
     const barsNow = JSON.stringify(bot.agent_state && bot.agent_state.bars && bot.agent_state.bars.t ? bot.agent_state.bars.t.slice(-1) : null);
     if (barsBefore !== barsNow) redrawChart();
   };
-  const addRow = debounce(() => { drawRecent(); drawChart(false); drawRisk(); drawPositions(true); }, 500);
+  const addRow = debounce(() => { drawRecent(); drawChart(false); drawRisk(); drawPositions(true); if (rounds.length) drawFigs(); }, 500);
   const unsub = ctx.api.subscribeBot(bot.id, {
     status: onStatus, control: onControl, bot: onBot,
     journal: (row) => { rows = prepareRows([...rows, row], off()); addRow(); },

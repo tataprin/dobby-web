@@ -11,6 +11,7 @@ import { normalizeParams, presetFromLive, remoteSubset, defaults, PARAM_BY_KEY, 
 import { PROPOSAL_KEY } from '../chat.js';
 import { buildSet, setFileName } from '../setfile.js';
 import { autoBlackouts } from '../autoblackout.js';
+import { botPnlOf } from '../rounds.js';
 import { STRATS, ASIA, lockMode, lotsSame, mainLot, currentValues, setLotsAll, syncMaxLots, setLockMode, fixHiddenLocks,
   autoFromBalance, autoLot, toDesiredParams, summaryRows, summaryText, describeChanges, validateSimple, riskHint,
   matchesEffective, pctText } from '../simple.js';
@@ -257,28 +258,45 @@ export async function render(root, ctx) {
     }
 
     // --- ทุนและล็อต
-    const balStep = reg(stepper({ label: 'ทุนในบัญชี', get: getKey('InpVirtualStart'), set: setKey('InpVirtualStart'), step: 10, min: 10, max: 10000000, decimals: 0, unit: cur(), disabled: locked }));
+    // EA v3.04 counts virtual = InpVirtualStart + its own P&L since its start date (SPEC 9.8), so the capital the bot
+    // counts, the auto lot, the risk hint and the daily cap use that sum, and "use the balance" sets the start that
+    // makes the sum equal the account balance.
+    const botPnl = botPnlOf(st);
+    const counted = () => Math.round((Number(v.InpVirtualStart) + botPnl) * 100) / 100;
+    const balStep = reg(stepper({ label: 'ทุนตั้งต้น', get: getKey('InpVirtualStart'), set: setKey('InpVirtualStart'), step: 10, min: 10, max: 10000000, decimals: 0, unit: cur(), disabled: locked }));
     balStep.classList.add('big');
     const acc = st && st.account;
-    const useBal = acc && acc.balance > 0 ? h('button', { class: 'linklike', type: 'button', onclick: () => { if (editable()) { v.InpVirtualStart = Math.round(acc.balance); onChange(); } } },
-      `ใช้ยอดเงินในบัญชีตอนนี้ (${fmtNum(acc.balance)} ${cur()})`) : null;
+    const balTarget = acc && acc.balance > 0 ? (botPnl ? Math.round((acc.balance - botPnl) * 100) / 100 : Math.round(acc.balance)) : null;
+    const useBal = balTarget !== null && balTarget >= 10 ? h('button', { class: 'linklike', type: 'button', onclick: () => { if (editable()) { v.InpVirtualStart = balTarget; onChange(); } } },
+      botPnl ? `ให้บอทนับทุนเท่ายอดเงินในบัญชี (${fmtNum(acc.balance)} ${cur()})` : `ใช้ยอดเงินในบัญชีตอนนี้ (${fmtNum(acc.balance)} ${cur()})`) : null;
     if (useBal) { useBal.update = () => { useBal.disabled = locked(); }; reg(useBal); }
+    const countText = h('span', { class: 'hint' });
+    countText.update = () => {
+      countText.hidden = !botPnl;
+      if (!botPnl) return;
+      const n = counted();
+      const off = acc && acc.balance > 0 && Math.abs(n - acc.balance) >= 1;
+      const since = st && st.virtual && st.virtual.start_date ? ` ตั้งแต่ ${fmtThai(Date.parse(`${st.virtual.start_date.slice(0, 10).replace(/\./g, '-')}T12:00:00Z`), 'dm')}` : '';
+      mount(countText, `บอทนับทุน ${fmtNum(n)} = ทุนตั้งต้นนี้ ${botPnl >= 0 ? '+' : '−'} กำไรของบอท ${fmtNum(Math.abs(botPnl))}${since}`,
+        off ? h('span', { class: 'warn-text' }, ` ไม่ตรงกับยอดเงินในบัญชี ${fmtNum(acc.balance)}`) : null);
+    };
+    reg(countText);
     const autoBtn = h('button', { class: 'btn auto-btn', type: 'button', onclick: () => doAuto() }, icon('wand'), 'ตั้งให้อัตโนมัติจากทุน');
     autoBtn.update = () => { autoBtn.disabled = locked(); };
     reg(autoBtn);
     const autoText = h('span', { class: 'hint' });
     autoText.update = () => {
-      const L = autoLot(v.InpVirtualStart);
-      autoText.textContent = `ทุน ${fmtNum(v.InpVirtualStart, 0)} ได้ล็อต ${fmtNum(L)} ทุกสูตร (ทุก 100 ${cur()} = 0.01 ล็อต) เปิด 3 สูตร ล็อกกำไร 2 ชั้น (85→83 และ 95→93) และหยุดเมื่อขาดทุน 10% ต่อวัน`;
+      const L = autoLot(counted());
+      autoText.textContent = `ทุน ${fmtNum(counted(), 0)} ได้ล็อต ${fmtNum(L)} ทุกสูตร (ทุก 100 ${cur()} = 0.01 ล็อต) เปิด 3 สูตร ล็อกกำไร 2 ชั้น (85→83 และ 95→93) และหยุดเมื่อขาดทุน 10% ต่อวัน`;
     };
     reg(autoText);
     const risk = h('div', { class: 'risk-hint', 'aria-live': 'polite' });
     risk.update = () => {
       const lot = mainLot(v);
-      const r = riskHint(v.InpVirtualStart, lot, cur());
+      const r = riskHint(counted(), lot, cur());
       risk.className = `risk-hint tone-${r.tone}`;
       mount(risk, icon(r.tone === 'warn' ? 'warn' : 'bars'),
-        h('p', null, r.text, ' ', h('a', { href: `#/calc?balance=${Math.round(v.InpVirtualStart)}&lot=${lot}` }, 'ดูรายละเอียด'),
+        h('p', null, r.text, ' ', h('a', { href: `#/calc?balance=${Math.round(counted())}&lot=${lot}` }, 'ดูรายละเอียด'),
           h('span', { class: 'muted small' }, ' (ผลจำลองในอดีต ไม่ใช่คำทำนาย)')));
     };
     reg(risk);
@@ -321,7 +339,7 @@ export async function render(root, ctx) {
     const secMoney = h('section', { class: 'ed-sec', id: 'set-money' },
       secHead('ทุนและล็อต', 'บอทใช้ทุนนี้คำนวณกำไรขาดทุนและจุดหยุดรายวัน'),
       h('div', { class: 'group' },
-        setRow(h('label', { class: 'set-label', for: balStep.input.id }, 'ทุนในบัญชี'), [useBal], balStep, errLines('InpVirtualStart')),
+        setRow(h('label', { class: 'set-label', for: balStep.input.id }, 'ทุนตั้งต้น'), [useBal, countText], balStep, errLines('InpVirtualStart')),
         setRow(h('span', { class: 'set-label' }, 'ตั้งให้อัตโนมัติจากทุน'), [autoText], autoBtn),
         risk,
         setRow(h('span', { class: 'set-label' }, 'วิธีตั้งล็อต'), [], lotSeg),
@@ -390,8 +408,8 @@ export async function render(root, ctx) {
     capStep.classList.add('big');
     const capText = h('span', { class: 'hint' });
     capText.update = () => {
-      const amt = (v.InpDailyCapPct / 100) * v.InpVirtualStart;
-      capText.textContent = `≈ ${fmtNum(amt, 0)} ${cur()} ต่อวัน (จากทุน ${fmtNum(v.InpVirtualStart, 0)}) ถึงแล้วบอทหยุดเปิดไม้ใหม่ถึงพรุ่งนี้ ไม้ที่เปิดอยู่ยังวิ่งต่อ`;
+      const amt = (v.InpDailyCapPct / 100) * counted();
+      capText.textContent = `≈ ${fmtNum(amt, 0)} ${cur()} ต่อวัน (จากทุน ${fmtNum(counted(), 0)}) ถึงแล้วบอทหยุดเปิดไม้ใหม่ถึงพรุ่งนี้ ไม้ที่เปิดอยู่ยังวิ่งต่อ`;
     };
     reg(capText);
     const secCap = h('section', { class: 'ed-sec', id: 'set-cap' },
@@ -480,8 +498,11 @@ export async function render(root, ctx) {
 
   async function doAuto() {
     if (!editable()) return;
-    const B0 = Math.round(v.InpVirtualStart);
+    // the lot follows the capital the bot counts; the start itself stays (with a P&L it is not the balance)
+    const keep = v.InpVirtualStart;
+    const B0 = Math.round(counted());
     v = autoFromBalance(v, B0);
+    if (botPnl) v.InpVirtualStart = keep;
     lotMode = 'same';
     onChange();
     toast(`ตั้งค่าอัตโนมัติสำหรับทุน ${fmtNum(B0, 0)} แล้ว: ${summaryText(v, cur())} ตรวจแล้วกด "บันทึกและส่งให้บอท"`, 'good', 6500);

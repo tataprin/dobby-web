@@ -110,6 +110,31 @@ export function dailyPnl(rows) {
   return map;
 }
 
+// v_balance on one footing. The EA recomputes its virtual balance whenever InpVirtualStart changes (a deposit
+// adjustment, a new round's capital), so rows logged before the change sit on another footing and a chart or a
+// drawdown across them would jump. Walk back from the newest close, subtracting each later trade's P&L. The anchor is
+// the status' virtual balance when the status is not older than that close, else that close's own v_balance.
+// Prepared rows (ascending) in, a new array out; the journal table keeps showing the raw values.
+export function rebaseBalances(rows, st) {
+  let last = -1;
+  for (let i = rows.length - 1; i >= 0; i--) if (rows[i].event === 'CLOSE') { last = i; break; }
+  if (last < 0) return rows;
+  const v = st && st.virtual;
+  const hb = st && Number.isFinite(st.heartbeat_gmt_unix) ? st.heartbeat_gmt_unix * 1000 : -Infinity;
+  const sv = v && v.balance !== null && v.balance !== undefined ? Number(v.balance) : NaN;
+  let bal = Number.isFinite(sv) && hb >= rows[last].utc ? sv : rows[last].v_balance;
+  if (!Number.isFinite(bal)) return rows;
+  const out = rows.slice();
+  for (let i = last; i >= 0; i--) {
+    const r = out[i];
+    if (r.event !== 'CLOSE') continue;
+    const at = Math.round(bal * 100) / 100;
+    if (r.v_balance !== at) out[i] = { ...r, v_balance: at };
+    bal -= r.pnl || 0;
+  }
+  return out;
+}
+
 export function equitySeries(rows) {
   return rows.filter((r) => r.event === 'CLOSE' && r.v_balance !== null).map((r) => ({ utc: r.utc, wall: r.wall, v: r.v_balance, pnl: r.pnl, tag: r.tag }));
 }

@@ -9,13 +9,13 @@ export const SERVICE_KEY = 'eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0
 export const SECRET_KEY = 'sb_secret_test_not_real';
 export const ANON_KEY = 'sb_publishable_test';
 
-const BOT_TABLES = new Set(['bot_status', 'bot_control', 'journal', 'trade_notes', 'bars', 'cash_flows']);
+const BOT_TABLES = new Set(['bot_status', 'bot_control', 'journal', 'trade_notes', 'bars', 'cash_flows', 'rounds']);
 
 export async function startFake() {
   const state = {
     users: {},          // token -> {id, email, role}
     tables: {
-      profiles: [], bots: [], bot_status: [], bot_control: [], journal: [], trade_notes: [], bars: [], cash_flows: [],
+      profiles: [], bots: [], bot_status: [], bot_control: [], journal: [], trade_notes: [], bars: [], cash_flows: [], rounds: [],
       presets: [], news_events: [], ai_conversations: [], ai_messages: [],
     },
     rpc: {

@@ -151,7 +151,7 @@ export function summaryRows(v, currency = 'USD') {
   return [
     ['สูตรที่เปิด', on.length ? on.map((s) => s.title).join(', ') : 'ปิดทุกสูตร'],
     ['ล็อตต่อไม้', on.length ? lotsText(v).replace(/^ล็อต /, '') : '—'],
-    ['ทุนในบัญชี', `${fmtNum(v.InpVirtualStart, 0)} ${currency}`.trim()],
+    ['ทุนตั้งต้น', `${fmtNum(v.InpVirtualStart, 0)} ${currency}`.trim()],
     ['ล็อกกำไร', m === 0 ? 'ไม่ล็อก' : m === 1 ? `1 ชั้น ${pctText(v.InpLockAtPct)}→${pctText(v.InpLockToPct)}` : `2 ชั้น ${pctText(v.InpLock1AtPct)}→${pctText(v.InpLock1ToPct)}, ${pctText(v.InpLockAtPct)}→${pctText(v.InpLockToPct)}`],
     ['สูตรเอเชีย', v.InpUseAsia ? `เปิด ${fmtNum(v.InpLotsAsia)} ล็อต` : 'ปิด'],
     ['ขาดทุนสูงสุดต่อวัน', `${pctText(v.InpDailyCapPct)}%`],
@@ -161,7 +161,7 @@ export function summaryRows(v, currency = 'USD') {
 const onOffText = (b) => (b ? 'เปิด' : 'ปิด');
 // Field descriptors used to list (and count) changes in plain Thai.
 const FIELDS = [
-  { label: 'ทุนในบัญชี', text: (v, c) => `${fmtNum(v.InpVirtualStart, 0)} ${c}` },
+  { label: 'ทุนตั้งต้น', text: (v, c) => `${fmtNum(v.InpVirtualStart, 0)} ${c}` },
   ...STRATS.map((s) => ({ label: `สูตร ${s.title}`, text: (v) => onOffText(v[s.use]) })),
   { label: 'ล็อต', text: (v) => lotsText(v).replace(/^ล็อต /, '') },
   { label: 'สูตรเอเชีย', text: (v) => (v.InpUseAsia ? `เปิด ล็อต ${fmtNum(v.InpLotsAsia)}` : 'ปิด') },

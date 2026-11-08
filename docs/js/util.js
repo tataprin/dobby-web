@@ -155,6 +155,7 @@ const FORMATS = {
   short: { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' },
   seconds: { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' },
   date: { day: 'numeric', month: 'short', year: 'numeric' },
+  dm: { day: 'numeric', month: 'short' },
   day: { weekday: 'short', day: 'numeric', month: 'short' },
   longday: { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' },
   time: { hour: '2-digit', minute: '2-digit' },

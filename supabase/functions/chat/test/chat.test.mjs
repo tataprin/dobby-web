@@ -195,7 +195,7 @@ test('full turn: start, status, text, done; messages written with the USER token
   assert.ok(!('temperature' in b1) && !('tool_choice' in b1) && !('betas' in b1));
   assert.equal(b1.system, SYSTEM_PROMPT);
   assert.ok(!/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(SYSTEM_PROMPT), 'no timestamp in the cached system prompt');
-  assert.equal(b1.tools.length, 11);
+  assert.equal(b1.tools.length, 12);
   for (const t of b1.tools) {
     assert.equal(t.strict, true, t.name);
     assert.equal(t.eager_input_streaming, true, t.name);
@@ -327,6 +327,29 @@ test('admin: list_bots shows members\' bots with owner names; other tools read t
   assert.equal(news.calendar[0].name, 'CPI m/m');
   assert.equal(news.calendar[0].th, '2026-11-10 20:30');
   assert.equal(news.bots.length, 1, 'agent news only for the admin\'s own bots');
+});
+
+test('get_rounds: no rounds, then round 1 (named) and round 2 with the journal closes split at its start', async () => {
+  ctx.S.anthropic.push(message([{ tool: 'get_rounds', id: 'r0', input: { bot_id: 'selected' } }], { stop_reason: 'tool_use' }), message([{ text: 'ok' }]));
+  await sse(await ask());
+  const none = JSON.parse(toolResults(ctx.S.claudeBodies[1])[0].content);
+  assert.deepEqual(none.rounds, []);
+  assert.match(none.note, /no rounds/);
+  ctx.S.tables.rounds.push(
+    { id: 1, bot_id: BOT1, started_at: null, name: 'ทดลอง 0.03', base: {} },
+    { id: 2, bot_id: BOT1, started_at: '2026-11-06T00:00:00+00:00', name: null, base: { balance: 623.5, capital_next: 437.6 } },
+    { id: 3, bot_id: BOT_FRIEND, started_at: '2026-11-05T00:00:00+00:00', name: 'not mine', base: {} },
+  );
+  ctx.S.claudeBodies.length = 0;
+  ctx.S.anthropic.push(message([{ tool: 'get_rounds', id: 'r1', input: { bot_id: 'selected' } }], { stop_reason: 'tool_use' }), message([{ text: 'ok' }]));
+  await sse(await ask());
+  const r = JSON.parse(toolResults(ctx.S.claudeBodies[1])[0].content);
+  assert.equal(r.rounds.length, 2, "another member's round is not visible");
+  const [one, two] = r.rounds;
+  assert.deepEqual([one.round, one.name, one.current, one.trades, one.wins, one.net], [1, 'ทดลอง 0.03', false, 2, 1, -1.59]);
+  assert.equal(one.to_th, '2026-11-06 07:00');
+  assert.deepEqual([two.round, two.current, two.trades, two.net, two.account_balance_at_start, two.capital_sent_to_bot, two.to_th], [2, true, 1, 22.5, 623.5, 437.6, 'now']);
+  ctx.S.tables.rounds.length = 0;
 });
 
 test('invalid tool input (fails the schema) -> is_error tool_result, no status event, the loop continues', async () => {

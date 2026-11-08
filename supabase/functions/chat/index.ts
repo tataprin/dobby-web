@@ -577,8 +577,10 @@ Website controls and how a change reaches the bot:
 - Blackouts (งดเข้าไม้): no new entries inside a window, open trades continue. Manual windows; automatic news windows (auto_news: the ForexFactory calendar, before_min / after_min around events of the chosen currencies and impact, default 30 / 60 min, USD High) and schedule windows (weekly Thai-time windows such as Friday 21:00-24:00, plus whole US market holidays). The Dobby app computes the automatic windows (agent_state.auto_blackouts).
 - Settings (ตั้งค่าบอท, EA v3.04 only): the website writes desired.params (the remote keys) -> the PC app checks its local limits (allow_remote_params, max_lots, max_daily_cap_pct) and writes the remote file -> the EA applies the whole version only when it has no open position or pending order ("รอให้ไม่มีไม้ค้าง"), or rejects all of it (REMOTE REJECT). Progress: ส่งแล้ว -> เครื่องรับแล้ว (agent applied_version) -> EA ใช้ค่าใหม่แล้ว (status.remote.applied_version and effective). EA v3.03 cannot receive settings from the web (read only; a .set is loaded by hand).
 - PC ceilings: lots <= min(EA InpRemoteMaxLots, app max_lots); daily cap <= min(EA InpRemoteMaxCapPct, app max_daily_cap_pct). They are raised only in the Dobby app on that PC, never from the web.
-- Automatic setting from a balance B (ตั้งให้อัตโนมัติจากทุน): lot = max(0.01, floor(B / 100) / 100), at most 0.50, for A_new, NY and C5G; ASIA16 off; InpVirtualStart = B; locks 85 -> 83 and 95 -> 93; recovery 1.5, 4 attempts, confluence 1.5 / 60 min, daily cap 10 %, max spread 1.00, vol gate off.
+- Automatic setting from a balance B (ตั้งให้อัตโนมัติจากทุน): lot = max(0.01, floor(B / 100) / 100), at most 0.50, for A_new, NY and C5G; ASIA16 off; InpVirtualStart = B; locks 85 -> 83 and 95 -> 93; recovery 1.5, 4 attempts, confluence 1.5 / 60 min, daily cap 10 %, max spread 1.00, vol gate off. When the bot already has a P&L, B is the capital the bot counts (InpVirtualStart + that P&L) and InpVirtualStart is left as it is.
+- Capital the bot counts (ทุนตั้งต้น on ตั้งค่าบอท = InpVirtualStart): virtual balance = InpVirtualStart + the bot's own P&L since the EA's start date (status virtual.start_date); the daily cap is a % of the virtual balance at the start of the day. If virtual.balance is well above the account balance, profit is counted twice (InpVirtualStart was set to a balance that already held that profit) and the daily cap is larger than intended; InpVirtualStart = account balance - (virtual.balance - virtual.start) makes them equal. Lots never depend on it.
 - Deposits and withdrawals (เงินฝาก-ถอน): the app suggests balance changes that Dobby's trades do not explain; the owner confirms or dismisses them; trading P&L excludes confirmed flows.
+- Counting rounds (รอบ, ประวัติ page): the owner can start a new round so the website counts P&L, trades and drawdown from zero again; old rounds stay and each has its own numbers; the latest round can be undone (it merges back). A round only splits the history on the website (the EA's own counters on the MT5 chart keep counting from its start date). A trade belongs to the round in which it closed. When a new round starts, the owner may also send InpVirtualStart = balance - the bot's P&L so the bot counts exactly the account balance. For "this round / last round / round N" questions call get_rounds; for details inside a round call get_stats or get_trades with that round's from / to.
 
 Strategy health (rule of the ประวัติ page; get_stats computes it): per strategy the last 20 closed trades (P&L scaled to 0.01 lot) are compared with the tester baseline (EA tester 2026-07-15 .. 2026-10-22, 209 trades, per 0.01 lot): A_new 37 trades, win rate 51.4 %, avg win +8.78, avg loss -6.00, PF 1.54, 2.64 trades / week, expectancy +1.59; NY 76, 60.5 %, +7.88, -8.00, 1.51, 5.43, +1.61; C5G 96, 47.9 %, +10.68, -7.23, 1.36, 6.86, +1.35. Fewer than 8 trades = too few to judge. ปกติ when P(wins <= live wins | n, baseline win rate) >= 0.10 and PF >= 1.0; จับตา when P < 0.10 or PF < 1.0; ผิดปกติ when P < 0.02 or PF < 0.7 (the website suggests pausing that strategy, it never does it itself).
 
@@ -648,6 +650,12 @@ const TOOL_DEFS: ToolDef[] = [
     description: "Deposits (+) and withdrawals (-) recorded for one bot: confirmed, suggested by the app or dismissed, with the totals of the confirmed ones. Call it for questions about deposits, withdrawals, unexplained balance changes, or why the balance differs from the trading P&L.",
     input_schema: obj({ bot_id: BOT_ID }, ["bot_id"]),
     run: (t, i) => toolCashFlows(t, i),
+  },
+  {
+    name: "get_rounds", status: "กำลังดูรอบการนับ…",
+    description: "The counting rounds (รอบ) of one bot from the ประวัติ page: number, name, start and end (Thai time), whether it is the current round, and per round the closed trades, wins, win rate, net P&L, profit factor, the account balance at its start and the starting capital sent to the bot then. Call it for 'how much did this round / the last round / round 2 make', 'when did this round start', or before get_stats for one round (pass its from / to). No rounds = the history is one piece since the start.",
+    input_schema: obj({ bot_id: BOT_ID }, ["bot_id"]),
+    run: (t, i) => toolRounds(t, i),
   },
   {
     name: "get_news", status: "กำลังดูปฏิทินข่าว…",
@@ -1515,6 +1523,40 @@ async function toolCashFlows(t: TurnCtx, input: Json): Promise<Json> {
     totals_confirmed: { deposits: r2(tot.deposits), withdrawals: r2(tot.withdrawals), net: r2(tot.net), count: tot.count },
     suggested_waiting: rows.filter((f) => f.status === "suggested").length,
     flows: rows.map((f) => ({ th: isoThai(f.ts), amount: r2(f.amount), source: f.source, status: f.status, balance_after: nz(f.balance_after), note: nz(clip(f.note ?? "", 200)) })),
+  };
+}
+
+async function toolRounds(t: TurnCtx, input: Json): Promise<Json> {
+  const b = await botOf(t, input.bot_id);
+  const off = offsetOf(b);
+  let rows: Json[];
+  try {
+    rows = await sbSelect(t.sb, "rounds", [["bot_id", `eq.${b.id}`], ["select", "id,started_at,name,base"], ["limit", "300"]]);
+  } catch {
+    return { bot: botBrief(t, b), rounds: [], note: "rounds are not set up in the database yet (the admin re-runs schema.sql)" };
+  }
+  const starts = rows.filter((r) => r.started_at && Number.isFinite(Date.parse(r.started_at))).sort((x, y) => Date.parse(x.started_at) - Date.parse(y.started_at));
+  if (!starts.length) return { bot: botBrief(t, b), rounds: [], note: "no rounds: the history is counted as one piece since the start" };
+  const first = rows.find((r) => !r.started_at) || {};
+  const list = [{ name: first.name, from: -Infinity, base: first.base || {} }, ...starts.map((r) => ({ name: r.name, from: Date.parse(r.started_at), base: r.base || {} }))];
+  const raw = await sbSelectAll(t.sb, "journal", [["bot_id", `eq.${b.id}`], ["event", "eq.CLOSE"], ["select", "id,ts_server,event,tag,side,lots,pnl,v_balance,detail"], ["order", "ts_server.desc,id.desc"]], 10000);
+  const closes = prepareRows(raw, off).map((r) => ({ module: r.tag, open: false, closeUtc: r.utc, pnl: r.pnl ?? 0 }));
+  const firstClose = closes.length ? closes[0].closeUtc : undefined;
+  return {
+    bot: botBrief(t, b),
+    rounds: list.map((r, i) => {
+      const to = i + 1 < list.length ? list[i + 1].from : Infinity;
+      const inR = closes.filter((c) => c.closeUtc >= r.from && c.closeUtc < to);
+      return {
+        round: i + 1, name: nz(clip(r.name ?? "", 60)), current: i === list.length - 1,
+        from_th: Number.isFinite(r.from) ? thaiTime(r.from) : (firstClose !== undefined ? thaiTime(firstClose) : undefined),
+        to_th: Number.isFinite(to) ? thaiTime(to) : "now",
+        ...statOut(moduleStats(inR).total),
+        account_balance_at_start: r2(r.base.balance), capital_sent_to_bot: r2(r.base.capital_next),
+      };
+    }),
+    note: "a trade counts in the round in which it closed; round 1 runs from the start of the history; numbers from the journal" +
+      (raw.length >= 10000 ? "; very long history: only the newest 10000 closes were counted" : ""),
   };
 }
 
