@@ -742,9 +742,12 @@ ol.steps { margin: 0; padding-left: 1.3em; display: grid; gap: var(--s2); }
 .tv-foot { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); align-items: center; justify-content: space-between; }
 .tv-out { display: inline-flex; align-items: center; gap: var(--s1); min-height: var(--h-btn); }
 .tv-out .ico { width: var(--ico-sm); height: var(--ico-sm); }
+.tv-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); }
+.tv-switch { display: inline-flex; align-items: center; gap: var(--s3); min-height: var(--h-input); font-size: var(--fs-14); color: var(--ink); }
 @media (max-width: 599px) {
-  .tv-panel .panel-head > .segmented { display: flex; width: 100%; }
-  .tv-panel .panel-head > .segmented > button { flex: 1 1 0; padding: 0 var(--s2); font-size: var(--fs-14); }
+  .tv-tools { width: 100%; }
+  .tv-tools > .segmented { display: flex; width: 100%; }
+  .tv-tools > .segmented > button { flex: 1 1 0; padding: 0 var(--s2); font-size: var(--fs-14); }
 }
 .positions { display: flex; flex-direction: column; gap: var(--s4); flex: 1 1 auto; }
 .position { display: flex; flex-direction: column; gap: var(--s4); flex: 1 1 auto; }

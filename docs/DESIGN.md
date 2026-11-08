@@ -174,7 +174,13 @@ profit / TP, cinnabar = loss / SL).
   light or dark theme following the site theme (the iframe is rebuilt on a theme change). The widget's own toolbars,
   volume and symbol search are off; its 1 px frame is clipped so there is no box inside the panel.
 - **Controls**: one 44 px segmented control (15 นาที / 1 ชม. / 4 ชม. / 1 วัน, remembered per browser as
-  `dobby-tv-interval`), full width on phones. The frame is 400 px tall on phones, 480 from 768 px.
+  `dobby-tv-interval`), full width on phones, and a "เส้น VWAP" switch (the standard 48 x 28 switch in a 44 px row, on by
+  default, remembered as `dobby-tv-vwap`), on its own line on phones. VWAP is TradingView's `STD;VWAP` (session anchor,
+  close to the EA's server-day VWAP but on OANDA's tick volume) with its default band turned off (`inputs.in_5 = false`)
+  so only the line shows; `studies_overrides` is not used because any key made the widget drop the study. The frame is
+  400 px tall on phones, 480 from 768 px.
+- **No trade marks here**: the free widget cannot draw Dobby's entries, TP or SL (that needs TradingView's licensed
+  Charting Library running in this page). Trades stay on the site's own charts: the hero (today) and the trade page.
 - **Data**: the iframe is created only when the panel comes within 240 px of the screen, so a phone that never scrolls
   down never downloads it.
 

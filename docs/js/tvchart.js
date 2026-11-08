@@ -3,7 +3,7 @@
 // chart is TradingView's own widget page inside a cross-origin, sandboxed <iframe> (no top navigation, no access to
 // this page), configured through the URL hash the way their embed script does it. It loads when the panel first comes
 // near the screen and is rebuilt when the timeframe or the site theme changes.
-import { h, mount, icon } from './util.js';
+import { h, mount, icon, newId } from './util.js';
 import { prefs, on } from './state.js';
 import { panel, segmented } from './views.js';
 
@@ -29,7 +29,7 @@ function token(name, alpha = 1) {
 
 const siteTheme = () => (getComputedStyle(document.documentElement).colorScheme === 'dark' ? 'dark' : 'light');
 
-function widgetUrl(interval, theme) {
+function widgetUrl(interval, theme, vwap) {
   const up = token('--jade'), down = token('--cinnabar');
   const cfg = {
     autosize: true, symbol: SYMBOL, interval, timezone: 'Asia/Bangkok', theme, style: '1', locale: 'th_TH',
@@ -37,6 +37,10 @@ function widgetUrl(interval, theme) {
     allow_symbol_change: false, hide_top_toolbar: true, hide_side_toolbar: true, hide_volume: true,
     save_image: false, calendar: false, details: false, withdateranges: false,
     support_host: 'https://www.tradingview.com',
+    // TradingView's VWAP (session anchor, typical price, tick volume): close to the EA's server-day VWAP, not equal.
+    // in_5 is its "band #1" checkbox (on by default, a green-filled band): off, so only the VWAP line is drawn.
+    // (studies_overrides is not used: in tests any override key made the widget drop the study.)
+    studies: vwap ? [{ id: 'STD;VWAP', inputs: { in_5: false } }] : [],
   };
   if (up && down) {
     cfg.overrides = {
@@ -50,15 +54,26 @@ function widgetUrl(interval, theme) {
 
 export function tvChartPanel() {
   let interval = INTERVALS.some((o) => o.value === prefs.get('tv-interval')) ? prefs.get('tv-interval') : '15';
+  let vwap = prefs.get('tv-vwap') !== 'off'; // on unless turned off: the C5G strategy trades around VWAP
   let shown = false, theme = '';
   const wait = h('p', { class: 'tv-wait' }, 'กำลังโหลดกราฟจาก TradingView…');
   const frame = h('div', { class: 'tv-frame' }, wait);
   const seg = segmented({
     label: 'ช่วงเวลาของแท่งราคา', options: INTERVALS, get: () => interval,
-    set: (v) => { if (v === interval) return; interval = v; prefs.set('tv-interval', v); seg.update(); load(); },
+    set: (v) => { if (v === interval) return; interval = v; prefs.set('tv-interval', v); seg.update(); if (shown) load(); },
   });
+  const vwapId = newId('tv');
+  const vwapSw = h('button', {
+    type: 'button', class: 'switch', role: 'switch', 'aria-labelledby': vwapId, 'aria-checked': vwap ? 'true' : 'false',
+    onclick: () => {
+      vwap = !vwap; prefs.set('tv-vwap', vwap ? 'on' : 'off');
+      vwapSw.setAttribute('aria-checked', vwap ? 'true' : 'false');
+      if (shown) load();
+    },
+  }, h('span', { class: 'switch-knob', 'aria-hidden': 'true' }));
+  const tools = h('div', { class: 'tv-tools' }, seg, h('div', { class: 'tv-switch' }, h('span', { id: vwapId }, 'เส้น VWAP'), vwapSw));
   const el = panel('กราฟทองจาก TradingView', {
-    cls: 'tv-panel', actions: seg, sub: 'ราคาจาก OANDA อาจต่างจากราคาที่โบรกของบอทเล็กน้อย',
+    cls: 'tv-panel', actions: tools, sub: 'ราคาจาก OANDA อาจต่างจากราคาที่โบรกของบอทเล็กน้อย',
   }, frame, h('div', { class: 'tv-foot' },
     h('p', { class: 'muted small' }, 'จุดเข้าออกของบอทดูได้ที่กราฟด้านบน'),
     h('a', { class: 'link-quiet tv-out', href: FULL_CHART, target: '_blank', rel: 'noopener noreferrer' }, 'เปิดใน TradingView', icon('external'))));
@@ -68,7 +83,7 @@ export function tvChartPanel() {
     theme = siteTheme();
     wait.hidden = false;
     const f = h('iframe', {
-      class: 'tv-iframe', title: 'กราฟราคาทอง XAUUSD จาก TradingView', src: widgetUrl(interval, theme),
+      class: 'tv-iframe', title: 'กราฟราคาทอง XAUUSD จาก TradingView', src: widgetUrl(interval, theme, vwap),
       sandbox: 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox',
       referrerpolicy: 'no-referrer', scrolling: 'no', frameborder: '0',
       onload: () => { wait.hidden = true; },
