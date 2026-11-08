@@ -1349,6 +1349,17 @@ class ChooseBotPage(Page):
     def _failed(self, exc):
         self.set_busy(False)
         self._clear()
+        if isinstance(exc, da.AuthError) and core.auth_problem(exc) == "session" and not self.ui.runner.running:
+            # the saved login is no longer valid (signed out elsewhere, password changed): forget it, back to sign-in
+            core.sign_out(self.ui.ctx.data_dir, self.ui.client)
+            self.ui.reload_cfg()
+            self.ui.approved = None
+            self.wiz.go(STEP_SIGNIN, direction=-1)
+            self.wiz.pages[STEP_SIGNIN].banner.show("warn", core.AUTH_TH["session"], "พิมพ์อีเมลและรหัสผ่านแล้วกด เข้าสู่ระบบ")
+            return
+        if isinstance(exc, da.AuthError) and core.auth_problem(exc) == "session":
+            self.banner.show("bad", core.AUTH_TH["session"], "กดหยุดทำงานที่หน้าหลักก่อน แล้วเข้าสู่ระบบใหม่")
+            return
         self.banner.show("bad", "โหลดรายการบอทไม่ได้", "ตรวจอินเทอร์เน็ตแล้วลองใหม่ (%s)" % da.redact(str(exc))[:120],
                          [("ลองใหม่", self.on_enter)])
 
@@ -2040,6 +2051,7 @@ class MainScreen(Screen):
         elif a == "wizard":
             ui.start_wizard(STEP_SIGNIN if not ui.cfg.get("refresh_token") else STEP_BOT)
         elif a == "signin":
+            ui.approved = None              # the login failed: re-check the saved login instead of showing "signed in"
             ui.start_wizard(STEP_SIGNIN)
         elif a == "mt5":
             ui.show("mt5")
@@ -3596,6 +3608,37 @@ def run_selftest(out_png, data_dir):
         check("new user without bots: the catalog (Dobby) is shown directly",
               ui.wiz["bots"] == [] and wiz.pages[STEP_BOT].view == "catalog")
         shot("wizard_new_user_catalog")
+        # ---- the saved login is revoked elsewhere (2026-11-08: a website sign-out ended every session of the user)
+        server.refresh.clear()
+        server.access.clear()
+        ui.client.access_token = None
+        ui.approved = True                     # what the app still believed from the earlier sign-in
+        ui.wiz["bots"] = None
+        wiz.go(STEP_BOT)
+        pump(until=lambda: wiz.index == STEP_SIGNIN)
+        p = wiz.pages[STEP_SIGNIN]
+        pump()
+        check("revoked login: the bot list goes back to sign-in with the form, the dead token forgotten",
+              wiz.index == STEP_SIGNIN and not ui.cfg.get("refresh_token") and p.form.winfo_ismapped())
+        shot("wizard_session_revoked")
+        p.email.delete(0, "end")
+        p.email.insert(0, "owner@example.com")
+        p.password.insert(0, "demo-password")
+        p.do_sign_in()
+        pump(until=lambda: not p.busy and ui.approved)
+        server.refresh.clear()
+        server.access.clear()
+        ui.client.access_token = None
+        ui.approved = True
+        main = ui.screen("main")
+        main.hero_action = "signin"
+        main._hero_action()
+        wiz = ui.screen("wizard")
+        p = wiz.pages[STEP_SIGNIN]
+        pump(until=lambda: not p.busy and ui.approved is None)
+        pump()
+        check("revoked login: the main screen's sign-in button shows the form, not 'signed in'",
+              wiz.index == STEP_SIGNIN and not ui.cfg.get("refresh_token") and p.form.winfo_ismapped())
         real_common = core.default_common_dir(real_appdata)
         check("never touched the real EA folder or the real MT5 folders",
               os.path.normcase(common) != os.path.normcase(real_common) and common.startswith(data_dir) and

@@ -204,7 +204,9 @@ export class SupabaseApi {
   }
   async signOut() {
     try { this.sb.removeAllChannels(); } catch { /* ignore */ }
-    await this.sb.auth.signOut();
+    // 'local' = this browser only. The default ('global') revokes every refresh token of the user, which logs out the
+    // desktop app on the trading PC too (2026-11-08: the app lost its login after a sign-out on the website).
+    await this.sb.auth.signOut({ scope: 'local' });
     this.session = null;
   }
   async resetPassword(email) { unwrap(await this.sb.auth.resetPasswordForEmail(email, { redirectTo: siteUrl() })); }
