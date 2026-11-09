@@ -152,7 +152,7 @@ export const EVENT_LABELS = {
   SIGNAL: 'สัญญาณ', ORDER: 'ตั้งคำสั่ง', ARM: 'ตั้งกรอบ NY', CANCEL: 'ยกเลิกคำสั่ง', SKIP: 'ข้าม', ERROR: 'ข้อผิดพลาด',
   DAYCAP: 'ถึงจุดหยุดรายวัน', LOCKED: 'ล็อกการเทรดจริง', UNLOCKED: 'ปลดล็อกเทรดจริง',
   // EA v3.05 (SPEC 11): runner stage and the daily-cap reset
-  RUN_ON: 'runner เริ่มวิ่ง', RUN_UP: 'runner ขยับขึ้น', DAYCAP_RESET: 'รีเซ็ตจุดหยุดรายวัน',
+  RUN_ON: 'runner เริ่มวิ่ง', RUN_UP: 'runner ขยับขึ้น', DAYCAP_RESET: 'รีเซ็ตจุดหยุดรายวัน', WARN: 'คำเตือน',
 };
 // trade_notes tags offered on the trade page (SPEC 9.6); any other tag can be typed
 export const SUGGESTED_TAGS = ['ช่วงข่าว', 'ปิดเอง', 'เลื่อน SL เอง', 'ตลาดผันผวน'];
