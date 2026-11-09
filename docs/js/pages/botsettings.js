@@ -7,7 +7,8 @@ import { app, currentBot, updateBotRow, on, ownsBot } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, onlineBadge, pendingChip, rejectionsBlock, appliedVersion, isPending, applyProgress } from '../botctl.js';
 import { liveSwitch, appliedLive } from '../liveswitch.js';
 import { panel, pageHead, noBotState, stepper, bigToggle, segmented, progressSteps, helpBtn } from '../views.js';
-import { normalizeParams, presetFromLive, remoteSubset, defaults, PARAM_BY_KEY, coerce, runnerSupported, RUNNER_WARNING, RUNNER_KEYS, isCommandKey } from '../params.js';
+import { normalizeParams, presetFromLive, remoteSubset, defaults, PARAM_BY_KEY, coerce, runnerSupported, RUNNER_WARNING, RUNNER_KEYS, isCommandKey,
+  runnerSafetyTooClose, RUNNER_SAFETY_WARNING } from '../params.js';
 import { PROPOSAL_KEY } from '../chat.js';
 import { buildSet, setFileName } from '../setfile.js';
 import { autoBlackouts } from '../autoblackout.js';
@@ -498,6 +499,10 @@ export async function render(root, ctx) {
       const runWarn = h('div');
       runWarn.update = () => { mount(runWarn, v.InpRunnerEnable ? callout('warn', 'ยังเป็นโหมดทดลอง', h('p', null, RUNNER_WARNING)) : ''); };
       reg(runWarn);
+      // a warning, not an error: the safety TP sits closer than one ratchet step (shown under the advanced numbers)
+      const safetyWarn = h('p', { class: 'field-warn', role: 'status' });
+      safetyWarn.update = () => { safetyWarn.textContent = runnerSafetyTooClose(v) ? RUNNER_SAFETY_WARNING : ''; safetyWarn.hidden = !runnerSafetyTooClose(v); };
+      reg(safetyWarn);
       const noMod = h('p', { class: 'field-error', role: 'alert' });
       noMod.update = () => { noMod.textContent = v.InpRunnerEnable && !(v.InpRunner_A || v.InpRunner_NY || v.InpRunner_C5G) ? 'เปิดโหมด runner แต่ไม่ได้เลือกสูตรใดเลย จึงไม่มีผล' : ''; };
       reg(noMod);
@@ -526,7 +531,8 @@ export async function render(root, ctx) {
           adv('จำนวนก้าวสูงสุด', 'InpRunnerMaxSteps', reg(stepper({ label: 'จำนวนก้าวสูงสุด', get: getKey('InpRunnerMaxSteps'), set: setKey('InpRunnerMaxSteps'), step: 1, min: 0, max: 50, decimals: 0, unit: 'ก้าว', disabled: locked })),
             '0 = ไม่จำกัด (ค่าที่ทดสอบ) ถ้าตั้งไว้ เมื่อครบจำนวนบอทจะตั้ง TP ที่โบรกไว้ที่เป้าสุดท้าย'),
           adv('TP สำรองฝั่งโบรกเกอร์', 'InpRunnerSafetyTP', reg(stepper({ label: 'TP สำรองฝั่งโบรกเกอร์', get: getKey('InpRunnerSafetyTP'), set: setKey('InpRunnerSafetyTP'), step: 0.5, min: 0, max: 10, decimals: 1, unit: '× ระยะ SL', disabled: locked })),
-            'TP ที่โบรกตั้งไว้ที่ "เป้าถัดไป + เท่านี้เท่าของระยะ SL (ราว N × ATR)" และขยับตามเป้าทุกก้าว มีไว้กันกรณีคอมหลุดเท่านั้น ปกติไม่ปิดไม้ (0 = ไม่ตั้ง TP ที่โบรก)')));
+            'TP ที่โบรกตั้งไว้ที่ "เป้าถัดไป + เท่านี้เท่าของระยะ SL (ราว N × ATR)" และขยับตามเป้าทุกก้าว มีไว้กันกรณีคอมหลุดเท่านั้น ปกติไม่ปิดไม้ (0 = ไม่ตั้ง TP ที่โบรก)'),
+          safetyWarn));
       secRunner = h('section', { class: 'ed-sec', id: 'set-runner' }, runnerHead,
         h('div', { class: 'group' }, runT, runWarn, explain, runAdv));
     }

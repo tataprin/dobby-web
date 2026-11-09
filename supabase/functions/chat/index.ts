@@ -1746,6 +1746,8 @@ async function toolPropose(t: TurnCtx, input: Json): Promise<Json> {
     if (!(st && st.virtual && st.virtual.day_cap_hit === true)) warnings.push("the daily cap is not hit right now, so a reset would be ignored by the EA");
   }
   if (changes.get("InpRunnerEnable") === true) warnings.push("the runner mode is tested in simulation only, not yet in the Strategy Tester; the extra profit comes from the few trades that run far");
+  // docs/js/params.js runnerSafetyTooClose: a safety TP closer than one ratchet step may let the broker close the trade before the runner moves
+  if (Number(next.InpRunnerSafetyTP) > 0 && Number(next.InpRunnerSafetyTP) < Number(next.InpRunnerStep)) warnings.push("TP สำรองใกล้กว่าหนึ่งก้าว โบรกเกอร์อาจปิดไม้ก่อนที่ runner จะขยับ (ค่าที่ทดสอบ 4.0): InpRunnerSafetyTP is below InpRunnerStep");
   for (const k of ["InpLotsA", "InpLotsNY", "InpLotsC5G", "InpLotsAsia"]) if (next[k] > next.InpMaxLots + 1e-9) warnings.push(`${k} ${next[k]} is above InpMaxLots ${next.InpMaxLots}: the EA will use ${next.InpMaxLots}`);
   if (next.InpLock1Enable && next.InpLock1AtPct === 0) warnings.push("InpLock1AtPct 0 keeps stage 1 off even with InpLock1Enable on");
   if (next.InpDailyCapPct > 10) warnings.push("a daily cap above 10 % is above the tested value");

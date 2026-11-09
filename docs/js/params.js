@@ -269,8 +269,14 @@ export function validatePreset(v) {
   if (v.InpRemoteParams && v.InpLotsA > v.InpRemoteMaxLots) warn('InpRemoteMaxLots', 'ต่ำกว่าล็อตในพรีเซ็ตนี้ เว็บจะส่งล็อตนี้ไม่ได้');
   if (v.InpRunnerEnable) warn('InpRunnerEnable', RUNNER_WARNING);
   if (v.InpRunnerEnable && !(v.InpRunner_A || v.InpRunner_NY || v.InpRunner_C5G)) warn('InpRunner_A', 'เปิดโหมด runner แต่ไม่ได้เลือกสูตรใดเลย จึงไม่มีผล');
+  if (runnerSafetyTooClose(v)) warn('InpRunnerSafetyTP', RUNNER_SAFETY_WARNING);
   return { errors, warnings };
 }
+
+// A safety TP closer than one ratchet step sits between two targets: the broker may close the trade before the runner
+// moves (a warning, never an error; SPEC 11).
+export const RUNNER_SAFETY_WARNING = 'TP สำรองใกล้กว่าหนึ่งก้าว โบรกเกอร์อาจปิดไม้ก่อนที่ runner จะขยับ (ค่าที่ทดสอบ 4.0)';
+export const runnerSafetyTooClose = (v) => Number(v.InpRunnerSafetyTP) > 0 && Number(v.InpRunnerSafetyTP) < Number(v.InpRunnerStep);
 
 // Stricter EA-side bounds for the remote keys (SPEC 4.2). ceilings = {maxLots, maxCapPct} (EA remote ceilings and agent
 // limits, the lower of each). Returns a list of {key, msg}.
