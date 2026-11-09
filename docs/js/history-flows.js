@@ -153,7 +153,7 @@ export function flowsView(c) {
             await patchDesired(bot.id, (n) => {
               const base = n.params ? normalizeParams({ ...vals, ...n.params }) : normalizeParams(vals);
               base.InpVirtualStart = next;
-              n.params = toDesiredParams(base);
+              n.params = toDesiredParams(base, { eaVersion: (st && st.ea_version) || bot.ea_version });
             });
             close();
             toast(`ส่งทุน ${fmtNum(countNext)} ให้บอทแล้ว EA จะใช้เมื่อไม่มีไม้เปิด (ดูความคืบหน้าที่ตั้งค่าบอท)`, 'good', 6000);

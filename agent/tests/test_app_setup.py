@@ -13,7 +13,8 @@ import dobby_app_core as core
 import dobby_app_gfx as gfx
 from conftest import BOT, Env
 
-MQ5 = r"D:\Dobby\mt5\Dobby3_v304.mq5"
+MQ5 = r"D:\Dobby\mt5\Dobby3_v305.mq5"
+WEB_SET = r"D:\Dobby\mt5\presets\Dobby3_v305_web.set"        # the preset the EA builder ships next to the .ex5
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -58,7 +59,7 @@ EA_CEILINGS = {"ceilings": {"max_lots": core.PRESET_MAX_LOTS, "max_cap_pct": cor
 
 def test_params_full_remote_key_set_and_values():
     p = core.settings_to_params(core.auto_settings(300))
-    assert list(p) == da.REMOTE_KEYS                                     # the full set, allow-list order
+    assert list(p) == [k for k in da.REMOTE_KEYS if k not in da.V305_KEYS]   # every v3.04 key, allow-list order
     assert p == {
         "InpUseA": True, "InpUseNY": True, "InpUseC5G": True, "InpUseAsia": False,
         "InpLotsA": 0.03, "InpLotsNY": 0.03, "InpLotsC5G": 0.03, "InpMaxLots": 0.03, "InpLotsAsia": 0.01,
@@ -185,7 +186,7 @@ def test_web_preset_file_format_and_values():
     assert "\r\n" in text and "\n" not in text.replace("\r\n", "") and text.endswith("\r\n")
     pairs = core.parse_set(data)
     keys = [k for k, _ in pairs]
-    assert keys == [k for k, _, _ in core.EA_INPUTS] and len(keys) == len(set(keys)) == 72   # each input once
+    assert keys == [k for k, _, _ in core.EA_INPUTS] and len(keys) == len(set(keys)) == 80   # each input once
     v = dict(pairs)
     expect = {"InpRemoteParams": "true", "InpRemoteLive": "true", "InpRemoteMaxLots": "0.5",
               "InpRemoteMaxCapPct": "10.0", "InpAllowLive": "false", "InpUseA": "true", "InpUseNY": "true",
@@ -198,7 +199,11 @@ def test_web_preset_file_format_and_values():
               # EA defaults kept
               "InpUseControl": "true", "InpA_SLCap": "6.0", "InpNY_RangeMin": "990", "InpMagicA": "26102402",
               "InpStartDate": "0", "InpRemoteFile": "Dobby\\dobby3_remote.txt", "InpRemoteTesterFrom": "0",
-              "InpControlInTester": "false", "InpAsia_MaxSpread": "0.4", "InpNY_Buffer": "0.2"}
+              "InpControlInTester": "false", "InpAsia_MaxSpread": "0.4", "InpNY_Buffer": "0.2",
+              # v3.05 runner inputs at their defaults, runner OFF (contract §1 / §5)
+              "InpRunnerEnable": "false", "InpRunner_A": "true", "InpRunner_NY": "true", "InpRunner_C5G": "true",
+              "InpRunnerKeepPct": "75.0", "InpRunnerStep": "0.5", "InpRunnerMaxSteps": "0", "InpRunnerSafetyTP": "4.0"}
+    assert keys[-8:] == list(da.V305_KEYS[:8])                                 # after the v3.04 remote group
     for k, want in expect.items():
         assert v[k] == want, k
     lines = dict((ln.split("=", 1)[0], ln) for ln in text.split("\r\n") if ln and not ln.startswith(";"))
@@ -226,11 +231,25 @@ def test_ea_input_list_matches_the_mq5():
             assert float(d) == float(d2), k
 
 
+@pytest.mark.skipif(not os.path.isfile(WEB_SET), reason="Dobby3_v305_web.set is not on this PC")
+def test_app_preset_matches_the_shipped_v305_web_set():
+    """The app writes its own Dobby3_v305_web.set; it must say the same as the file shipped with the EA."""
+    shipped = dict(core.parse_set(open(WEB_SET, "rb").read()))
+    ours = dict(core.parse_set(core.web_preset_bytes()))
+    assert sorted(shipped) == sorted(ours)
+    for k, v in ours.items():
+        kind = core.EA_INPUT_KIND[k]
+        if kind in ("bool", "string"):
+            assert shipped[k].lower() == v.lower(), k
+        else:
+            assert float(shipped[k]) == float(v), k
+
+
 def test_install_web_preset_and_pick_ea(tmp_path):
     d = str(tmp_path / "mt5")
     os.makedirs(os.path.join(d, "MQL5"))
     target, res = core.install_web_preset(d)
-    assert target == os.path.join(d, "MQL5", "Presets", "Dobby3_v304_web.set") and res == "installed"
+    assert target == os.path.join(d, "MQL5", "Presets", "Dobby3_v305_web.set") and res == "installed"
     assert core.install_web_preset(d)[1] == "same"
     files = [{"name": "Dobby3_v303.ex5", "kind": "ea", "updated_at": "2026-11-09"},
              {"name": "Dobby3_v304.ex5", "kind": "ea", "updated_at": "2026-11-01"},
@@ -239,6 +258,8 @@ def test_install_web_preset_and_pick_ea(tmp_path):
     assert core.pick_ea_file(files)["name"] == "Dobby3_v304.ex5"            # the highest v3xx wins
     files.append({"name": "Dobby3_v304.ex5 ", "kind": "ea", "updated_at": "2026-11-08"})
     assert core.pick_ea_file(files)["updated_at"] == "2026-11-08"          # same version: the newest upload
+    files.append({"name": "Dobby3_v305.ex5", "kind": "ea", "updated_at": "2026-10-01"})
+    assert core.pick_ea_file(files)["name"] == "Dobby3_v305.ex5"            # v305 beats v304 whatever the upload date
     assert core.pick_ea_file([{"name": "x.set", "kind": "preset"}]) is None
     assert core.pick_ea_file([{"name": "Dobby.ex5", "kind": "ea"}])["name"] == "Dobby.ex5"
     os.makedirs(os.path.join(d, "MQL5", "Experts", "Dobby"))
@@ -294,8 +315,8 @@ def test_autostart_ok_writes_the_ini_and_calls_the_fake_launcher(tmp_path):
     chk = core.autostart_check(data, "Dobby3_v304.ex5", common, "XAUUSD", procs=[])
     assert chk["ok"] and chk["problems"] == [] and chk["charts"] == []         # an indicator / other EA is fine
     assert chk["exe"] == os.path.join(install, "terminal64.exe") and chk["install_dir"] == install
-    assert chk["expert"] == "Dobby\\Dobby3_v304"
-    assert chk["ini"] == core.startup_ini_text("Dobby\\Dobby3_v304", "Dobby3_v304_web.set", "XAUUSD")
+    assert chk["expert"] == "Dobby\\Dobby3_v304"                             # the ex5 that is installed...
+    assert chk["ini"] == core.startup_ini_text("Dobby\\Dobby3_v304", "Dobby3_v305_web.set", "XAUUSD")   # ...our preset
     calls = []
     ctx = core.AppContext(str(tmp_path / "app"), environ={"APPDATA": str(tmp_path / "appdata")},
                           launcher=lambda cmd, cwd: calls.append((cmd, cwd)) or 777, processes=[])
@@ -601,7 +622,9 @@ def test_demo_mode_fake_launcher_starts_a_fake_dobby(tmp_path):
                                                                    attempts=1) is None:
             core.time.sleep(0.1)
         st = da.read_status_file(os.path.join(common, da.STATUS_NAME), attempts=1)
-        assert st and st["ea_version"] == "3.04" and st["remote"]["effective"]["InpLotsA"] == 0.03
+        assert st and st["ea_version"] == "3.05" and st["schema_version"] == 6
+        assert st["remote"]["effective"]["InpLotsA"] == 0.03 and st["remote"]["effective"]["InpRunnerEnable"] is False
+        assert st["params"]["runner"]["keep_pct"] == 75.0 and st["virtual"]["cap_reset_applied"] == 0
     finally:
         if state["ea"]:
             state["ea"].stop()

@@ -1808,3 +1808,17 @@ textarea.input.chat-input { flex: 1 1 auto; min-height: var(--h-input); max-heig
 .ai-budget { display: grid; gap: var(--s2); }
 .ai-budget-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s2); }
 .ai-budget-line strong { font-family: var(--font-num); font-size: var(--fs-22); font-weight: 600; }
+
+/* ---------- EA v3.05 (SPEC 11): daily-cap banner, runner section, runner position state ---------- */
+.cap-banner { margin: 0; }
+.cap-banner .cap-actions { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s3); align-items: center; padding-top: var(--s1); }
+.cap-banner .cap-actions > .btn { flex: none; }
+.cap-banner .cap-actions > .small { flex: 1 1 200px; }
+.cap-banner .chip.pending .pulse { margin-right: 2px; }
+.pos-runner { font-size: var(--fs-14); color: var(--gold-ink); margin-top: calc(-1 * var(--s2)); }
+.runner-extra { display: grid; gap: var(--s2); justify-content: stretch; }
+.runner-extra .checks { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); }
+.runner-extra .field-error:empty { display: none; }
+.runner-explain { max-width: 72ch; }
+.runner-adv > summary { min-height: 44px; display: flex; align-items: center; color: var(--ink); font-weight: 600; cursor: pointer; }
+.runner-adv .adv-list { display: grid; }

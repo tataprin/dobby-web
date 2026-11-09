@@ -2,21 +2,23 @@
 // stamped on it), the engraved numbers row, the open trade with an SL - entry - price - TP gauge, recent trades, then
 // details. Realtime; read again after 20 s without news or when a phone wakes the page (SPEC 5 page 2).
 import { h, mount, icon, fmtNum, fmtSigned, fmtPct, pnl, fmtThai, timeEl, serverToUtc, parseWall, toast, errText, confirmDialog,
-  errorState, loadingState, isoUtc, toneOf, utcToServer, ago, debounce, thaiDayKey, money, duration, onWake } from '../util.js';
+  errorState, loadingState, isoUtc, toneOf, utcToServer, ago, debounce, thaiDayKey, money, duration, onWake, busy } from '../util.js';
 import { app, currentBot, updateBotRow, on, ownsBot } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, rejectionsBlock, isPending, heroState } from '../botctl.js';
 import { modChip, sideEl, kv, panel, noBotState, onOff, pageHead } from '../views.js';
-import { minutesToClock } from '../params.js';
+import { runnerSupported, capResetToken, minutesToClock } from '../params.js';
 import { prepareRows, pairTrades, REASON_LABELS, tradeHref, rebaseBalances, statsOf } from '../journal.js';
 import { strategyHealth, riskStats, sinceStart, dietz } from '../analytics.js';
 import { roundsOf, currentRound, roundTitle, botPnlOf } from '../rounds.js';
 import { riskStrip } from '../insights.js';
-import { currentValues, summaryText } from '../simple.js';
+import { currentValues, summaryText, toDesiredParams } from '../simple.js';
 import { hallmark } from '../hallmark.js';
 import { priceChart, readBars } from '../pricechart.js';
 import { tvChartPanel } from '../tvchart.js';
 
 const DAY = 86400000;
+// daily-cap reset (EA v3.05, SPEC 11): the status must be younger than this, and a sent token is given this long
+const CAP_STALE_MS = 15 * 60000, CAP_TIMEOUT_MS = 3 * 60000;
 
 function lockModules(s) {
   const m = /A=(\w+)\s+NY=(\w+)\s+C5G=(\w+)/.exec(s || '');
@@ -68,6 +70,7 @@ export async function render(root, ctx) {
     h('div', { class: 'hero-chart' }, chart),
     footBox);
   // empty boxes are hidden, so the column's 24 px rhythm never doubles
+  const capBox = h('div', { hidden: true }); // the daily-cap banner with "รีเซ็ตจุดหยุดรายวัน" (SPEC 11)
   const warnBox = h('div', { class: 'stack', hidden: true });
   const figsBox = h('div');
   const riskBox = h('div', { hidden: true });
@@ -75,7 +78,8 @@ export async function render(root, ctx) {
   const recentBox = h('section', { class: 'panel dsec', 'aria-label': 'เทรดล่าสุด' });
   const detailBox = h('div', { hidden: true });
   const tvBox = tvChartPanel(); // TradingView's gold chart, an extra view (loads when scrolled near)
-  root.append(headBox, hero, warnBox, figsBox, riskBox, h('div', { class: 'dash-cols' }, posBox, recentBox), tvBox, detailBox);
+  root.append(headBox, hero, capBox, warnBox, figsBox, riskBox, h('div', { class: 'dash-cols' }, posBox, recentBox), tvBox, detailBox);
+  const eaVer = () => (st && st.ea_version) || bot.ea_version || '';
   setTimeout(() => hero.classList.remove('intro'), 1600);
 
   // journal for the chart marks, the recent trades list and the risk strip (last 30 days, server time, or since the
@@ -125,7 +129,8 @@ export async function render(root, ctx) {
     const ageBucket = Number.isFinite(updated) ? Math.min(12, Math.floor((Date.now() - updated) / 10000)) : -1;
     const v = (st && st.virtual) || {};
     const stamp = stampOf(hs, info, st);
-    if (changed('hero', [hs, paused, pending, !!ctl, summary, ageBucket, info.online, stamp, v.day_pnl, cur()]) || force) {
+    const demoCap = ctx.api.mode === 'demo' && !ro && typeof ctx.api.demoHitCap === 'function' && runnerSupported(eaVer()) && st && v.day_cap_hit !== true;
+    if (changed('hero', [hs, paused, pending, !!ctl, summary, ageBucket, info.online, stamp, v.day_pnl, v.day_cap_hit, demoCap, cur()]) || force) {
       mount(stampBox, hallmark({ tone: stamp.tone, state: stamp.state, title: `Dobby: ${hs.title}` }));
       mount(copyBox,
         h('h2', { class: 'hero-title' }, hs.title),
@@ -144,9 +149,115 @@ export async function render(root, ctx) {
             class: `btn small ${paused ? 'primary' : ''}`, type: 'button', disabled: !ctl,
             onclick: (e) => togglePause(e.currentTarget, !paused),
           }, icon(paused ? 'play' : 'pause'), paused ? 'ทำงานต่อ' : 'หยุดชั่วคราว'),
-          h('button', { class: 'btn small', type: 'button', disabled: !ctl, onclick: (e) => blackout2h(e.currentTarget) }, icon('clock'), 'งดเข้าไม้ 2 ชม.')),
+          h('button', { class: 'btn small', type: 'button', disabled: !ctl, onclick: (e) => blackout2h(e.currentTarget) }, icon('clock'), 'งดเข้าไม้ 2 ชม.'),
+          // demo only: a losing day that hits the cap, so the banner and "รีเซ็ตจุดหยุดรายวัน" can be tried (SPEC 11)
+          demoCap ? h('button', {
+            class: 'btn small ghost', type: 'button', title: 'โหมดตัวอย่างเท่านั้น: ไม้แพ้หนึ่งไม้จนถึงจุดหยุดรายวัน',
+            onclick: async (e) => { busy(e.currentTarget, true); try { await ctx.api.demoHitCap(bot.id); } catch (err) { toast(errText(err), 'error'); } },
+          }, icon('warn'), 'ตัวอย่าง: จำลองวันที่ถึงจุดหยุด') : null),
         paused && pending && !ro ? h('p', { class: 'muted small hero-note' }, 'สั่งหยุดแล้ว รอเครื่องรับคำสั่ง') : null);
     }
+  }
+
+  // ---------------- daily-cap banner + "รีเซ็ตจุดหยุดรายวัน" (EA v3.05, SPEC 11)
+  // The token lives in desired.params.cap_reset and IS its send time (unix seconds), so any device sees the same
+  // pending state. It is applied by the EA when the cap is hit today; the agent rejects the WHOLE params block once a
+  // token is older than 48 h, so the token is removed from desired.params as soon as it is done: the status reports it
+  // (cap_reset_applied), the cap is no longer hit, or 3 minutes passed without an answer.
+  let capDone = 0, capTimedOut = 0, capClearing = null; // tokens already announced / timed out; the clearing patch in flight
+  let capClearTries = 0, capClearToken = 0; // a few retries per token when the clearing patch fails (offline, conflicts)
+  const capToken = () => { const d = normDesired(ctl && ctl.desired); const t = d.params ? Number(d.params.cap_reset) : NaN; return Number.isFinite(t) && t > 0 ? Math.floor(t) : 0; };
+  const capResolved = (token, v) => !!(token && st && (Number(v.cap_reset_applied) >= token || v.day_cap_hit === false));
+  const capAge = (token) => Date.now() - token * 1000;
+  // take the token out of desired.params (owner only, a few tries per token; every other value stays)
+  function clearCapToken(token) {
+    if (ro || capClearing || !ctl) return;
+    if (token !== capClearToken) { capClearToken = token; capClearTries = 0; }
+    if (capClearTries >= 5) return;
+    capClearTries += 1;
+    capClearing = patchDesired(bot.id, (d) => { if (d.params && typeof d.params === 'object') { const { cap_reset, ...rest } = d.params; d.params = rest; } }, { keepCommand: true })
+      .then((row) => { ctl = row || ctl; }, () => {})
+      .finally(() => { capClearing = null; if (capToken() === token) setTimeout(drawCap, 5000); });
+  }
+  // why the button cannot be used now (null = it can). Owner, control row, EA >= 3.05, app online, status < 15 min,
+  // InpRemoteParams on, and the PC allows settings from the web (otherwise the command would never reach the EA).
+  function capReason() {
+    const info = onlineInfo(bot, st);
+    const lim = (bot.agent_state && bot.agent_state.limits) || {};
+    if (ro) return `ดูได้อย่างเดียว (บอทของ ${bot.owner_name || 'สมาชิก'})`;
+    if (!ctl) return 'บอทนี้ยังเชื่อมกับเว็บไม่ครบ (ไม่มีแถวควบคุม)';
+    if (!runnerSupported(eaVer())) return `ต้องอัปเดต EA เป็น v3.05 และแอป Dobby 1.2.2 ก่อน (บอทนี้รุ่น ${eaVer() || 'ไม่ทราบ'})`;
+    if (!info.agentOnline) return 'แอป Dobby ที่เครื่องออฟไลน์อยู่ คำสั่งจะยังไม่ถึงบอท';
+    const hb = st && Number.isFinite(st.heartbeat_gmt_unix) ? st.heartbeat_gmt_unix * 1000 : NaN;
+    if (!Number.isFinite(hb) || Date.now() - hb > CAP_STALE_MS) return 'สถานะล่าสุดจากบอทเก่ากว่า 15 นาที รอให้บอทส่งสถานะใหม่ก่อน';
+    if (!(st.remote && st.remote.params_enabled)) return 'EA ยังไม่เปิดรับคำสั่งจากเว็บ (InpRemoteParams) โหลด Dobby3_v305_web.set ใน MT5 อีกครั้ง';
+    if (lim.allow_remote_params === false) return 'เครื่องนี้ยังไม่อนุญาตให้เว็บส่งค่า (แอป Dobby → ตั้งค่า → ความปลอดภัย)';
+    return null;
+  }
+  function drawCap() {
+    const v = (st && st.virtual) || {};
+    const hit = v.day_cap_hit === true;
+    const token = capToken();
+    if (token && capResolved(token, v)) {
+      // done: the EA took it (or the cap cleared by itself); say so once and take the token out of desired.params
+      if (capDone !== token) { capDone = token; if (Number(v.cap_reset_applied) >= token) toast('บอทรีเซ็ตจุดหยุดรายวันแล้ว วันนี้เปิดไม้ใหม่ได้อีก', 'good', 6000); }
+      clearCapToken(token);
+    } else if (token && capAge(token) > CAP_TIMEOUT_MS) {
+      // no answer in 3 minutes: the token comes out (a stale one would make the PC refuse every setting after 48 h)
+      capTimedOut = token;
+      clearCapToken(token);
+    }
+    const timedOut = !!capTimedOut && hit; // the message stays until the next click or the cap clears
+    const waiting = !!token && !capResolved(token, v) && capAge(token) <= CAP_TIMEOUT_MS;
+    const reason = capReason();
+    const pct = Number(v.day_start) > 0 ? ((Number(v.day_pnl) || 0) / Number(v.day_start)) * 100 : null;
+    const capPct = Number(st && st.params && st.params.daily_cap_pct) || 10;
+    if (!changed('cap', [hit, v.day_pnl, v.day_start, v.cap_reset_applied, v.cap_resets_today, reason, waiting, timedOut, cur()])) return;
+    capBox.hidden = !hit;
+    if (!hit) { mount(capBox); return; }
+    mount(capBox, h('div', { class: 'callout warn cap-banner', role: 'status' }, icon('warn'),
+      h('div', null,
+        h('p', { class: 'callout-title' }, 'ถึงจุดหยุดรายวันแล้ว'),
+        h('p', null, 'วันนี้ ', money(v.day_pnl, { signed: true, unit: cur() }), pct !== null ? ` (${fmtPct(pct, 1, true)})` : '',
+          ' บอทหยุดเปิดไม้ใหม่จนถึงวันถัดไป (ตามเวลาเซิร์ฟเวอร์) ไม้ที่เปิดอยู่ยังวิ่งต่อ'),
+        Number(v.cap_resets_today) > 0 ? h('p', { class: 'muted small' }, `วันนี้รีเซ็ตไปแล้ว ${v.cap_resets_today} ครั้ง ทุนต้นวันตอนนี้ ${fmtNum(v.day_start)} ${cur()}`) : null,
+        h('div', { class: 'cap-actions' },
+          h('button', { class: 'btn small', type: 'button', disabled: !!reason || waiting, onclick: (e) => capResetClick(e.currentTarget) }, icon('refresh'), 'รีเซ็ตจุดหยุดรายวัน'),
+          waiting ? h('span', { class: 'chip pending' }, h('span', { class: 'pulse', 'aria-hidden': 'true' }), 'ส่งคำสั่งแล้ว รอบอทรับ')
+            : timedOut ? h('span', { class: 'warn-text small' }, 'ยังไม่ได้รับ ตรวจว่าแอปเปิดอยู่ แล้วกดอีกครั้งได้')
+              : reason ? h('span', { class: 'muted small' }, reason)
+                : h('span', { class: 'muted small' }, `ให้บอทเทรดต่อได้วันนี้ จุดหยุดใหม่ ${fmtNum(capPct, 0)}% ของทุนตอนนี้ (ตัดสินใจเอง)`),
+          h('a', { class: 'small', href: '#/guide/capreset' }, 'คืออะไร')))));
+  }
+  async function capResetClick(btn) {
+    const reason = capReason();
+    if (reason) { toast(reason, 'error', 6000); return; }
+    const v = (st && st.virtual) || {};
+    const c = cur() || 'USD';
+    const capPct = Number(st.params && st.params.daily_cap_pct) || 10;
+    const balNow = Number(v.balance), loss = Number(v.day_pnl) || 0;
+    const ok = await confirmDialog('รีเซ็ตจุดหยุดรายวัน?', h('div', { class: 'stack' },
+      h('ul', null,
+        h('li', null, `ทุนต้นวันจะเปลี่ยนจาก ${fmtNum(v.day_start)} เป็นพอร์ตจำลองตอนนี้ ${fmtNum(balNow)} ${c} และกำไรขาดทุนวันนี้เริ่มนับใหม่จาก 0 (ขาดทุน ${fmtNum(Math.abs(loss))} ที่เกิดแล้วยังอยู่ในบัญชีเหมือนเดิม)`),
+        h('li', null, `บอทกลับมาเปิดไม้ใหม่ได้ทันทีที่รับคำสั่ง และวันนี้อาจขาดทุนได้อีก ${fmtNum(capPct, 0)}% (≈ ${fmtNum((capPct / 100) * (balNow || 0), 0)} ${c}) ก่อนถึงจุดหยุดอีกครั้ง`),
+        h('li', null, 'ไม้ที่เปิดอยู่ สวิตช์เทรดจริง และค่าอื่น ๆ ไม่เปลี่ยน รีเซ็ตได้มากกว่าหนึ่งครั้งต่อวัน'),
+        h('li', null, 'นี่เป็นการตัดสินใจของเจ้าของบอท จุดหยุดรายวันมีไว้กันวันที่แย่ลามไปทั้งพอร์ต ถ้าไม่แน่ใจ รอวันถัดไปปลอดภัยกว่า')),
+      h('p', { class: 'muted small' }, 'คำสั่งส่งผ่านแอป Dobby ที่เครื่อง บอทรับทันที (ไม่ต้องรอให้ไม้ปิด) ปกติไม่เกินครึ่งนาที')),
+    { ok: 'รีเซ็ตและให้เทรดต่อ', danger: true });
+    if (!ok) return;
+    busy(btn, true, 'กำลังส่ง…');
+    const token = capResetToken();
+    try {
+      if (capClearing) await capClearing;
+      ctl = await patchDesired(bot.id, (d) => {
+        // the current params (what the web last sent, else what the bot runs now) + the fresh token
+        const base = d.params && typeof d.params === 'object' && Object.keys(d.params).length ? d.params : toDesiredParams(currentValues(st).values, { eaVersion: eaVer() });
+        d.params = { ...base, cap_reset: token };
+      }, { keepCommand: true });
+      capTimedOut = 0;
+      toast('ส่งคำสั่งแล้ว รอบอทรับ', 'good');
+    } catch (e) { busy(btn, false); toast(errText(e), 'error', 6000); }
+    drawCap();
   }
 
   function drawChart(animate) {
@@ -298,10 +409,20 @@ export async function render(root, ctx) {
     const fact = (label, value, sub) => h('div', { class: 'pos-fact' }, h('dt', null, label), h('dd', null, value), sub ? h('p', { class: 'fact-sub' }, sub) : null);
     const todayKey = thaiDayKey(Date.now());
     const opened = Number.isFinite(openedUtc) ? (thaiDayKey(openedUtc) === todayKey ? `วันนี้ ${fmtThai(openedUtc, 'time')}` : fmtThai(openedUtc, 'short')) : '—';
+    // EA v3.05 runner state (SPEC 11): on = allowed for this trade; converted = past TP0, SL ratchets; p.tp = the safety TP
+    const rn = p.runner && typeof p.runner === 'object' ? p.runner : null;
+    const runnerOn = !!(rn && rn.on), converted = !!(rn && rn.converted);
+    if (converted) progress = 'ผ่าน TP เดิมแล้ว วิ่งต่อในโหมด runner';
+    // a converted runner is measured against its next target, not the broker safety TP (which it almost never reaches)
+    const target = converted && Number.isFinite(Number(rn.target)) ? Number(rn.target) : null;
+    const goalLeft = target !== null ? (target - price) * dir : tpLeft, goalDist = target !== null ? (target - p.open_price) * dir : tpDist;
     return h('article', { class: 'position' },
       h('div', { class: 'pos-summary' }, sideEl(p.side), modChip(p.module), h('span', { class: 'muted' }, h('span', { class: 'num' }, fmtNum(p.lots)), ' ล็อต'),
         p.locked || slLocked ? h('span', { class: 'chip live' }, icon('shield'), 'ล็อกกำไรแล้ว') : p.near_tp ? h('span', { class: 'chip warn' }, 'ใกล้ TP') : null,
+        converted ? h('span', { class: 'chip live', title: 'ผ่าน TP แล้ว ปล่อยให้วิ่งต่อ SL กันกำไรขยับตาม' }, icon('zap'), 'runner วิ่งอยู่')
+          : runnerOn ? h('span', { class: 'chip quiet-chip', title: 'ไม้นี้เปิดโหมด runner: เมื่อถึง TP จะไม่ปิด แต่ปล่อยให้วิ่งต่อ' }, 'runner') : null,
         h('span', { class: 'pos-pnl' }, money(pl, { signed: true, unit: c }))),
+      converted ? h('p', { class: 'pos-runner' }, `runner: ขยับแล้ว ${Number(rn.k) || 0} ครั้ง, SL กันกำไร ${fmtNum(rn.sl_floor)}, เป้า ${fmtNum(rn.target)}`) : null,
       Number.isFinite(gain) ? h('div', { class: 'ptrack', role: 'img', 'aria-label': `SL ${fmtNum(p.sl)} ราคาเข้า ${fmtNum(p.open_price)} ราคาตอนนี้ ${fmtNum(price)} TP ${fmtNum(p.tp)}` },
         h('div', { class: 'pt-bar' },
           h('span', { class: 'pt-loss', style: { width: `${t(0) * 100}%` } }),
@@ -312,14 +433,14 @@ export async function render(root, ctx) {
         h('div', { class: 'pt-labels' },
           h('span', null, h('b', null, slLocked ? 'SL เดิม' : 'SL'), h('span', { class: 'num' }, slLocked ? '' : fmtNum(p.sl))),
           h('span', { class: 'pt-mid', style: { left: `${t(0) * 100}%` } }, h('b', null, 'ราคาเข้า'), h('span', { class: 'num' }, fmtNum(p.open_price))),
-          h('span', { class: 'pt-r' }, h('b', null, 'TP'), h('span', { class: 'num' }, fmtNum(p.tp))))) : null,
+          h('span', { class: 'pt-r' }, h('b', null, converted ? 'TP สำรอง' : 'TP'), h('span', { class: 'num' }, fmtNum(p.tp))))) : null,
       progress ? h('p', { class: 'pos-progress' }, progress) : null,
       openKey(p.module) ? h('a', { class: 'link-quiet pos-link', href: tradeHref(openKey(p.module)) }, 'ดูกราฟและเหตุผลที่เปิดไม้นี้', icon('chevron')) : null,
       full ? h('dl', { class: 'pos-facts' },
         fact('ราคาตอนนี้', h('span', { class: 'num' }, fmtNum(price)), ['เข้าที่ ', h('span', { class: 'num' }, fmtNum(p.open_price))]),
         fact('เปิดมาแล้ว', Number.isFinite(openedUtc) ? duration(Date.now() - openedUtc) : '—', `ตั้งแต่ ${opened}`),
-        fact('ห่างจาก TP', [h('span', { class: 'num' }, fmtNum(tpLeft)), h('span', { class: 'unit' }, ` $ (${pctOf(tpLeft)})`)],
-          ['ถึง TP ได้ราว ', h('span', { class: 'num pos' }, fmtSigned(tpDist * contract))]),
+        fact(target !== null ? 'ห่างจากเป้าถัดไป' : 'ห่างจาก TP', [h('span', { class: 'num' }, fmtNum(goalLeft)), h('span', { class: 'unit' }, ` $ (${pctOf(goalLeft)})`)],
+          [target !== null ? 'ถึงเป้าถัดไปได้ราว ' : 'ถึง TP ได้ราว ', h('span', { class: 'num pos' }, fmtSigned(goalDist * contract))]),
         slLocked
           ? fact('SL ล็อกกำไรไว้', money(-slDist * contract, { signed: true, unit: c }), ['SL อยู่ที่ ', h('span', { class: 'num' }, fmtNum(p.sl))])
           : fact('ห่างจาก SL', [h('span', { class: 'num' }, fmtNum(slLeft)), h('span', { class: 'unit' }, ` $ (${pctOf(slLeft)})`)],
@@ -362,9 +483,13 @@ export async function render(root, ctx) {
   function drawDetails() {
     detailBox.hidden = !st;
     if (!st) { mount(detailBox); return; }
-    if (!changed('details', [st.modules, st.ny, st.options, st.control, st.last_event, st.last_error]) && detailBox.firstChild) return;
+    if (!changed('details', [st.modules, st.ny, st.options, st.control, st.params && st.params.runner, st.last_event, st.last_error]) && detailBox.firstChild) return;
     const open = detailBox.querySelector('details') ? detailBox.querySelector('details').open : false;
     const ny = st.ny || {}, o = st.options || {}, c = st.control || {}, lock = o.lock || {}, lock1 = o.lock1 || {};
+    const rn = st.params && st.params.runner && typeof st.params.runner === 'object' ? st.params.runner : null; // EA v3.05
+    const runnerRow = rn ? ['โหมด runner', rn.enable
+      ? `เปิด (${[rn.a && 'A_new', rn.ny && 'NY', rn.c5g && 'C5G'].filter(Boolean).join(', ') || 'ไม่มีสูตร'}) เก็บ ${fmtNum(rn.keep_pct, 0)}% ก้าว ${fmtNum(rn.step, 1)} ${rn.max_steps > 0 ? `สูงสุด ${rn.max_steps} ก้าว` : 'ไม่จำกัด'}`
+      : 'ปิด'] : null;
     const bos = (c.blackouts || []).map((b) => {
       const from = serverToUtc(b[0], off()), to = serverToUtc(b[1], off());
       return h('li', null, `${fmtThai(from, 'short')} ถึง ${fmtThai(to, Math.floor(from / 864e5) === Math.floor(to / 864e5) ? 'time' : 'short')}`);
@@ -396,6 +521,7 @@ export async function render(root, ctx) {
           ['ชั้นใกล้ TP', lock.enabled ? `ถึง ${fmtNum(lock.at_pct, 0)}% เลื่อน SL ไป ${fmtNum(lock.to_pct, 0)}%` : 'ปิด'],
           ['ชั้นแรก', lock1.enabled ? `ถึง ${fmtNum(lock1.at_pct, 0)}% เลื่อน SL ไป ${fmtNum(lock1.to_pct, 0)}%` : 'ปิด'],
           ['ใช้กับ', lockModules(lock.modules)],
+          runnerRow,
         ])),
         panel('คำสั่งที่บอทใช้อยู่', { cls: 'flat', sub: c.applied_at ? `รับเมื่อ ${c.applied_at} (เวลาเซิร์ฟเวอร์)` : null }, kv([
           ['โหมด', c.mode === 'pause' ? 'หยุด' : 'ทำงาน'],
@@ -416,15 +542,15 @@ export async function render(root, ctx) {
       h('p', { class: 'break' }, rest));
   }
 
-  function drawAll() { drawHead(); drawHero(true); drawWarn(); drawFigs(); drawPositions(); drawRecent(true); drawDetails(); }
+  function drawAll() { drawHead(); drawHero(true); drawCap(); drawWarn(); drawFigs(); drawPositions(); drawRecent(true); drawDetails(); }
   drawAll();
 
   const redrawChart = debounce(() => drawChart(false), 120);
-  const onStatus = (row) => { if (!row || !row.status) return; st = row.status; drawHero(); drawWarn(); drawFigs(); drawPositions(); drawDetails(); drawRisk(); redrawChart(); };
-  const onControl = (row) => { ctl = row; drawHero(); };
+  const onStatus = (row) => { if (!row || !row.status) return; st = row.status; drawHero(); drawCap(); drawWarn(); drawFigs(); drawPositions(); drawDetails(); drawRisk(); redrawChart(); };
+  const onControl = (row) => { ctl = row; drawHero(); drawCap(); };
   const onBot = (row) => {
     const barsBefore = JSON.stringify(bot.agent_state && bot.agent_state.bars && bot.agent_state.bars.t ? bot.agent_state.bars.t.slice(-1) : null);
-    bot = { ...bot, ...row }; updateBotRow(bot); drawHero(); drawWarn();
+    bot = { ...bot, ...row }; updateBotRow(bot); drawHero(); drawCap(); drawWarn();
     const barsNow = JSON.stringify(bot.agent_state && bot.agent_state.bars && bot.agent_state.bars.t ? bot.agent_state.bars.t.slice(-1) : null);
     if (barsBefore !== barsNow) redrawChart();
   };
@@ -468,7 +594,7 @@ export async function render(root, ctx) {
       if (syncing) return; // keep the last picture until the answer is in
       if (Date.now() - lastTry > 15000) { resync(); return; }
     }
-    drawHero();
+    drawHero(); drawCap(); // drawCap: the 15-min status age and the 3-min token timeout move with the clock
   }, 5000);
   const offWake = onWake(() => { if (Date.now() - lastSync > 5000) resync(); });
   return () => { unsub(); offCtl(); offTheme(); offWake(); clearInterval(ages); chart.destroy(); tvBox.destroy(); };

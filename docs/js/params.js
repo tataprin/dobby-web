@@ -1,12 +1,13 @@
-// Every Dobby3 EA input (v3.03 + the four v3.04 remote inputs, SPEC 4.1), in EA order.
+// Every Dobby3 EA input (v3.03 + the four v3.04 remote inputs, SPEC 4.1, + the eight v3.05 runner inputs, SPEC 11), in EA order.
 // key      EA input name (also the .set key and the remote-file key)
 // group    display group (GROUPS)
 // type     bool | double | int | long | datetime
 // def      EA default
 // min/max  bounds used by the preset form; rmin/rmax = stricter EA-side bounds for the remote file (SPEC 4.2)
-// remote   true only for the SPEC 4.2 allow-list: the web may push it to EA v3.04 (desired.params)
+// remote   true only for the SPEC 4.2 allow-list: the web may push it to EA v3.04+ (desired.params)
 // advanced hidden behind "แสดงค่าขั้นสูง" in the preset form
 // label    Thai label, help = the EA comment
+// The remote file also carries one-shot COMMANDS (not inputs, not preset rows): see COMMANDS below.
 
 export const GROUPS = [
   { id: 'modules', title: 'สูตรและขนาดล็อต', en: 'Modules and lots' },
@@ -19,7 +20,14 @@ export const GROUPS = [
   { id: 'lock', title: 'ล็อกกำไรใกล้ TP', en: 'v3.02 near-TP stop lock' },
   { id: 'lock1', title: 'ล็อกขั้นที่ 1', en: 'v3.03 stage-1 lock' },
   { id: 'remote', title: 'รับคำสั่งจากเว็บ (ตั้งที่เครื่องเท่านั้น)', en: 'v3.04 remote (web)' },
+  { id: 'runner', title: 'โหมด runner (ปล่อยให้วิ่งหลัง TP)', en: 'v3.05 runner (web)', hint: 'ค่าที่ทดสอบ: เก็บ 75 % / ก้าว 0.5 / ไม่จำกัด' },
 ];
+
+// The EA version that knows a group's inputs (undefined = every supported EA). Shown only when the bot is at least that.
+export const GROUP_SINCE = { runner: 3.05 };
+export const RUNNER_SINCE = 3.05;
+export const runnerSupported = (eaVersion) => parseFloat(String(eaVersion || '')) >= RUNNER_SINCE;
+export const RUNNER_WARNING = 'ทดสอบในคอมแล้ว ยังไม่ผ่าน Strategy Tester กำไรเพิ่มมาจากไม้ส่วนน้อยที่วิ่งไกล';
 
 const B = (key, group, def, label, help, o = {}) => ({ key, group, type: 'bool', def, label, help, remote: false, advanced: false, ...o });
 const D = (key, group, def, min, max, step, label, help, o = {}) =>
@@ -138,11 +146,58 @@ export const PARAMS = [
   B('InpRemoteLive', 'remote', false, 'ให้เว็บเปิด/ปิดเทรดจริงได้', 'Let the remote file switch live trading on/off (replaces the InpAllowLive tick)'),
   D('InpRemoteMaxLots', 'remote', 0.10, 0.01, 5, 0.01, 'เพดานล็อตที่เว็บตั้งได้', 'Ceiling for every lot the remote file may set'),
   D('InpRemoteMaxCapPct', 'remote', 10.0, 1, 100, 0.5, 'เพดานจุดหยุดรายวันที่เว็บตั้งได้ (%)', 'Ceiling for InpDailyCapPct from the remote file'),
+
+  // v3.05 runner (SPEC 11): at the TP touch the trade is not closed; the SL moves to KeepPct % of the TP distance and the
+  // target ratchets up Step x d at a time. OFF = v3.04 behaviour exactly. Snapshotted at the open of each position.
+  B('InpRunnerEnable', 'runner', false, 'เปิดโหมด runner',
+    'Runner: at the TP touch keep the trade open with a ratcheting stop instead of closing (false = v3.04 behaviour exactly)', R),
+  B('InpRunner_A', 'runner', true, 'ใช้กับ A_new', 'Runner allowed for module A_new', R),
+  B('InpRunner_NY', 'runner', true, 'ใช้กับ NY', 'Runner allowed for module NY', R),
+  B('InpRunner_C5G', 'runner', true, 'ใช้กับ C5G', 'Runner allowed for module C5G (ASIA16: never)', R),
+  D('InpRunnerKeepPct', 'runner', 75.0, 50, 99, 1, 'เก็บกำไรขั้นต่ำเมื่อถึง TP (% ของระยะ TP)',
+    'At the TP touch the SL moves to entry + this % of the TP distance (never below the stop in force)', R),
+  D('InpRunnerStep', 'runner', 0.5, 0.1, 2.0, 0.1, 'ก้าวของเป้าและ SL (เท่าของระยะ SL)', 'Ratchet size in units of d (the stop distance)', R),
+  I('InpRunnerMaxSteps', 'runner', 0, 0, 50, 'จำนวนก้าวสูงสุด (0 = ไม่จำกัด)',
+    '0 = unlimited; when k reaches MaxSteps the broker TP is set to the current target (final)', R),
+  D('InpRunnerSafetyTP', 'runner', 4.0, 0, 10, 0.5, 'TP สำรองฝั่งโบรกเกอร์ (เป้าถัดไป + N × ATR ขยับตามเป้า; 0 = ไม่ตั้ง)',
+    'Broker-side TP at the next target + this x d, moved up with every ratchet (0 = no broker TP); only a safeguard against a disconnect, normally never closes the trade', R),
 ];
 
 export const PARAM_BY_KEY = Object.fromEntries(PARAMS.map((p) => [p.key, p]));
 export const REMOTE_KEYS = PARAMS.filter((p) => p.remote).map((p) => p.key);
 export const LOT_KEYS = PARAMS.filter((p) => p.lots).map((p) => p.key);
+export const RUNNER_KEYS = PARAMS.filter((p) => p.group === 'runner').map((p) => p.key);
+
+// One-shot remote COMMANDS (SPEC 3.7 / 11): lines of the remote file that are not EA inputs. They travel inside
+// desired.params next to the remote keys, so the allow-list of desired.params = REMOTE_KEYS + COMMAND_KEYS; they are
+// never rows of the preset form, never in a .set, and normalizeParams drops them. The EA evaluates them as soon as it
+// reads the file (not "when flat").
+//   cap_reset   unix seconds (UTC, integer) = a fresh token per click of "รีเซ็ตจุดหยุดรายวัน" (ภาพรวม). Applied when the
+//               token is newer than the last one seen, the daily cap is hit and the token's server day is today; the
+//               agent accepts a token within 48 h of now.
+export const COMMAND_WINDOW_S = 48 * 3600;
+export const COMMANDS = [
+  { key: 'cap_reset', type: 'int', min: 0, max: 4102444800, remote: true, command: true, label: 'รีเซ็ตจุดหยุดรายวัน (คำสั่งครั้งเดียว)',
+    help: 'cap_reset=<unix seconds UTC>: one-shot daily-cap reset token sent by ภาพรวม -> รีเซ็ตจุดหยุดรายวัน (owner, EA v3.05); applied at once when the cap is hit today, else ignored; must be within 48 h of now' },
+];
+export const COMMAND_BY_KEY = Object.fromEntries(COMMANDS.map((c) => [c.key, c]));
+export const COMMAND_KEYS = COMMANDS.map((c) => c.key);
+export const isCommandKey = (k) => k in COMMAND_BY_KEY;
+// Every key desired.params may carry (the proposal / agent allow-list).
+export const DESIRED_KEYS = [...REMOTE_KEYS, ...COMMAND_KEYS];
+
+// Bounds of a command value; null = fine, else the Thai reason. nowMs = the clock to measure the 48 h window against.
+export function validateCommand(key, value, nowMs = Date.now()) {
+  const c = COMMAND_BY_KEY[key];
+  if (!c) return 'ไม่รู้จักคำสั่งนี้';
+  const n = typeof value === 'number' ? value : Number(String(value).trim());
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return 'ต้องเป็นจำนวนเต็ม (unix seconds)';
+  if (n < c.min || n > c.max) return `ต้องอยู่ระหว่าง ${c.min} ถึง ${c.max}`;
+  if (key === 'cap_reset' && Math.abs(n - Math.floor(nowMs / 1000)) > COMMAND_WINDOW_S) return 'token ต้องอยู่ภายใน 48 ชั่วโมงจากตอนนี้';
+  return null;
+}
+// A fresh cap_reset token for one click.
+export const capResetToken = (nowMs = Date.now()) => Math.floor(nowMs / 1000);
 
 export function defaults() {
   return Object.fromEntries(PARAMS.map((p) => [p.key, p.def]));
@@ -212,6 +267,8 @@ export function validatePreset(v) {
   if (v.InpDailyCapPct > 10) warn('InpDailyCapPct', 'สูงกว่าค่าที่ทดสอบไว้ (10%)');
   if (v.InpMaxSpread === 0) warn('InpMaxSpread', '0 = ไม่กรองสเปรด');
   if (v.InpRemoteParams && v.InpLotsA > v.InpRemoteMaxLots) warn('InpRemoteMaxLots', 'ต่ำกว่าล็อตในพรีเซ็ตนี้ เว็บจะส่งล็อตนี้ไม่ได้');
+  if (v.InpRunnerEnable) warn('InpRunnerEnable', RUNNER_WARNING);
+  if (v.InpRunnerEnable && !(v.InpRunner_A || v.InpRunner_NY || v.InpRunner_C5G)) warn('InpRunner_A', 'เปิดโหมด runner แต่ไม่ได้เลือกสูตรใดเลย จึงไม่มีผล');
   return { errors, warnings };
 }
 
@@ -262,6 +319,12 @@ export function liveValuesFromStatus(st) {
   }
   if (o.lock1) { set('InpLock1Enable', o.lock1.enabled); set('InpLock1AtPct', o.lock1.at_pct); set('InpLock1ToPct', o.lock1.to_pct); }
   if (st.flags) set('InpAllowLive', st.flags.allow_live_input);
+  // schema 6 (EA v3.05): params.runner = {enable, a, ny, c5g, keep_pct, step, max_steps, safety_tp}
+  if (p.runner && typeof p.runner === 'object') {
+    const rn = p.runner;
+    set('InpRunnerEnable', rn.enable); set('InpRunner_A', rn.a); set('InpRunner_NY', rn.ny); set('InpRunner_C5G', rn.c5g);
+    set('InpRunnerKeepPct', rn.keep_pct); set('InpRunnerStep', rn.step); set('InpRunnerMaxSteps', rn.max_steps); set('InpRunnerSafetyTP', rn.safety_tp);
+  }
   let source = 'status';
   if (st.remote && st.remote.effective && typeof st.remote.effective === 'object') {
     for (const [k, x] of Object.entries(st.remote.effective)) set(k, x);

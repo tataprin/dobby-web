@@ -7,7 +7,7 @@ import { app, currentBot, updateBotRow, on, ownsBot } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, onlineBadge, pendingChip, rejectionsBlock, appliedVersion, isPending, applyProgress } from '../botctl.js';
 import { liveSwitch, appliedLive } from '../liveswitch.js';
 import { panel, pageHead, noBotState, stepper, bigToggle, segmented, progressSteps, helpBtn } from '../views.js';
-import { normalizeParams, presetFromLive, remoteSubset, defaults, PARAM_BY_KEY, coerce } from '../params.js';
+import { normalizeParams, presetFromLive, remoteSubset, defaults, PARAM_BY_KEY, coerce, runnerSupported, RUNNER_WARNING, RUNNER_KEYS, isCommandKey } from '../params.js';
 import { PROPOSAL_KEY } from '../chat.js';
 import { buildSet, setFileName } from '../setfile.js';
 import { autoBlackouts } from '../autoblackout.js';
@@ -56,6 +56,10 @@ export async function render(root, ctx) {
   const off = () => bot.server_utc_offset_min ?? 0;
   const eaVer = () => (st && st.ea_version) || bot.ea_version || '';
   const canSend = () => (st ? !!st.remote : parseFloat(eaVer()) >= 3.04);
+  // v3.05: the runner section is a switch only when the bot reports that version (older bots get an update callout and
+  // never receive the runner keys, SPEC 11)
+  const runnerOk = () => runnerSupported(eaVer());
+  let runnerBuilt = null;
   const limits = () => (bot.agent_state && bot.agent_state.limits) || {};
   const minOf = (...xs) => { const n = xs.filter((x) => x !== null && x !== undefined && Number.isFinite(Number(x))).map(Number); return n.length ? Math.min(...n) : null; };
   const ceilings = () => {
@@ -119,7 +123,7 @@ export async function render(root, ctx) {
   const bar = h('div', { class: 'action-bar', role: 'region', 'aria-label': 'บันทึกการเปลี่ยนแปลง', hidden: true });
   // section anchors (the app routes by hash, so they scroll instead of changing location.hash)
   const ANCHORS = [['set-now', 'ค่าที่ใช้อยู่'], ['set-switch', 'สวิตช์หลัก'], ['set-money', 'ทุนและล็อต'], ['set-strat', 'สูตร'],
-    ['set-lock', 'ล็อกกำไร'], ['set-cap', 'ขาดทุนต่อวัน'], ['set-adv', 'ขั้นสูง'], ['set-sides', 'ฝั่งที่เข้าได้'], ['set-bo', 'งดเข้าไม้']];
+    ['set-lock', 'ล็อกกำไร'], ['set-cap', 'ขาดทุนต่อวัน'], ['set-runner', 'runner'], ['set-adv', 'ขั้นสูง'], ['set-sides', 'ฝั่งที่เข้าได้'], ['set-bo', 'งดเข้าไม้']];
   const smooth = () => (window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
   const anchors = h('nav', { class: 'anchors', 'aria-label': 'ส่วนต่าง ๆ ของหน้านี้' }, ANCHORS.map(([id, label]) => h('a', {
     href: `#${id}`, dataset: { target: id },
@@ -258,10 +262,10 @@ export async function render(root, ctx) {
                 : 'ค่าด้านล่างคือค่าที่บอทใช้อยู่ (อ่านอย่างเดียว) สวิตช์เทรดจริง หยุดชั่วคราว และงดเข้าไม้ยังใช้ได้ตามปกติ'))),
           h('ol', { class: 'upgrade-steps' },
             h('li', null, h('strong', null, 'โหลดแอป Dobby รุ่นล่าสุด'), ' จากหน้า ', h('a', { href: '#/downloads' }, 'ดาวน์โหลดแอป'), ' แล้วเปิดที่เครื่อง ', bot.name),
-            h('li', null, h('strong', null, 'ในแอปกด "เชื่อม MT5 / เปิด MT5 พร้อม Dobby"'), ' แอปติดตั้ง Dobby3_v304 กับไฟล์ Dobby3_v304_web.set ให้ แล้วใน MT5 เอา EA ตัวเดิมออกจากกราฟก่อน (ห้ามติด 2 ตัว) แล้วติดตัวใหม่แทน'),
+            h('li', null, h('strong', null, 'ในแอปกด "เชื่อม MT5 / เปิด MT5 พร้อม Dobby"'), ' แอปติดตั้ง Dobby3_v305 กับไฟล์ Dobby3_v305_web.set ให้ แล้วใน MT5 เอา EA ตัวเดิมออกจากกราฟก่อน (ห้ามติด 2 ตัว) แล้วติดตัวใหม่แทน'),
             h('li', null, h('strong', null, 'ในแอป ตั้งค่า → ความปลอดภัย'), ' ติ๊ก "ให้เว็บส่งการตั้งค่าให้ Dobby" แล้วกลับมาที่หน้านี้ ค่าจะเปลี่ยนจากเว็บได้')),
           h('div', { class: 'row gap wrap' },
-            h('a', { class: 'btn primary', href: '#/downloads' }, icon('download'), 'ดาวน์โหลดรุ่น 3.04'),
+            h('a', { class: 'btn primary', href: '#/downloads' }, icon('download'), 'ดาวน์โหลดรุ่น 3.05'),
             unlocked ? h('button', { class: 'btn', type: 'button', onclick: () => downloadSet() }, icon('download'), 'ดาวน์โหลด .set ของค่าที่แก้')
               : h('button', { class: 'btn', type: 'button', onclick: () => { unlocked = true; onChange(); roBox.update(); } }, icon('edit'), 'ลองปรับค่าแล้วโหลดเป็นไฟล์ .set')));
       };
@@ -476,6 +480,57 @@ export async function render(root, ctx) {
           h('div', { class: 'adv-ctrl checks' }, chk('InpLock_A', 'A_new'), chk('InpLock_NY', 'NY'), chk('InpLock_C5G', 'C5G'), chk('InpLockShadow', 'บันทึกล็อกเงา'))),
         adv('หยุดถาวรเมื่อพอร์ตจำลองเหลือ', 'InpKillBalance', reg(stepper({ label: 'หยุดถาวรเมื่อเหลือ', get: getKey('InpKillBalance'), set: setKey('InpKillBalance'), step: 10, min: 0, max: 10000000, decimals: 0, unit: cur(), disabled: locked })), '0 = หยุดเมื่อเหลือ 0 เท่านั้น')));
 
+    // --- โหมด runner (EA v3.05, SPEC 11): a switch only when the bot reports 3.05; older bots see how to update
+    runnerBuilt = runnerOk();
+    let secRunner;
+    const runnerHead = secHead('โหมด runner (ปล่อยให้วิ่งหลัง TP)',
+      h('span', null, 'เมื่อราคาถึง TP ไม่ปิดไม้ แต่กันกำไรไว้แล้วปล่อยให้วิ่งต่อ ', h('a', { href: '#/guide/runner' }, 'โหมด runner คืออะไร')));
+    if (!runnerBuilt) {
+      secRunner = h('section', { class: 'ed-sec', id: 'set-runner' }, runnerHead,
+        h('div', { class: 'group' }, friend
+          ? h('p', { class: 'muted group-note' }, `บอทนี้เป็นรุ่น ${eaVer() || '3.04'} ยังไม่มีโหมด runner (มีตั้งแต่ EA v3.05)`)
+          : callout('info', 'ต้องอัปเดต EA เป็น v3.05 และแอป Dobby 1.2.2 ก่อน',
+            h('p', null, `บอทนี้รายงานรุ่น ${eaVer() || 'ไม่ทราบ'} โหลดแอป Dobby รุ่นล่าสุดจากหน้า `, h('a', { href: '#/downloads' }, 'ดาวน์โหลดแอป'),
+              ' เปิดที่เครื่อง ', bot.name, ' แล้วกด "เชื่อม MT5 / เปิด MT5 พร้อม Dobby" แอปติดตั้ง Dobby3_v305 กับไฟล์ Dobby3_v305_web.set ให้ ส่วนนี้จะเปลี่ยนเป็นสวิตช์เมื่อบอทรายงานรุ่น 3.05 ค่าอื่น ๆ ยังตั้งจากเว็บได้ตามปกติ'),
+            h('p', { class: 'muted small' }, 'หมายเหตุ: แอป Dobby ส่งค่าโหมด runner ให้เฉพาะบอทที่รายงานรุ่น 3.05 ขึ้นไป กับบอทรุ่นเก่ากว่า แอปตัดค่ากลุ่มนี้ออกเงียบ ๆ (ค่าอื่นยังส่งถึง) ถ้าเคยตั้งโหมด runner ไว้แล้วบอทไม่เปลี่ยน สาเหตุคือรุ่น EA นี้เอง'),
+            h('div', { class: 'row gap wrap' }, h('a', { class: 'btn small', href: '#/downloads' }, icon('download'), 'ไปหน้าดาวน์โหลด')))));
+    } else {
+      const runWarn = h('div');
+      runWarn.update = () => { mount(runWarn, v.InpRunnerEnable ? callout('warn', 'ยังเป็นโหมดทดลอง', h('p', null, RUNNER_WARNING)) : ''); };
+      reg(runWarn);
+      const noMod = h('p', { class: 'field-error', role: 'alert' });
+      noMod.update = () => { noMod.textContent = v.InpRunnerEnable && !(v.InpRunner_A || v.InpRunner_NY || v.InpRunner_C5G) ? 'เปิดโหมด runner แต่ไม่ได้เลือกสูตรใดเลย จึงไม่มีผล' : ''; };
+      reg(noMod);
+      const runnerExtra = h('div', { class: 'toggle-extra runner-extra' },
+        h('span', { class: 'small muted' }, 'ใช้กับสูตร (ASIA16 ไม่ใช้)'),
+        h('div', { class: 'checks' }, chk('InpRunner_A', 'A_new'), chk('InpRunner_NY', 'NY'), chk('InpRunner_C5G', 'C5G')), noMod);
+      const explain = h('p', { class: 'hint runner-explain' });
+      explain.update = () => {
+        explain.textContent = `เมื่อราคาถึง TP บอทไม่ปิดไม้ แต่เลื่อน SL ไปที่ ${pctText(v.InpRunnerKeepPct)}% ของกำไร TP (ในทางปฏิบัติ ล็อก ${pctText(v.InpLockToPct)}% ที่มีอยู่แล้วมักสูงกว่าจุดนี้ จึงใช้ค่าที่สูงกว่า) `
+          + `แล้วขยับเป้าขึ้นทีละ ${fmtNum(v.InpRunnerStep, 1)} เท่าของระยะ SL (ราว ${fmtNum(v.InpRunnerStep, 1)} ATR) พร้อมเลื่อน SL ตามทีละก้าว จนราคาย่อกลับหนึ่งก้าวจึงปิดไม้ `
+          + `ค่าที่ทดสอบ: เก็บ 75 % / ก้าว 0.5 / ไม่จำกัด ทดสอบในคอม (จำลอง) แล้ว ยังไม่ผ่าน Strategy Tester`;
+      };
+      reg(explain);
+      const runT = bigToggle({
+        title: 'โหมด runner', text: 'ปล่อยให้ไม้ที่ถึง TP วิ่งต่อ โดยมี SL กันกำไรขยับตาม ไม้ส่วนน้อยที่วิ่งไกลคือที่มาของกำไรเพิ่ม',
+        get: getKey('InpRunnerEnable'), set: setKey('InpRunnerEnable'), disabled: locked, badge: h('span', { class: 'chip warn' }, 'ทดลอง'), extra: runnerExtra,
+      });
+      reg(runT);
+      const runAdv = h('details', { class: 'subpanel runner-adv' },
+        h('summary', null, 'ค่าขั้นสูงของ runner (เก็บ % ก้าว จำนวนก้าว TP สำรอง)'),
+        h('div', { class: 'adv-list' },
+          adv('เก็บกำไรขั้นต่ำเมื่อถึง TP', 'InpRunnerKeepPct', reg(stepper({ label: 'เก็บกำไรขั้นต่ำเมื่อถึง TP', get: getKey('InpRunnerKeepPct'), set: setKey('InpRunnerKeepPct'), step: 1, min: 50, max: 99, decimals: 0, unit: '% ของ TP', disabled: locked })),
+            'SL ใหม่ตอนแตะ TP = ราคาเข้า + เท่านี้ % ของระยะ TP (ไม่ต่ำกว่า SL ที่ล็อกไว้แล้ว) ค่าที่ทดสอบ 75'),
+          adv('ก้าวของเป้าและ SL', 'InpRunnerStep', reg(stepper({ label: 'ก้าวของเป้าและ SL', get: getKey('InpRunnerStep'), set: setKey('InpRunnerStep'), step: 0.1, min: 0.1, max: 2, decimals: 1, unit: '× ระยะ SL', disabled: locked })),
+            'เป้าถัดไปอยู่สูงกว่าเดิมเท่านี้เท่าของระยะ SL ทุกครั้งที่ถึงเป้า SL ก็เลื่อนตามเท่ากัน ค่าที่ทดสอบ 0.5'),
+          adv('จำนวนก้าวสูงสุด', 'InpRunnerMaxSteps', reg(stepper({ label: 'จำนวนก้าวสูงสุด', get: getKey('InpRunnerMaxSteps'), set: setKey('InpRunnerMaxSteps'), step: 1, min: 0, max: 50, decimals: 0, unit: 'ก้าว', disabled: locked })),
+            '0 = ไม่จำกัด (ค่าที่ทดสอบ) ถ้าตั้งไว้ เมื่อครบจำนวนบอทจะตั้ง TP ที่โบรกไว้ที่เป้าสุดท้าย'),
+          adv('TP สำรองฝั่งโบรกเกอร์', 'InpRunnerSafetyTP', reg(stepper({ label: 'TP สำรองฝั่งโบรกเกอร์', get: getKey('InpRunnerSafetyTP'), set: setKey('InpRunnerSafetyTP'), step: 0.5, min: 0, max: 10, decimals: 1, unit: '× ระยะ SL', disabled: locked })),
+            'TP ที่โบรกตั้งไว้ที่ "เป้าถัดไป + เท่านี้เท่าของระยะ SL (ราว N × ATR)" และขยับตามเป้าทุกก้าว มีไว้กันกรณีคอมหลุดเท่านั้น ปกติไม่ปิดไม้ (0 = ไม่ตั้ง TP ที่โบรก)')));
+      secRunner = h('section', { class: 'ed-sec', id: 'set-runner' }, runnerHead,
+        h('div', { class: 'group' }, runT, runWarn, explain, runAdv));
+    }
+
     // --- presets + .set
     const tools = friend
       ? h('div', { class: 'ed-tools' }, h('button', { class: 'btn ghost', type: 'button', onclick: () => downloadSet() }, icon('download'), 'ดาวน์โหลด .set ของค่านี้'))
@@ -491,7 +546,7 @@ export async function render(root, ctx) {
           h('p', { class: 'muted small' }, friend ? `ค่าที่บอทของ ${ownerName} ใช้อยู่ ดูอย่างเดียว แก้ไม่ได้` : B.readOnly ? 'ค่าที่บอทรุ่นนี้รายงานมา' : 'แก้ได้หลายอย่าง แล้วกด "บันทึกและส่งให้บอท" ที่แถบด้านล่างครั้งเดียว')),
         helpBtn('settings')),
       roBox,
-      h('div', { class: `editor-body${ro ? ' readonly' : ''}` }, secMoney, secStrat, secLock, secCap, advBox),
+      h('div', { class: `editor-body${ro ? ' readonly' : ''}` }, secMoney, secStrat, secLock, secCap, secRunner, advBox),
       tools);
     for (const u of updaters) u.update();
     editorBox.querySelector('.editor-body').classList.toggle('readonly', locked());
@@ -584,8 +639,9 @@ export async function render(root, ctx) {
       warns.push(callout('warn', 'เครื่องนี้ยังไม่อนุญาตให้เว็บเปลี่ยนค่า',
         h('p', null, `ในแอป Dobby ที่เครื่อง ${bot.name}: ตั้งค่า → ความปลอดภัย → ติ๊ก "ให้เว็บส่งการตั้งค่าให้ Dobby" ไม่อย่างนั้นเครื่องจะไม่ใช้ค่านี้`)));
     }
-    if (r && r.params_enabled === false) warns.push(callout('warn', 'EA ยังไม่เปิดรับค่าจากเว็บ', h('p', null, 'โหลดไฟล์ Dobby3_v304_web.set ใน MT5 อีกครั้ง (แท็บ Inputs → Load) แล้วกด OK')));
+    if (r && r.params_enabled === false) warns.push(callout('warn', 'EA ยังไม่เปิดรับค่าจากเว็บ', h('p', null, `โหลดไฟล์ Dobby3_${runnerOk() ? 'v305' : 'v304'}_web.set ใน MT5 อีกครั้ง (แท็บ Inputs → Load) แล้วกด OK`)));
     if (!onlineInfo(bot, st).agentOnline) warns.push(callout('info', 'เครื่องออฟไลน์อยู่', h('p', null, 'ค่าจะถูกใช้เมื่อเครื่องกลับมาออนไลน์')));
+    if (v.InpRunnerEnable && !baseVals.InpRunnerEnable) warns.push(callout('warn', 'กำลังเปิดโหมด runner', h('p', null, `${RUNNER_WARNING} มีผลกับไม้ที่เปิดหลังจากบอทรับค่า ไม้ที่เปิดอยู่ไม่เปลี่ยน`)));
     const open = st ? (st.positions || []).filter((p) => p.open).length : 0;
     const ok = await confirmDialog(`ส่งค่าใหม่ให้ ${bot.name}?`, h('div', { class: 'stack' },
       changeList(ch),
@@ -594,7 +650,7 @@ export async function render(root, ctx) {
     if (!ok) return;
     busy(btn, true, 'กำลังส่ง…');
     try {
-      const params = toDesiredParams(v);
+      const params = toDesiredParams(v, { eaVersion: eaVer() });
       ctl = await patchDesired(bot.id, (d) => { d.params = params; });
       justSent = true;
       writeDraft(null);
@@ -623,7 +679,7 @@ export async function render(root, ctx) {
     const name = `${bot.name} ${new Date().toISOString().slice(0, 10)}`;
     const comments = [`Dobby3 settings for "${bot.name}" from Dobby Web ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`,
       summaryText(p, cur()),
-      'InpAllowLive stays false. EA v3.03 on a REAL account: tick InpAllowLive = true in the Inputs tab before OK. EA v3.04: the web live switch controls it (InpRemoteLive = true).'];
+      'InpAllowLive stays false. EA v3.03 on a REAL account: tick InpAllowLive = true in the Inputs tab before OK. EA v3.04+: the web live switch controls it (InpRemoteLive = true). The InpRunner* lines are read by EA v3.05 (older EAs ignore unknown keys).'];
     downloadBlob(setFileName(name), new Blob([buildSet(p, comments)], { type: 'application/octet-stream' }));
     toast('ดาวน์โหลดไฟล์ .set แล้ว นำไปโหลดใน MT5: คลิกขวาที่กราฟ → Expert list หรือดับเบิลคลิก EA → แท็บ Inputs → Load', 'good', 7000);
   }
@@ -679,13 +735,20 @@ export async function render(root, ctx) {
     if (p.bot_id !== bot.id || !(Date.now() - Number(p.ts) < 3600e3)) { toast('ข้อเสนอนี้เก่าเกินไปหรือเป็นของบอทอื่น ถามผู้ช่วยใหม่อีกครั้ง', 'error', 6000); return; }
     if (!editable()) { toast('บอทนี้ยังรับค่าจากเว็บไม่ได้ จึงใช้ข้อเสนอนี้ไม่ได้', 'error', 6000); return; }
     const vals = {};
+    let command = false;
     for (const c of Array.isArray(p.changes) ? p.changes : []) {
+      if (c && isCommandKey(c.key)) { command = true; continue; } // cap_reset is a button on ภาพรวม, never a setting (SPEC 11)
       const def = PARAM_BY_KEY[c && c.key];
       if (!def || !def.remote) continue;
+      if (def.group === 'runner' && !runnerOk()) continue; // an older bot never gets the runner keys
       const x = coerce(def, c.to);
       if (x !== undefined) vals[c.key] = x;
     }
-    if (!Object.keys(vals).length) { toast('ข้อเสนอนี้ไม่มีค่าที่เว็บเปลี่ยนให้ได้', 'error'); return; }
+    if (command) toast('การรีเซ็ตจุดหยุดรายวันไม่ใช่ค่าตั้งค่า ทำที่หน้าภาพรวม: แถบสีเหลือง "ถึงจุดหยุดรายวันแล้ว" กดปุ่ม "รีเซ็ตจุดหยุดรายวัน" แล้วยืนยัน', 'info', 9000);
+    if (!Object.keys(vals).length) {
+      if (command) { ctx.nav('#/dashboard'); return; }
+      toast('ข้อเสนอนี้ไม่มีค่าที่เว็บเปลี่ยนให้ได้', 'error'); return;
+    }
     v = normalizeParams({ ...v, ...vals });
     lotMode = lotsSame(v) ? 'same' : 'per';
     onChange();
@@ -696,7 +759,9 @@ export async function render(root, ctx) {
     aiNote.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
   function applyPreset(p) {
-    v = normalizeParams({ ...v, ...remoteSubset(normalizeParams(p.params)) });
+    const src = remoteSubset(normalizeParams(p.params));
+    if (!runnerOk()) for (const k of RUNNER_KEYS) delete src[k]; // an older bot keeps its (hidden) runner defaults
+    v = normalizeParams({ ...v, ...src });
     lotMode = lotsSame(v) ? 'same' : 'per';
     onChange();
     toast(`โหลดค่าจาก "${p.name}" แล้ว ตรวจแล้วกด "บันทึกและส่งให้บอท"`, 'good', 5000);
@@ -878,7 +943,8 @@ export async function render(root, ctx) {
     const wasDirty = changes().length > 0;
     const roBefore = B.readOnly;
     B = computeBase();
-    if (B.readOnly !== roBefore) { baseVals = clone(B.editBase); v = clone(B.editBase); buildEditor(); return; }
+    // the editor's shape changed: read-only flipped, or the bot's EA version crossed 3.05 (the runner section)
+    if (B.readOnly !== roBefore || runnerOk() !== runnerBuilt) { baseVals = clone(B.editBase); v = clone(B.editBase); buildEditor(); return; }
     if (JSON.stringify(B.editBase) !== prev) {
       baseVals = clone(B.editBase);
       if (!wasDirty) { v = clone(B.editBase); lotMode = lotsSame(v) ? 'same' : 'per'; }

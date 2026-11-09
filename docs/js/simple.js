@@ -1,7 +1,7 @@
 // SPEC 7: the simple bot settings model shared by the website and the app.
 // The editor keeps a full params object (every SPEC 4.2 remote key); the simple fields read and write those keys.
 // Nothing here talks to the API.
-import { normalizeParams, remoteSubset, REMOTE_KEYS, PARAM_BY_KEY, sameValue, coerce, liveValuesFromStatus } from './params.js';
+import { normalizeParams, remoteSubset, REMOTE_KEYS, RUNNER_KEYS, PARAM_BY_KEY, sameValue, coerce, liveValuesFromStatus, runnerSupported } from './params.js';
 import { calculate, HORIZON30, BASE_BALANCE } from './lotcalc.js';
 import { fmtNum, fmtSigned } from './util.js';
 
@@ -94,9 +94,13 @@ export function autoFromBalance(base, balance) {
 export const suggestedLocalMaxLots = (L) => Math.min(0.5, Math.max(0.02, r2(2 * L)));
 
 // The full set of remote keys sent as desired.params (never InpAllowLive or local-only inputs).
-export function toDesiredParams(v) {
+// eaVersion: the bot's EA version (status.ea_version or bots.ea_version). The eight v3.05 runner keys (InpRunner*) go only to a bot
+// that reports EA >= 3.05: an app still on 1.2.0 refuses a whole set with keys it does not know, and the EA v3.04 of a
+// friend has no use for them (SPEC 11). Without a version they are left out.
+export function toDesiredParams(v, { eaVersion } = {}) {
   const out = remoteSubset(normalizeParams(v));
   for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
+  if (!runnerSupported(eaVersion)) for (const k of RUNNER_KEYS) delete out[k];
   return out;
 }
 
@@ -122,6 +126,21 @@ export function strategiesText(v) {
   if (on.length === STRATS.length) return `เปิด ${on.length} สูตร`;
   return `เปิด ${on.length} สูตร (${on.map((s) => s.title).join(', ')})`;
 }
+// v3.05 runner mode in one phrase: "ปิด" / "เปิด (A_new, NY, C5G; เก็บ 75% ก้าว 0.5 ไม่จำกัด)"
+export const RUNNER_MODS = [['InpRunner_A', 'A_new'], ['InpRunner_NY', 'NY'], ['InpRunner_C5G', 'C5G']];
+export function runnerModulesText(v) {
+  const on = RUNNER_MODS.filter(([k]) => v[k]).map(([, t]) => t);
+  return on.length === RUNNER_MODS.length ? 'ทุกสูตร' : on.length ? on.join(', ') : 'ไม่มีสูตร';
+}
+// the four numbers: "เก็บ 75% ก้าว 0.5 ไม่จำกัด TP กันเหนียว 4.0×"
+export function runnerNumbersText(v) {
+  const steps = v.InpRunnerMaxSteps > 0 ? `สูงสุด ${v.InpRunnerMaxSteps} ก้าว` : 'ไม่จำกัด';
+  return `เก็บ ${pctText(v.InpRunnerKeepPct)}% ก้าว ${fmtNum(v.InpRunnerStep, 1)} ${steps}${v.InpRunnerSafetyTP > 0 ? ` TP สำรอง +${fmtNum(v.InpRunnerSafetyTP, 1)}×` : ' ไม่มี TP ที่โบรก'}`;
+}
+export function runnerText(v, withNumbers = false) {
+  if (!v.InpRunnerEnable) return 'ปิด';
+  return `เปิด (${runnerModulesText(v)}${withNumbers ? `; ${runnerNumbersText(v)}` : ''})`;
+}
 // The capital the bot counts. EA v3.04: virtual = InpVirtualStart + the bot's own P&L since its start date (SPEC 9.8),
 // so on a bot the summaries show that sum (pnl from rounds.js botPnlOf); a preset (no bot) shows InpVirtualStart.
 const capitalOf = (v, pnl) => Math.round((Number(v.InpVirtualStart) + (Number(pnl) || 0)) * 100) / 100;
@@ -145,7 +164,8 @@ export function summaryText(v, currency = 'USD', pnl = 0) {
   const first = `${pctText(v.InpLock1AtPct)}→${pctText(v.InpLock1ToPct)}`;
   const lock = m === 0 ? 'ไม่ล็อกกำไร' : m === 1 ? `ล็อกกำไร 1 ชั้น (${near})` : `ล็อกกำไร 2 ชั้น (${first} และ ${near})`;
   const asia = v.InpUseAsia ? `เปิดสูตรเอเชีย ${fmtNum(v.InpLotsAsia)} ล็อต` : 'ปิดสูตรเอเชีย';
-  return `${strategiesText(v)} ${lotsText(v)} จากทุน ${capitalText(v, pnl)} ${currency} ${lock} ${asia} และหยุดเปิดไม้เมื่อขาดทุนถึง ${pctText(v.InpDailyCapPct)}% ต่อวัน`.replace(/\s+/g, ' ').trim();
+  const runner = v.InpRunnerEnable ? ` เปิดโหมด runner (${runnerModulesText(v)})` : '';
+  return `${strategiesText(v)} ${lotsText(v)} จากทุน ${capitalText(v, pnl)} ${currency} ${lock} ${asia} และหยุดเปิดไม้เมื่อขาดทุนถึง ${pctText(v.InpDailyCapPct)}% ต่อวัน${runner}`.replace(/\s+/g, ' ').trim();
 }
 
 // Label / value pairs for "ค่าที่บอทใช้อยู่ตอนนี้" (pnl given: a bot, "ทุนของบอท" = the capital it counts) and presets.
@@ -159,7 +179,9 @@ export function summaryRows(v, currency = 'USD', pnl = null) {
     ['ล็อกกำไร', m === 0 ? 'ไม่ล็อก' : m === 1 ? `1 ชั้น ${pctText(v.InpLockAtPct)}→${pctText(v.InpLockToPct)}` : `2 ชั้น ${pctText(v.InpLock1AtPct)}→${pctText(v.InpLock1ToPct)}, ${pctText(v.InpLockAtPct)}→${pctText(v.InpLockToPct)}`],
     ['สูตรเอเชีย', v.InpUseAsia ? `เปิด ${fmtNum(v.InpLotsAsia)} ล็อต` : 'ปิด'],
     ['ขาดทุนสูงสุดต่อวัน', `${pctText(v.InpDailyCapPct)}%`],
-  ];
+    // only a v3.05 bot can have it on; an older bot does not know the key, so no "ปิด" row for it
+    v.InpRunnerEnable ? ['โหมด runner', runnerText(v, true)] : null,
+  ].filter(Boolean);
 }
 
 const onOffText = (b) => (b ? 'เปิด' : 'ปิด');
@@ -171,6 +193,8 @@ const FIELDS = [
   { label: 'สูตรเอเชีย', text: (v) => (v.InpUseAsia ? `เปิด ล็อต ${fmtNum(v.InpLotsAsia)}` : 'ปิด') },
   { label: 'ล็อกกำไร', text: (v) => lockText(v) },
   { label: 'ขาดทุนสูงสุดต่อวัน', text: (v) => `${pctText(v.InpDailyCapPct)}%` },
+  { label: 'โหมด runner', text: (v) => runnerText(v) },
+  { label: 'ค่าของ runner', text: (v) => runnerNumbersText(v), adv: true },
   { label: 'ล็อกใช้กับสูตร', text: (v) => STRATS.filter((s) => v[s.lock]).map((s) => s.title).join(', ') || 'ไม่มี', adv: true },
   { label: 'ไม้แก้หลังแพ้ (recovery)', text: (v) => `×${fmtNum(v.InpRecoveryMult, 1)}`, adv: true },
   { label: 'ไม้สูงสุดต่อสูตรต่อวัน', text: (v) => `${v.InpMaxAttempts} ไม้`, adv: true },
@@ -225,6 +249,11 @@ export function validateSimple(v, ceil = {}) {
   if (!(v.InpMaxSpread >= 0.05 && v.InpMaxSpread <= 2)) e.InpMaxSpread = 'ส่งจากเว็บได้ 0.05 ถึง 2.00';
   if (!(v.InpVolGatePct >= 0.5 && v.InpVolGatePct <= 5)) e.InpVolGatePct = 'ตั้งได้ 0.5 ถึง 5.0%';
   if (!(v.InpKillBalance >= 0)) e.InpKillBalance = 'ต้องไม่ติดลบ';
+  // v3.05 runner (SPEC 11 bounds; the EA checks them even while the runner is off)
+  if (!(v.InpRunnerKeepPct >= 50 && v.InpRunnerKeepPct <= 99)) e.InpRunnerKeepPct = 'เก็บกำไรขั้นต่ำตั้งได้ 50 ถึง 99% ของระยะ TP';
+  if (!(v.InpRunnerStep >= 0.1 && v.InpRunnerStep <= 2)) e.InpRunnerStep = 'ก้าวตั้งได้ 0.1 ถึง 2.0 เท่าของระยะ SL';
+  if (!(v.InpRunnerMaxSteps >= 0 && v.InpRunnerMaxSteps <= 50 && Number.isInteger(v.InpRunnerMaxSteps))) e.InpRunnerMaxSteps = 'จำนวนก้าวตั้งได้ 0 (ไม่จำกัด) ถึง 50';
+  if (!(v.InpRunnerSafetyTP >= 0 && v.InpRunnerSafetyTP <= 10)) e.InpRunnerSafetyTP = 'TP กันเหนียวตั้งได้ 0 (ไม่มี) ถึง 10 เท่าของระยะ SL';
   return e;
 }
 

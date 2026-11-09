@@ -31,15 +31,25 @@ export function normDesired(d) {
   };
 }
 
+// A cap_reset token (SPEC 11) older than this is finished business: the EA answered or never will, and the PC refuses
+// the whole params block once a token is 48 h old, so no patch may leave one behind.
+const COMMAND_STALE_S = 3 * 60;
+
 // Read-modify-write with optimistic concurrency (version); one retry on a conflict.
 // Only for my own bots: the admin viewing a friend's bot never sends anything (the API checks again).
-export async function patchDesired(botId, mutate) {
+// keepCommand: only the daily-cap reset flow passes true; every other patch drops a stale cap_reset from params (a
+// fresh one, under 3 min, is left for the PC to pick up unless the patch replaced params altogether).
+export async function patchDesired(botId, mutate, { keepCommand = false } = {}) {
   if (!app.bots.some((b) => b.id === botId)) throw new ApiError('read_only');
   for (let attempt = 0; attempt < 2; attempt++) {
     const ctl = await app.api.botControl(botId);
     if (!ctl) throw new ApiError('not_found', 'no bot_control row', 'บอทนี้ยังไม่มีแถวควบคุม ให้รัน python dobby_agent.py register ที่เครื่องอีกครั้ง');
     const next = normDesired(ctl.desired);
     mutate(next);
+    if (!keepCommand && next.params && typeof next.params === 'object' && 'cap_reset' in next.params) {
+      const t = Number(next.params.cap_reset);
+      if (!Number.isFinite(t) || Date.now() / 1000 - t > COMMAND_STALE_S) { const { cap_reset, ...rest } = next.params; next.params = rest; }
+    }
     try {
       const row = await app.api.updateDesired(botId, next, ctl.version);
       emit('control-updated', row);
@@ -271,6 +281,10 @@ export function effectiveState(st, bot, ctl) {
   }
   const bo = activeBlackout(st, off);
   if (bo) return { tone: 'paused', label: 'ช่วงงดเข้าไม้', text: 'อยู่ในช่วงงดเข้าไม้ (ข่าว) ไม่เปิดไม้ใหม่จนกว่าจะพ้นช่วง' };
-  if (v.day_cap_hit) return { tone: 'warn', label: 'ถึงจุดหยุดรายวัน', text: 'วันนี้ไม่เปิดไม้ใหม่แล้ว เริ่มใหม่วันพรุ่งนี้ (ตามเวลาเซิร์ฟเวอร์)' };
+  if (v.day_cap_hit) {
+    // EA v3.05: the owner can reset the cap for today from ภาพรวม (SPEC 11)
+    const canReset = parseFloat(String(st.ea_version || '')) >= 3.05;
+    return { tone: 'warn', label: 'ถึงจุดหยุดรายวัน', text: `วันนี้ไม่เปิดไม้ใหม่แล้ว เริ่มใหม่วันพรุ่งนี้ (ตามเวลาเซิร์ฟเวอร์)${canReset ? ' หรือเจ้าของกด "รีเซ็ตจุดหยุดรายวัน" ที่หน้าภาพรวม' : ''}` };
+  }
   return { tone: 'good', label: 'กำลังทำงาน', text: open ? `มีไม้เปิดอยู่ ${open} ไม้` : 'รอสัญญาณ ยังไม่มีไม้เปิด' };
 }

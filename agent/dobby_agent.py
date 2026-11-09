@@ -45,7 +45,7 @@ try:
 except ImportError:  # only the real HTTP transport needs it; the tests inject a fake transport
     requests = None
 
-AGENT_VERSION = "1.2.0"
+AGENT_VERSION = "1.2.1"
 
 LOG = logging.getLogger("dobby_agent")
 LOG.addHandler(logging.NullHandler())
@@ -128,7 +128,7 @@ DEFAULT_LIMITS = {
 
 # SPEC 4.2 remote allow-list, in file order: key -> (kind, min, max)
 #   bool | lots (0.01 .. min(max_lots, EA ceiling)) | cap (1 .. min(max_daily_cap_pct, EA ceiling)) | int | float |
-#   pos (> 0) | lock1at (0 or >= 10, cross-checked)
+#   pos (> 0) | lock1at (0 or >= 10, cross-checked) | token (integer unix seconds within TOKEN_WINDOW_S of now)
 REMOTE_PARAMS = [
     ("InpUseA", "bool", None, None), ("InpUseNY", "bool", None, None), ("InpUseC5G", "bool", None, None),
     ("InpUseAsia", "bool", None, None),
@@ -150,9 +150,23 @@ REMOTE_PARAMS = [
     ("InpLockToPct", "float", 1.0, None),
     ("InpLock1AtPct", "lock1at", None, None),
     ("InpLock1ToPct", "float", 1.0, None),
+    # v3.05 (contract 2026-11-10, SPEC 11): runner mode inputs + the daily-cap reset command `cap_reset`, which is
+    # always the LAST line. An EA below 3.05 rejects a file with an unknown key, so these leave the file for it
+    # (drop_v305_keys) instead of the whole desired set being refused.
+    ("InpRunnerEnable", "bool", None, None), ("InpRunner_A", "bool", None, None), ("InpRunner_NY", "bool", None, None),
+    ("InpRunner_C5G", "bool", None, None),
+    ("InpRunnerKeepPct", "float", 50.0, 99.0),
+    ("InpRunnerStep", "float", 0.1, 2.0),
+    ("InpRunnerMaxSteps", "int", 0, 50),
+    ("InpRunnerSafetyTP", "float", 0.0, 10.0),
+    ("cap_reset", "token", None, None),
 ]
 REMOTE_SPEC = dict((k, (kind, lo, hi)) for k, kind, lo, hi in REMOTE_PARAMS)
 REMOTE_KEYS = [k for k, _, _, _ in REMOTE_PARAMS]
+V305_KEYS = ("InpRunnerEnable", "InpRunner_A", "InpRunner_NY", "InpRunner_C5G", "InpRunnerKeepPct", "InpRunnerStep",
+             "InpRunnerMaxSteps", "InpRunnerSafetyTP", "cap_reset")
+V305_MIN_EA = (3, 5)                # the first EA that knows the keys above
+TOKEN_WINDOW_S = 48 * 3600          # a cap_reset token must be within 48 h of the agent's UTC clock
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -759,9 +773,35 @@ def get_limits(cfg):
     return lim
 
 
-def check_params(params, limits, ea_remote=None):
+def ea_version_tuple(ver):
+    """"3.04" -> (3, 4), "3.10" -> (3, 10), "v3.05.1" -> (3, 5, 1); None for anything else (compare as tuples)."""
+    m = re.match(r"^\s*v?(\d+)\.(\d+)(?:\.(\d+))?", str(ver if ver is not None else ""))
+    if not m:
+        return None
+    return tuple(int(g) for g in m.groups() if g is not None)
+
+
+def ea_supports_v305(ea_version):
+    """True when the EA status reports a version >= 3.05 (a missing / unparseable version counts as older)."""
+    t = ea_version_tuple(ea_version)
+    return t is not None and t >= V305_MIN_EA
+
+
+def drop_v305_keys(params, ea_version):
+    """Compatibility (contract 2026-11-10 §5): the v3.05 keys leave the remote file when the EA is below 3.05 or no
+    status is known, because such an EA rejects the WHOLE file on an unknown key. Returns (params, dropped keys)."""
+    if not params or ea_supports_v305(ea_version):
+        return params, []
+    dropped = [k for k in REMOTE_KEYS if k in V305_KEYS and k in params]
+    if not dropped:
+        return params, []
+    return dict((k, v) for k, v in params.items() if k not in V305_KEYS), dropped
+
+
+def check_params(params, limits, ea_remote=None, now=None):
     """desired.params against the allow-list (4.2), the EA bounds and the local limits (3.5).
-    Returns (clean_params or None, codes, details). Any problem rejects the whole block."""
+    Returns (clean_params or None, codes, details). Any problem rejects the whole block.
+    `now` (epoch seconds, default the wall clock) is the reference for the cap_reset token window."""
     if not isinstance(params, dict):
         return None, ["params_invalid"], ["params is not an object"]
     ea_remote = ea_remote if isinstance(ea_remote, dict) else {}
@@ -827,6 +867,16 @@ def check_params(params, limits, ea_remote=None):
                 bad("params_out_of_bounds", "%s must be 0 or 10..LockAt-0.5" % key)
             else:
                 clean[key] = x
+        elif kind == "token":
+            # one-shot command: an integer unix time (number or numeric string) within 48 h of the agent's UTC clock
+            ref = time.time() if now is None else float(now)
+            if abs(x - round(x)) > 1e-9 or x <= 0:
+                bad("params_out_of_bounds", "%s must be an integer unix time in seconds" % key)
+            elif abs(x - ref) > TOKEN_WINDOW_S:
+                bad("params_out_of_bounds", "%s=%d is %.1f h away from now (allowed: %d h)" % (
+                    key, int(round(x)), abs(x - ref) / 3600.0, TOKEN_WINDOW_S // 3600))
+            else:
+                clean[key] = int(round(x))
         else:
             if (lo is not None and x < lo - 1e-9) or (hi is not None and x > hi + 1e-9):
                 bad("params_out_of_bounds", "%s=%g outside %s..%s" % (key, x, lo, "" if hi is None else hi))
@@ -852,8 +902,8 @@ def check_params(params, limits, ea_remote=None):
     return clean, [], []
 
 
-def evaluate_desired(desired, limits, last_live, ea_remote=None):
-    """Apply the local limits (SPEC 3.5) to the web's desired state. Pure function."""
+def evaluate_desired(desired, limits, last_live, ea_remote=None, now=None):
+    """Apply the local limits (SPEC 3.5) to the web's desired state. Pure function (`now`: see check_params)."""
     d = normalize_desired(desired)
     rejected, details = [], []
     if d["live"]:
@@ -883,7 +933,7 @@ def evaluate_desired(desired, limits, last_live, ea_remote=None):
             rejected.append("params_not_allowed_locally")
             details.append("web sent params but allow_remote_params is off on this PC")
         else:
-            clean, codes, det = check_params(d["params"], limits, ea_remote)
+            clean, codes, det = check_params(d["params"], limits, ea_remote, now)
             if codes:
                 params_state = "rejected"
                 rejected += [c for c in codes if c not in rejected]
@@ -1305,13 +1355,13 @@ class NewsFeed(object):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Remote file (SPEC 3.7, read by EA v3.04 only)
+# Remote file (SPEC 3.7, read by EA v3.04 and later)
 # ---------------------------------------------------------------------------------------------------------------------
 def fmt_param(key, value):
     kind = REMOTE_SPEC[key][0]
     if kind == "bool":
         return "true" if value else "false"
-    if kind == "int":
+    if kind in ("int", "token"):
         return str(int(round(value)))
     if kind == "lots":
         return "%.2f" % value
@@ -1320,6 +1370,8 @@ def fmt_param(key, value):
 
 
 def render_remote_text(version, live, params, written):
+    """SPEC 3.7 text: version, live, then the params in allow-list order (the v3.05 runner keys after the lock keys,
+    `cap_reset=<int>` as the last line)."""
     lines = ["# Dobby3 remote parameters, written %s by dobby_agent (web v%d)" % (
         written.strftime("%Y-%m-%d %H:%M:%S"), int(version)), "version=%d" % int(version)]
     if live is not None:
@@ -1331,7 +1383,8 @@ def render_remote_text(version, live, params, written):
 
 
 def remote_semantics(text):
-    """Remote-file lines without the comment and the version line (a new version alone is not a reason to rewrite)."""
+    """Remote-file lines without the comment and the version line (a new version alone is not a reason to rewrite;
+    a changed cap_reset token IS one, like any other line)."""
     return [ln for ln in file_body(text) if not ln.lower().startswith("version=")]
 
 
@@ -1900,7 +1953,7 @@ def default_state():
         "reported_version": 0,
         "journal": {"offset": 0, "alert_offset": 0, "initialized": False, "hashes": []},
         "control": {"last_write_mtime": 0.0, "last_write_id": "", "adopted_mtime": 0.0, "auto_lines": []},
-        "remote": {"version": None},
+        "remote": {"version": None, "dropped": ""},     # dropped: "<ea_version>|<keys>" last noted (once per change)
         "bars_upload": {"pos": 0, "last_t": None},
         "cash": {"balance": None, "pnl": 0.0, "pending": None},
         "offset": {"min": None, "confirmed": False, "sample": None},
@@ -2217,6 +2270,7 @@ class Agent(object):
         self.backoff = 0
         self.fail_count = 0
         self.last_status = None
+        self.dropped_keys = []         # v3.05 keys left out of the last remote file (EA below 3.05)
         self.raw_offset = None
         self.rejected, self.reject_details, self.warnings, self.cycle_errors = [], [], [], []
         self.last_error = self.state.get("last_error") or ""
@@ -2517,8 +2571,9 @@ class Agent(object):
             c["last_write_id"] = control_id(version)
         return ok
 
-    def _sync_remote(self, dec, version, limits, written):
+    def _sync_remote(self, dec, version, limits, written, ea_version=None):
         st = self.state
+        self.dropped_keys = []
         allow_live, allow_params = limits["allow_remote_live"], limits["allow_remote_params"]
         old = read_text(self.remote_path, sleep=self.sleep)
         if not (allow_live or allow_params):
@@ -2536,6 +2591,7 @@ class Agent(object):
                 params = dec["params"]
             elif dec["params_state"] == "rejected":
                 params = st["applied_params"]  # keep what the EA already has
+        params, self.dropped_keys = drop_v305_keys(params, ea_version)
         text = render_remote_text(version, live, params, written)
         if old is not None and remote_semantics(old) == remote_semantics(text):
             return "unchanged"
@@ -2544,6 +2600,22 @@ class Agent(object):
                 st["remote"]["version"] = int(version)
             return "written"
         return "error"
+
+    def _note_dropped(self, now, version, ea_version, allow_params):
+        """The v3.05 keys left out of the remote file for an EA below 3.05 (contract §5): one decision line per
+        change of (EA version, keys), not an error; another one when they are written again after an EA update."""
+        dropped = self.dropped_keys
+        ver = str(ea_version) if ea_version else "unknown"
+        mark = ("%s|%s" % (ver, ",".join(dropped))) if dropped else ""
+        rem = self.state["remote"]
+        prev = rem.get("dropped") or ""
+        if mark == prev:
+            return
+        rem["dropped"] = mark
+        if dropped:
+            self._decision(now, "v%d remote: dropped v3.05 keys for EA %s: %s" % (version, ver, ", ".join(dropped)))
+        elif allow_params:    # params still go into the file: the keys are back (params switched off: nothing to say)
+            self._decision(now, "v%d remote: v3.05 keys written again for EA %s" % (version, ver))
 
     def _apply_control(self, row, now):
         st = self.state
@@ -2554,7 +2626,8 @@ class Agent(object):
         if last_live is None:
             last_live = self._ea_live_now()
         ea_remote = (self.last_status or {}).get("remote")
-        dec = evaluate_desired(desired, limits, last_live, ea_remote)
+        ea_version = (self.last_status or {}).get("ea_version")
+        dec = evaluate_desired(desired, limits, last_live, ea_remote, now)
         auto = self._auto_blackouts(desired, now)
         off, src = self.effective_offset()
         if src == "unconfirmed":
@@ -2588,7 +2661,8 @@ class Agent(object):
         ctl_changed = self._write_control(render_control_text(dec, values, version, written), version)
         if not self.dry_run:
             self._remember_auto_lines(auto_values, off, now)
-        remote = self._sync_remote(dec, version, limits, written)
+        remote = self._sync_remote(dec, version, limits, written, ea_version)
+        self._note_dropped(now, version, ea_version, limits["allow_remote_params"])
         if not is_new:
             return
         prev_live = st["applied_live"]

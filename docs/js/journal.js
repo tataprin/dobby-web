@@ -151,7 +151,9 @@ export const EVENT_LABELS = {
   SHADOWLOCK: 'ล็อกเงา', SHADOWLOCK1: 'ล็อกเงาขั้น 1', START: 'เริ่มทำงาน', STOP: 'หยุดทำงาน', CONTROL: 'รับคำสั่ง',
   SIGNAL: 'สัญญาณ', ORDER: 'ตั้งคำสั่ง', ARM: 'ตั้งกรอบ NY', CANCEL: 'ยกเลิกคำสั่ง', SKIP: 'ข้าม', ERROR: 'ข้อผิดพลาด',
   DAYCAP: 'ถึงจุดหยุดรายวัน', LOCKED: 'ล็อกการเทรดจริง', UNLOCKED: 'ปลดล็อกเทรดจริง',
+  // EA v3.05 (SPEC 11): runner stage and the daily-cap reset
+  RUN_ON: 'runner เริ่มวิ่ง', RUN_UP: 'runner ขยับขึ้น', DAYCAP_RESET: 'รีเซ็ตจุดหยุดรายวัน',
 };
 // trade_notes tags offered on the trade page (SPEC 9.6); any other tag can be typed
 export const SUGGESTED_TAGS = ['ช่วงข่าว', 'ปิดเอง', 'เลื่อน SL เอง', 'ตลาดผันผวน'];
-export const REASON_LABELS = { TP: 'ถึง TP', SL: 'โดน SL', LOCK: 'ล็อกกำไร', TIME: 'หมดเวลา', FLAT: 'ปิดสิ้นวัน', MANUAL: 'ปิดเอง' };
+export const REASON_LABELS = { TP: 'ถึง TP', SL: 'โดน SL', LOCK: 'ล็อกกำไร', TIME: 'หมดเวลา', FLAT: 'ปิดสิ้นวัน', MANUAL: 'ปิดเอง', RUN: 'runner ปิดที่ SL กันกำไร' };

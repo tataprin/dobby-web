@@ -3,8 +3,8 @@
 import { h, mount, icon, fmtNum, fmtSigned, fmtPct, fmtThai, toast, errText, confirmDialog, openModal, errorState, loadingState,
   emptyState, field, busy, downloadBlob, callout, newId, debounce } from '../util.js';
 import { app, myBot, isAdmin } from '../state.js';
-import { GROUPS, PARAMS, PARAM_BY_KEY, REMOTE_KEYS, TEMPLATES, templateParams, normalizeParams, validatePreset, validateRemote,
-  liveValuesFromStatus, presetFromLive, remoteSubset, formatValue, sameValue, minutesToClock, defaults } from '../params.js';
+import { GROUPS, GROUP_SINCE, PARAMS, PARAM_BY_KEY, REMOTE_KEYS, TEMPLATES, templateParams, normalizeParams, validatePreset, validateRemote,
+  liveValuesFromStatus, presetFromLive, remoteSubset, formatValue, sameValue, minutesToClock, defaults, runnerSupported } from '../params.js';
 import { parseSet, buildSet, setFileName } from '../setfile.js';
 import { patchDesired, cmdBlock, normDesired } from '../botctl.js';
 import { calculate, tableForBalance, HORIZON30, DAILY_BASE, BASE_BALANCE, BASE_LOT } from '../lotcalc.js';
@@ -324,7 +324,9 @@ async function renderEditor(root, ctx, id) {
       if (!ps.length) return null;
       return h('section', { class: 'pgroup', 'aria-label': g.title },
         h('h2', null, g.title, h('span', { class: 'muted small' }, ` ${g.en}`)),
-        g.id === 'remote' ? h('p', { class: 'hint' }, 'ค่าเหล่านี้ตั้งที่เครื่องเท่านั้น (ใน .set) เว็บเปลี่ยนไม่ได้ ใช้กับ EA v3.04') : null,
+        g.id === 'remote' ? h('p', { class: 'hint' }, 'ค่าเหล่านี้ตั้งที่เครื่องเท่านั้น (ใน .set) เว็บเปลี่ยนไม่ได้ ใช้กับ EA v3.04 ขึ้นไป') : null,
+        g.hint ? h('p', { class: 'hint' }, g.hint) : null,
+        GROUP_SINCE[g.id] ? h('p', { class: 'hint' }, `ค่ากลุ่มนี้มีตั้งแต่ EA v${GROUP_SINCE[g.id].toFixed(2)} บอทรุ่นเก่ากว่าไม่รู้จักและเว็บจะไม่ส่งให้`) : null,
         h('div', { class: 'pfields' }, ps.map((p) => {
           const lv = live.values[p.key];
           const diff = lv !== undefined && !sameValue(lv, v[p.key]);
@@ -396,8 +398,13 @@ async function renderEditor(root, ctx, id) {
     const minOf = (...xs) => { const n = xs.filter((x) => Number.isFinite(Number(x)) && x !== null).map(Number); return n.length ? Math.min(...n) : undefined; };
     const ceil = { maxLots: minOf(r && r.ceilings && r.ceilings.max_lots, lim.max_lots), maxCapPct: minOf(r && r.ceilings && r.ceilings.max_cap_pct, lim.max_daily_cap_pct) };
     const rErrors = validateRemote(v, ceil);
+    // the eight v3.05 runner keys go only to a bot that reports EA >= 3.05 (SPEC 11)
+    const eaVersion = (st && st.ea_version) || bot.ea_version;
     const remote = remoteSubset(v);
-    const remoteChanges = REMOTE_KEYS.filter((k) => !(k in live.values) || !sameValue(live.values[k], v[k]));
+    if (!runnerSupported(eaVersion)) for (const k of Object.keys(remote)) if (PARAM_BY_KEY[k].group === 'runner') delete remote[k];
+    const sentKeys = Object.keys(remote);
+    const remoteChanges = sentKeys.filter((k) => !(k in live.values) || !sameValue(live.values[k], v[k]));
+    const skippedRunner = REMOTE_KEYS.filter((k) => !sentKeys.includes(k) && !sameValue(defaults()[k], v[k]));
     const def = defaults();
     const localChanges = PARAMS.filter((p) => !p.remote && !(p.key === 'InpAllowLive') && (p.key in live.values ? !sameValue(live.values[p.key], v[p.key]) : !sameValue(def[p.key], v[p.key])));
     const warn = [];
@@ -411,7 +418,8 @@ async function renderEditor(root, ctx, id) {
       remoteChanges.length ? h('table', { class: 'diff' }, h('tbody', null, remoteChanges.map((k) => h('tr', null,
         h('td', null, h('code', null, k)), h('td', { class: 'num' }, k in live.values ? formatValue(PARAM_BY_KEY[k], live.values[k]) : '?'),
         h('td', { 'aria-hidden': 'true' }, '→'), h('td', { class: 'num' }, formatValue(PARAM_BY_KEY[k], v[k]))))))
-        : h('p', { class: 'muted' }, 'ค่าที่ส่งได้ตรงกับบอทแล้ว (จะส่งทั้ง 29 ค่าเพื่อยืนยัน)'),
+        : h('p', { class: 'muted' }, `ค่าที่ส่งได้ตรงกับบอทแล้ว (จะส่งทั้ง ${sentKeys.length} ค่าเพื่อยืนยัน)`),
+      skippedRunner.length ? callout('info', 'ค่าโหมด runner ไม่ถูกส่ง', h('p', null, `บอทนี้ยังไม่ใช่ EA v3.05 จึงไม่รู้จัก ${skippedRunner.join(', ')} (แอป Dobby ก็ตัดค่ากลุ่มนี้ออกเงียบ ๆ สำหรับบอทรุ่นเก่ากว่า 3.05) อัปเดต EA และแอป Dobby 1.2.2 ก่อน`)) : null,
       h('p', { class: 'muted small' }, 'EA ใช้ค่าใหม่เมื่อไม่มีไม้และคำสั่งรอของบอทเปิดอยู่ ระหว่างรอ หน้าควบคุมจะขึ้น "รอ: มีไม้เปิดอยู่"'),
       localChanges.length ? callout('info', `ต้องโหลด .set ที่เครื่อง (${localChanges.length} ค่า)`,
         h('p', null, 'ค่าเหล่านี้เว็บส่งไม่ได้ ส่งออก .set แล้วโหลดใน Inputs ของ EA ที่เครื่อง:'),

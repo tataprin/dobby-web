@@ -3,7 +3,7 @@
 // open trade), บีม (paused, offline for 3 h, a blackout, an agent rejection), มิ้นท์ (approved, no bot yet), พลอย (waiting
 // for approval) and a disabled old account. Dates are relative to "now" so the demo always looks current;
 // the pattern itself is fixed by the seeds below. "Today" is always treated as a trading day.
-import { templateParams, remoteSubset, normalizeParams } from './params.js';
+import { templateParams, remoteSubset, normalizeParams, RUNNER_KEYS, runnerSupported } from './params.js';
 import { autoFromBalance } from './simple.js';
 import { wallString, isoUtc } from './util.js';
 
@@ -48,6 +48,9 @@ export class BotSim {
     this.vb = this.params.InpVirtualStart;
     this.stat = Object.fromEntries(MODS.map((m) => [m, { trades: 0, wins: 0, losses: 0, net: 0, day_stops: 0 }]));
     this.position = null;
+    // EA v3.05 (SPEC 11): status schema 6, runner fields, the daily-cap reset command
+    this.v6 = runnerSupported(cfg.ea);
+    this.capReset = { seen: 0, applied: 0, today: 0 }; // last token seen / applied, resets today
     this.lastError = '';
     this.lastEvent = '';
     this.applied = { ...cfg.applied };
@@ -225,15 +228,52 @@ export class BotSim {
       if (day === today) { this.dayStart = dayStart; this.dayPnl = dayPnl; this.capHit = stopped; }
     }
     if (cfg.openPosition) {
-      const entry = r2(price(nowWall) - 2.6);
       const sl = 6.4, tpd = r2(sl * P.InpC5_TPRatio);
       const lots = P.InpLotsC5G;
+      // cfg.runnerPos (EA v3.05 demo): the trade passed TP0 and the runner ratcheted k times; the bid sits between the
+      // k-th and the next target, the SL is the ratcheted floor, the broker TP is the safety TP (SPEC 11 §2)
+      const run = this.v6 && cfg.runnerPos && P.InpRunnerEnable && P.InpRunner_C5G ? { k: cfg.runnerPos.k ?? 1 } : null;
+      const stepD = r2(P.InpRunnerStep * sl);
+      const above = run ? r2(tpd + run.k * stepD + 0.4 * stepD) : -2.6; // bid - entry
+      const entry = r2(price(nowWall) - above);
       this.position = {
         module: 'C5G', ticket: this.pos++, side: 'BUY', lots, open_price: entry, sl: r2(entry - sl), tp: r2(entry + tpd),
-        open_wall: openAt, tpd, sld: sl,
+        open_wall: openAt, tpd, sld: sl, anchor: above,
       };
       this.add(openAt + 1000, 'OPEN', 'C5G', 'BUY', lots, entry, this.position.sl, this.position.tp, 0, 0,
         `d=${f2(sl)} tp=${f2(tpd)} atr=${f2(sl)} rsi=47.9 | ${this.desc('C5G', 'BUY', entry)}`);
+      if (run) {
+        const p = this.position, per = 100 * lots;
+        const tp0 = r2(entry + tpd);
+        const lockOn = P.InpLockEnable && P.InpLock_C5G;
+        let slNow = p.sl;
+        if (P.InpLock1Enable && P.InpLock1AtPct > 0) {
+          slNow = r2(entry + tpd * P.InpLock1ToPct / 100);
+          this.add(openAt + 9 * MIN, 'LOCK1', 'C5G', 'BUY', lots, r2(entry + tpd * P.InpLock1AtPct / 100 + 0.03), slNow, p.tp, 0, 0,
+            `gain ${f2(tpd * P.InpLock1AtPct / 100 + 0.03)} >= ${Math.round(P.InpLock1AtPct)}% of TP ${f2(tpd)} -> SL ${f2(slNow)} locks about +${f2(tpd * P.InpLock1ToPct / 100 * per)} (${Math.round(P.InpLock1ToPct)}%)`);
+        }
+        if (lockOn) {
+          slNow = r2(entry + tpd * P.InpLockToPct / 100);
+          this.add(openAt + 16 * MIN, 'LOCK', 'C5G', 'BUY', lots, r2(entry + tpd * P.InpLockAtPct / 100 + 0.02), slNow, p.tp, 0, 0,
+            `gain ${f2(tpd * P.InpLockAtPct / 100 + 0.02)} >= ${Math.round(P.InpLockAtPct)}% of TP ${f2(tpd)} -> SL ${f2(slNow)} locks about +${f2(tpd * P.InpLockToPct / 100 * per)} (${Math.round(P.InpLockToPct)}%)`);
+        }
+        // touch: SL_conv = max(SL in force, E + KeepPct % of tpd); target T1 = TP0 + step; the broker TP is the safety
+        // TP = next target + SafetyTP x d, moved up with every ratchet (a disconnect safeguard, normally never hit)
+        const slConv = r2(Math.max(slNow, entry + tpd * P.InpRunnerKeepPct / 100));
+        const safety = (target) => (P.InpRunnerSafetyTP > 0 ? r2(target + P.InpRunnerSafetyTP * sl) : 0);
+        let target = r2(tp0 + stepD), slRun = slConv;
+        p.tp = safety(target);
+        this.add(openAt + 20 * MIN, 'RUN_ON', 'C5G', 'BUY', lots, tp0, slConv, p.tp, 0, 0, `price ${f2(tp0)} sl ${f2(slConv)} target ${f2(target)} (keep ${f2(P.InpRunnerKeepPct)}% step ${f2(P.InpRunnerStep)}d)`);
+        for (let k = 1; k <= run.k; k++) {
+          slRun = r2(Math.max(slRun, slConv + k * stepD));
+          const hit = target;
+          target = r2(tp0 + (k + 1) * stepD);
+          p.tp = safety(target);
+          this.add(openAt + (20 + 8 * k) * MIN, 'RUN_UP', 'C5G', 'BUY', lots, hit, slRun, p.tp, 0, 0, `k=${k} sl ${f2(slRun)} target ${f2(target)}`);
+        }
+        p.sl = slRun;
+        p.runner = { converted: true, k: run.k, sl_floor: slRun, target };
+      }
     }
     this.bid = r2(price(nowWall));
     // keep rows in time order with ids that follow it (like bigserial inserts)
@@ -293,7 +333,7 @@ export class BotSim {
       const r = this.rows[j];
       if (r.tag !== tag || !(r.price > 0)) continue;
       if (j > i && r.event === 'OPEN') break;
-      if (['OPEN', 'NEAR1', 'NEARTP', 'LOCK1', 'LOCK', 'CLOSE'].includes(r.event)) out.push({ w: Date.parse(r.ts_server + 'Z'), p: r.price });
+      if (['OPEN', 'NEAR1', 'NEARTP', 'LOCK1', 'LOCK', 'RUN_ON', 'RUN_UP', 'CLOSE'].includes(r.event)) out.push({ w: Date.parse(r.ts_server + 'Z'), p: r.price });
       if (r.event === 'CLOSE') break;
     }
     return out;
@@ -301,8 +341,65 @@ export class BotSim {
 
   tick(nowUtc) {
     const nowWall = nowUtc + DEMO_OFFSET_MIN * MIN;
-    const anchor = this.position ? this.position.open_price + 2.6 : price(nowWall);
+    const anchor = this.position ? this.position.open_price + (this.position.anchor ?? 2.6) : price(nowWall);
     this.bid = r2(this.bid + (anchor - this.bid) * 0.08 + (this.r() - 0.5) * 0.7);
+  }
+
+  // runner flags of a position JSON (EA v3.05, SPEC 11 §4): on = the runner was allowed for this trade at its open
+  runnerJson(mod, p) {
+    if (!this.v6) return undefined;
+    const P = this.params;
+    if (p && p.runner) return { on: true, converted: true, k: p.runner.k, sl_floor: p.runner.sl_floor, target: p.runner.target };
+    const key = mod === 'A_new' ? 'InpRunner_A' : mod === 'NY' ? 'InpRunner_NY' : mod === 'C5G' ? 'InpRunner_C5G' : null;
+    return { on: !!(p && key && P.InpRunnerEnable && P[key]), converted: false, k: 0, sl_floor: null, target: null };
+  }
+
+  // EA v3.05 (SPEC 11 §3): the cap_reset token of the remote file, evaluated as soon as the file is read (never "when
+  // flat"). Applied when newer than the last token seen, the cap is hit and the token's server day is today; otherwise
+  // journaled as IGNORED and remembered anyway. Returns the journal row.
+  capResetCmd(token, nowUtc) {
+    const t = Math.floor(Number(token));
+    if (!Number.isFinite(t) || t <= this.capReset.seen) return null;
+    this.capReset.seen = t;
+    const wall = nowUtc + DEMO_OFFSET_MIN * MIN;
+    const sameDay = Math.floor((t * 1000 + DEMO_OFFSET_MIN * MIN) / DAY) === Math.floor(wall / DAY);
+    let detail;
+    if (!this.capHit) detail = `IGNORED: daily cap not hit (token ${t})`;
+    else if (!sameDay) detail = `IGNORED: token from another server day (token ${t})`;
+    else {
+      const pnl0 = this.dayPnl || 0, start0 = this.dayStart ?? this.vb;
+      this.dayStart = this.vb; this.dayPnl = 0; this.capHit = false;
+      this.capReset.applied = t; this.capReset.today += 1;
+      detail = `day P&L ${f2(pnl0)} -> 0.00, day start ${f2(start0)} -> ${f2(this.vb)}, token ${t}`;
+    }
+    return this.add(wall, 'DAYCAP_RESET', 'A_new', 'NONE', 0, null, null, null, 0, 0, detail);
+  }
+
+  // Demo only: one losing A_new recovery trade, closed a minute ago, that takes today over the daily cap, so the
+  // ภาพรวม banner and "รีเซ็ตจุดหยุดรายวัน" can be tried. Returns the journal rows added.
+  forceCapHit(nowUtc) {
+    if (this.capHit) return [];
+    const P = this.params, wall = nowUtc + DEMO_OFFSET_MIN * MIN;
+    const dayStart = this.dayStart ?? this.vb;
+    const capAmt = (P.InpDailyCapPct / 100) * dayStart;
+    const need = Math.max(3, capAmt + (this.dayPnl || 0) + 0.5 + this.r() * 3); // the loss still missing to the cap
+    const lots = this.lotsFor(1), per = 100 * lots, cost = 0.22 * per;
+    const move = r2(Math.max(2, (need - cost) / per));
+    const entry = r2(price(wall - 26 * MIN) + 1.1);
+    const slP = r2(entry + move), tpP = r2(entry - move * P.InpA_TPRatio);
+    const pnl = r2(-(move * per + cost));
+    const rows = [];
+    rows.push(this.add(wall - 26 * MIN, 'OPEN', 'A_new', 'SELL', lots, entry, slP, tpP, 0, 1,
+      `d=${f2(move)} tp=${f2(move * P.InpA_TPRatio)} atr=${f2(move * 0.8)} rsi=63.2 | ${this.desc('A_new', 'SELL', entry)}`));
+    this.vb = r2(this.vb + pnl);
+    this.dayPnl = r2((this.dayPnl || 0) + pnl);
+    const s = this.stat.A_new;
+    s.trades++; s.losses++; s.net = r2(s.net + pnl); s.day_stops++;
+    rows.push(this.add(wall - MIN, 'CLOSE', 'A_new', 'SELL', lots, slP, null, null, pnl, 1, `reason=SL pos=${this.pos++}`));
+    this.capHit = true;
+    rows.push(this.add(wall - MIN + 1000, 'DAYCAP', 'A_new', 'NONE', 0, null, null, null, 0, 0,
+      `day P&L ${f2(this.dayPnl)} <= -${f2(P.InpDailyCapPct)}% of the day start ${f2(dayStart)}: no new entries today`));
+    return rows;
   }
 
   openProfit() {
@@ -323,21 +420,23 @@ export class BotSim {
     this.dayPnl = (this.dayPnl || 0) + pnl;
     const s = this.stat[p.module];
     s.trades++; s.net = r2(s.net + pnl); if (pnl > 0) s.wins++; else s.losses++;
-    const row = this.add(nowUtc + DEMO_OFFSET_MIN * MIN, 'CLOSE', p.module, p.side, p.lots, this.bid, null, null, pnl, 0, `reason=${reason} pos=${p.ticket}`);
+    // a runner past its TP closes with reason RUN (SPEC 11 §2), whatever closed it in the demo
+    const row = this.add(nowUtc + DEMO_OFFSET_MIN * MIN, 'CLOSE', p.module, p.side, p.lots, this.bid, null, null, pnl, 0, `reason=${p.runner ? 'RUN' : reason} pos=${p.ticket}`);
     this.position = null;
     return row;
   }
 
   posJson(mod, nowUtc) {
     const p = this.position;
-    if (!p || p.module !== mod) return { open: false, module: mod };
+    if (!p || p.module !== mod) return { open: false, module: mod, runner: this.runnerJson(mod, null) };
     const dir = p.side === 'BUY' ? 1 : -1;
     const gain = (this.bid - p.open_price) * dir;
     const near = gain >= 0.95 * p.tpd;
     return {
       open: true, module: mod, ticket: p.ticket, side: p.side, lots: p.lots, open_price: p.open_price, sl: p.sl, tp: p.tp,
       profit: this.openProfit(), swap: 0, open_time: tsEa(p.open_wall), bars_held: Math.floor((nowUtc + DEMO_OFFSET_MIN * MIN - p.open_wall) / (15 * MIN)),
-      comment: `Dobby3 ${mod}`, near_tp: near, locked: near && this.params.InpLockEnable,
+      comment: `D3 ${mod} d${f2(p.sld)} t${f2(p.tpd)}`, near_tp: near, locked: (near && this.params.InpLockEnable) || !!p.runner,
+      runner: this.runnerJson(mod, p),
     };
   }
 
@@ -359,14 +458,16 @@ export class BotSim {
       : mins < 1245 ? `armed: buy stop ${f2(pxNy + 2.3)} / sell stop ${f2(pxNy - 3.6)}` : 'none: outside order window';
     const balance = r2(this.vb + (cfg.accountExtra || 0));
     const profit = this.openProfit();
+    const v6 = this.v6; // EA v3.05: schema 6 (SPEC 11 §4)
     const st = {
-      schema_version: cfg.remote ? 5 : 4, ea: 'Dobby3', ea_version: cfg.ea, tag: P.InpUseAsia ? 'A_new+NY+C5G+ASIA16' : 'A_new+NY+C5G',
+      schema_version: cfg.remote ? (v6 ? 6 : 5) : 4, ea: 'Dobby3', ea_version: cfg.ea, tag: P.InpUseAsia ? 'A_new+NY+C5G+ASIA16' : 'A_new+NY+C5G',
       magic: P.InpMagicA, symbol: 'XAUUSD', server_time: tsEa(nowWall), heartbeat_gmt_unix: Math.floor(nowUtc / 1000),
       account: { mode: 'REAL', currency: 'USD', balance, equity: r2(balance + profit), connected: true, trade_permitted: true },
       virtual: {
         start_date: tsEa(this.today - 21 * DAY + 9 * HOUR), start: P.InpVirtualStart, balance: r2(this.vb), day: wallString(this.today, '.').slice(0, 10),
         day_start: r2(this.dayStart ?? this.vb), day_pnl: r2(this.dayPnl || 0), step: 0, day_stopped: !!this.capHit,
         day_cap_hit: !!this.capHit, kill_balance: P.InpKillBalance, killed: false, trades: tr, wins: wi, losses: lo, day_stops: ds,
+        ...(v6 ? { cap_reset_applied: this.capReset.applied, cap_resets_today: this.capReset.today } : {}),
       },
       modules: MODS.map((m) => ({
         module: m, enabled: !!use[m], magic: MAGIC[m], lots: lotsFor(m), step: 0, day_stopped: !!this.capHit,
@@ -396,15 +497,20 @@ export class BotSim {
       params: {
         sl_cap: P.InpA_SLCap, tp_ratio: P.InpA_TPRatio, lots_input: P.InpLotsA, lots_ny: P.InpLotsNY, lots_c5g: P.InpLotsC5G, max_lots: P.InpMaxLots,
         recovery_mult: P.InpRecoveryMult, daily_cap_pct: P.InpDailyCapPct, max_spread_input: P.InpMaxSpread, modules: 'A_new+NY+C5G',
+        ...(v6 ? { runner: { enable: P.InpRunnerEnable, a: P.InpRunner_A, ny: P.InpRunner_NY, c5g: P.InpRunner_C5G,
+          keep_pct: P.InpRunnerKeepPct, step: P.InpRunnerStep, max_steps: P.InpRunnerMaxSteps, safety_tp: P.InpRunnerSafetyTP } } : {}),
       },
       last_event: this.lastEvent, last_error: this.lastError,
     };
     if (this.remote) {
+      // an EA below 3.05 does not know the runner keys, so its effective set has none of them
+      const effective = remoteSubset(P);
+      if (!v6) for (const k of RUNNER_KEYS) delete effective[k];
       st.remote = {
         params_enabled: P.InpRemoteParams, live_enabled: P.InpRemoteLive, file_exists: true, version: this.remote.version,
         applied_version: this.remote.applied_version, pending: this.remote.pending, waiting: this.remote.waiting, live: a.live,
         rejects: this.remote.rejects, ceilings: { max_lots: P.InpRemoteMaxLots, max_cap_pct: P.InpRemoteMaxCapPct },
-        effective: remoteSubset(P),
+        effective,
       };
     }
     return st;
@@ -530,7 +636,8 @@ export function createDemoDb(nowUtc = Date.now()) {
   const nfpFrom = Date.parse(nextTier1.ts_utc) - 30 * MIN, nfpTo = Date.parse(nextTier1.ts_utc) + 90 * MIN;
   const srv = (ms) => tsEa(ms + DEMO_OFFSET_MIN * MIN).slice(0, 16);
 
-  // Bot 1 "คอมหลัก": EA v3.04 with the SPEC 7.3 values for a 300 balance (the generic Dobby3_v304_web.set).
+  // Bot 1 "คอมหลัก": EA v3.05 (app 1.2.2) with the SPEC 7.3 values for a 300 balance (the generic Dobby3_v305_web.set);
+  // the runner is off (its default), so the owner can try the switch, and the daily-cap reset (SPEC 11).
   const p1 = { ...autoFromBalance(templateParams('ea-default'), 300), InpRemoteParams: true, InpRemoteLive: true, InpRemoteMaxLots: 0.50, InpRemoteMaxCapPct: 10 };
   // Bot 2 "DESKTOP-NPNL85P": an older EA v3.03 (web can only pause/resume and set blackouts; settings are read-only).
   const p2 = {
@@ -539,7 +646,7 @@ export function createDemoDb(nowUtc = Date.now()) {
   };
   // account balance = virtual + the cash flows below (a 100 deposit, a 50 one not confirmed yet, a -12.40 manual trade)
   const sim1 = new BotSim({
-    id: 'demo-bot-1', seed: 20261107, idBase: 100000, ea: '3.04', remote: true, params: p1, openPosition: true, accountExtra: 137.6,
+    id: 'demo-bot-1', seed: 20261107, idBase: 100000, ea: '3.05', remote: true, params: p1, openPosition: true, accountExtra: 137.6,
     weak: { module: 'C5G', days: 13 },
     applied: {
       version: 14, live: true, mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: '',
@@ -555,10 +662,11 @@ export function createDemoDb(nowUtc = Date.now()) {
     },
   }, nowUtc);
 
-  // Friends (read-only for the admin). นก: EA v3.04 on a 500 balance, live, an open trade.
-  const pNok = { ...autoFromBalance(templateParams('ea-default'), 500), InpRemoteParams: true, InpRemoteLive: true, InpRemoteMaxLots: 0.50, InpRemoteMaxCapPct: 10 };
+  // Friends (read-only for the admin). นก: EA v3.05 on a 500 balance, live, the runner on with the tested values and an
+  // open C5G trade that already passed its TP and ratcheted once (the runner card state, SPEC 11).
+  const pNok = { ...autoFromBalance(templateParams('ea-default'), 500), InpRemoteParams: true, InpRemoteLive: true, InpRemoteMaxLots: 0.50, InpRemoteMaxCapPct: 10, InpRunnerEnable: true };
   const simNok = new BotSim({
-    id: 'demo-bot-nok', seed: 777029, idBase: 700000, ea: '3.04', remote: true, params: pNok, openPosition: true, accountExtra: 212.4, spread: 0.22,
+    id: 'demo-bot-nok', seed: 777029, idBase: 700000, ea: '3.05', remote: true, params: pNok, openPosition: true, runnerPos: { k: 1 }, accountExtra: 212.4, spread: 0.22,
     applied: {
       version: 9, live: true, mode: 'run', lots: null, allow_long: true, allow_short: true, max_spread: null, note: '',
       blackouts: [], applied_at: tsEa(nowUtc + DEMO_OFFSET_MIN * MIN - 30 * HOUR),
@@ -604,8 +712,8 @@ export function createDemoDb(nowUtc = Date.now()) {
   const bots = [
     {
       id: 'demo-bot-1', owner: DEMO_USER.id, name: 'คอมหลัก', created_at: iso(nowUtc - 21 * DAY), last_seen: iso(nowUtc - 2000),
-      agent_version: '1.2.0', ea_version: '3.04', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN,
-      agent_state: agentState(14, limits1, sim1, nowUtc, [], { agent_version: '1.2.0', ...newsState(auto1) }),
+      agent_version: '1.2.1', ea_version: '3.05', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN,
+      agent_state: agentState(14, limits1, sim1, nowUtc, [], { agent_version: '1.2.1', ...newsState(auto1) }),
     },
     {
       id: 'demo-bot-2', owner: DEMO_USER.id, name: 'DESKTOP-NPNL85P', created_at: iso(nowUtc - 20 * DAY), last_seen: iso(nowUtc - 4000),
@@ -613,8 +721,8 @@ export function createDemoDb(nowUtc = Date.now()) {
     },
     {
       id: 'demo-bot-nok', owner: 'demo-nok', name: 'คอมนก', created_at: iso(nowUtc - 11 * DAY), last_seen: iso(nowUtc - 3000),
-      agent_version: '1.2.0', ea_version: '3.04', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN,
-      agent_state: agentState(9, limitsNok, simNok, nowUtc, [], { agent_version: '1.2.0', ...newsState(autoNok) }),
+      agent_version: '1.2.1', ea_version: '3.05', symbol: 'XAUUSD', server_utc_offset_min: DEMO_OFFSET_MIN,
+      agent_state: agentState(9, limitsNok, simNok, nowUtc, [], { agent_version: '1.2.1', ...newsState(autoNok) }),
     },
     {
       id: 'demo-bot-beam', owner: 'demo-beam', name: 'โน้ตบุ๊กบีม', created_at: iso(nowUtc - 8 * DAY), last_seen: iso(beamOffline), offline: true,
@@ -696,9 +804,9 @@ export function createDemoDb(nowUtc = Date.now()) {
   ].sort((a, b) => b.ts.localeCompare(a.ts)).map((a, i) => ({ id: 900 - i, ...a }));
 
   const downloads = [
-    { name: 'Dobby3_v304.ex5', size: 214532, updated_at: iso(nowUtc - 2 * DAY) },
+    { name: 'Dobby3_v305.ex5', size: 221870, updated_at: iso(nowUtc - 2 * DAY) },
     { name: 'DobbyApp.exe', size: 18874368, updated_at: iso(nowUtc - 2 * DAY) },
-    { name: 'Dobby3_v304_web.set', size: 6114, updated_at: iso(nowUtc - 2 * DAY) },
+    { name: 'Dobby3_v305_web.set', size: 6498, updated_at: iso(nowUtc - 2 * DAY) },
     { name: 'dobby_agent.zip', size: 18240, updated_at: iso(nowUtc - 2 * DAY) },
   ];
 

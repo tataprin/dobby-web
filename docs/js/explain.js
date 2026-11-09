@@ -91,7 +91,7 @@ const RETCODES = {
 export function closeReasonText(reason) {
   return {
     TP: 'ราคาถึง TP', SL: 'ราคาโดน SL', LOCK: 'ราคาย้อนกลับมาโดน SL ที่เลื่อนมาล็อกกำไรไว้', TIME: 'ถือครบเวลาสูงสุดของสูตร บอทจึงปิดเอง',
-    FLAT: 'ปิดตอนสิ้นวันตามกติกาของสูตร', MANUAL: 'ปิดด้วยมือ',
+    FLAT: 'ปิดตอนสิ้นวันตามกติกาของสูตร', MANUAL: 'ปิดด้วยมือ', RUN: 'โหมด runner: ราคาผ่าน TP แล้ววิ่งต่อ จนย้อนกลับมาโดน SL กันกำไรที่ขยับตามไว้',
   }[reason] || (reason ? `ปิดไม้ (${REASON_LABELS[reason] || reason})` : 'ปิดไม้');
 }
 
@@ -150,6 +150,19 @@ export function explainEvent(r, trade = {}) {
     case 'DAYCAP':
       if ((m = /day\s+P&L\s+(-?[\d.]+)\s*<=\s*-?([\d.]+)%\s*of\s+(?:the\s+day\s+start\s+)?([\d.]+)/i.exec(d))) {
         return { text: `ขาดทุนวันนี้ ${fmtSigned(n(m[1]))} ถึงจุดหยุด ${fmtNum(n(m[2]), 0)}% ของทุนต้นวัน ${fmtNum(n(m[3]))} วันนี้บอทไม่เปิดไม้ใหม่แล้ว`, understood: true };
+      }
+      break;
+    // EA v3.05 (SPEC 11): "RUN_ON price <p> sl <s> target <t>", "RUN_UP k <n> sl <s> target <t>", DAYCAP_RESET "day P&L <a> -> 0.00, day start <b> -> <c>, token <t>" / "IGNORED: <reason>"
+    case 'RUN_ON':
+      if ((m = /sl\s+([\d.]+).*?target\s+([\d.]+)/i.exec(d))) return { text: `ราคาถึง TP แล้ว โหมด runner ไม่ปิดไม้: เลื่อน SL กันกำไรไปที่ ${px(m[1])} และตั้งเป้าถัดไปที่ ${px(m[2])}`, understood: true };
+      break;
+    case 'RUN_UP':
+      if ((m = /k\s*=?\s*(\d+).*?sl\s+([\d.]+).*?target\s+([\d.]+)/i.exec(d))) return { text: `runner ถึงเป้า ขยับครั้งที่ ${m[1]}: SL กันกำไรไปที่ ${px(m[2])} เป้าถัดไป ${px(m[3])}`, understood: true };
+      break;
+    case 'DAYCAP_RESET':
+      if (/IGNORED/i.test(d)) return { text: `คำสั่งรีเซ็ตจุดหยุดรายวันถูกข้าม (${d.replace(/^.*IGNORED:\s*/i, '')})`, understood: true };
+      if ((m = /day\s+P&L\s+(-?[\d.]+)\s*->\s*(-?[\d.]+).*?day\s+start\s+([\d.]+)\s*->\s*([\d.]+)/i.exec(d))) {
+        return { text: `เจ้าของกดรีเซ็ตจุดหยุดรายวัน: กำไรขาดทุนวันนี้ ${fmtSigned(n(m[1]))} เริ่มนับใหม่จาก 0 ทุนต้นวัน ${fmtNum(n(m[3]))} เป็น ${fmtNum(n(m[4]))} บอทเปิดไม้ใหม่ได้อีกวันนี้`, understood: true };
       }
       break;
     case 'CANCEL':

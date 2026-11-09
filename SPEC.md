@@ -249,8 +249,12 @@ version=17
 live=1                 (only if allow_remote_live; 1/0)
 InpLotsA=0.10          (only if allow_remote_params and desired.params is not null; allow-listed keys only)
 ...
+cap_reset=1762794000   (SPEC 11: one-shot daily-cap reset token = desired.params.cap_reset, unix seconds UTC, integer;
+                        last line, after the lock and runner keys; counts as a semantic change of the file)
 ```
-Bools written as true/false, numbers with `.`.
+Bools written as true/false, numbers with `.`. The eight v3.05 runner keys and `cap_reset` are written only when the
+bot's status reports `ea_version >= 3.05`; for an older EA the agent drops them (logs "dropped for EA <ver>") instead of
+refusing the whole set (SPEC 11).
 
 ## 4. EA v3.04 (D:\Dobby\mt5\Dobby3_v304.mq5, private; = v3.03 + remote)
 
@@ -282,6 +286,16 @@ InpLockAtPct                                                  50 .. 99.5
 InpLockToPct                                                  1 .. InpLockAtPct - 0.5
 InpLock1AtPct                                                 0 or 10 .. InpLockAtPct - 0.5
 InpLock1ToPct                                                 1 .. min(InpLock1AtPct, InpLockToPct) - 0.5
+--- EA v3.05 (SPEC 11; EA < 3.05: dropped by the agent, never sent by the website) ---
+InpRunnerEnable                                               bool (default false = v3.04 behaviour exactly)
+InpRunner_A                                                   bool (default true)
+InpRunner_NY                                                  bool (default true)
+InpRunner_C5G                                                 bool (default true; ASIA16: never)
+InpRunnerKeepPct                                              50 .. 99      (default 75)
+InpRunnerStep                                                 0.1 .. 2.0    (default 0.5, units of d = the stop distance)
+InpRunnerMaxSteps                                             0 .. 50 int   (default 0 = unlimited)
+InpRunnerSafetyTP                                             0 .. 10       (default 4.0; 0 = no broker TP)
+cap_reset                                                     command, not an input: integer unix seconds within 48 h of now
 ```
 Strategy geometry (SL caps, TP ratios, pivots, NY times, C5G touch, magics, start date, AllowLive, UseControl) is NOT
 remote: the website edits them only in presets exported as .set for a manual load.
@@ -740,3 +754,133 @@ stays private).
 `#/bot?ai=1`. ตั้งค่าบอท (owner, editable, same bot, proposal < 1 h old) loads the changes as unsent edits on top of
 the current values (like loading a preset), shows a callout with the summary, and the user sends them with the normal
 "บันทึกและส่งให้บอท" confirm dialog (change list, version check, EA applies when flat). Nothing is sent otherwise.
+A proposal that carries the command `cap_reset` (SPEC 11) is accepted by the Edge Function only as an integer unix time
+within 48 h of now and for an EA v3.05 bot; the website does not load it as a setting: it points the user to ภาพรวม,
+where the daily-cap reset button sends a fresh token after its own confirm dialog. Runner keys in a proposal for an EA
+below 3.05 are refused by the Edge Function and ignored by the website.
+
+## 11. EA v3.05: runner mode + daily-cap reset (2026-11-10)
+Contract fixed 2026-11-10 between the EA (`D:\Dobby\mt5\Dobby3_v305.mq5` = v3.04 + this), the agent / app
+(dobby_agent.py 1.2.1 inside DobbyApp 1.2.2) and the website. Research reference: r44 (PREREG I3, best cell
+R-L0.25-S0.5-Ninf). With `InpRunnerEnable = false` v3.05 must equal v3.04 trade for trade (Strategy Tester parity).
+
+### 11.1 New EA inputs, group "v3.05 runner (web)" (all eight remote allow-listed, SPEC 4.2; applied like every other
+remote parameter: versioned, when flat)
+```
+input bool   InpRunnerEnable   = false;   // master switch; OFF = v3.04 behaviour exactly
+input bool   InpRunner_A       = true;    // runner allowed for module A_new
+input bool   InpRunner_NY      = true;    // runner allowed for module NY
+input bool   InpRunner_C5G     = true;    // runner allowed for module C5G (ASIA16: never)
+input double InpRunnerKeepPct  = 75;      // 50..99: at the TP touch the SL moves to entry + KeepPct % of the TP distance (never below the stop in force)
+input double InpRunnerStep     = 0.5;     // 0.1..2.0: ratchet size in units of d (the stop distance)
+input int    InpRunnerMaxSteps = 0;       // 0..50: 0 = unlimited; when k reaches MaxSteps the broker TP is set to the current target (final)
+input double InpRunnerSafetyTP = 4.0;     // 0..10: broker-side TP at the next target + SafetyTP x d, moved up with every ratchet (0 = none); a disconnect safeguard only
+```
+Tested values (r44): KeepPct 75, Step 0.5, MaxSteps 0, all three modules. The daily-cap reset is NOT an input: it is the
+remote line `cap_reset` (11.3).
+
+### 11.2 Runner mechanics (r44 PREREG I3; shorts mirrored)
+A position of module m opened while `InpRunnerEnable` and `InpRunner_<m>` are true gets the runner settings SNAPSHOTTED at
+its open (a later toggle affects new positions only). E = fill, d = stop distance, tpd = TP distance (both in the position
+comment "D3 <mod> d<d> t<tpd>", parsed by ParseDists), TP0 = E + tpd (long).
+- Open: SL as today. Broker TP = the safety TP (next target + SafetyTP x d; 0 = no broker TP). The lock ladder works
+  unchanged before the touch.
+- Touch: the first tick with Bid >= TP0 -> stage RUN. SL = max(SL in force incl. any lock, E + KeepPct/100 x tpd) =
+  SL_conv; k = 0; target T1 = TP0 + Step x d; the safety TP follows the target. Journal `RUN_ON` (price, sl, target).
+- Ratchet: a tick with Bid >= T_(k+1) -> k += 1; SL = max(SL, SL_conv + k x Step x d); T_(k+1) = TP0 + (k+1) x Step x d;
+  the safety TP moves up with it. Journal `RUN_UP` (k, sl, target). If MaxSteps > 0 and k == MaxSteps -> broker TP =
+  T_(k+1), no further ratchets.
+- Exit: the SL hit after the touch -> CLOSE reason `RUN` (distinct from `SL`); the broker TP hit -> `TP` as today.
+- After the touch the lock ladder is superseded (stage 3): the lock code never changes the SL of a RUN position; the SL
+  is never moved against the trade.
+- Persistence: the per-module runner state (converted, k, SL_conv, TP0, target, ticket) lives in terminal
+  GlobalVariables keyed by magic + ticket, so a re-init / restart mid-trade continues; stale entries are removed.
+- Works identically in the Strategy Tester.
+
+### 11.3 Daily-cap reset (one-shot command)
+- Remote file line `cap_reset=<unix seconds UTC, integer>`, written by the agent from `desired.params.cap_reset` (number
+  or numeric string; the agent accepts a token within 48 h of now, rendered `cap_reset=<int>`, file order after the lock
+  and runner keys, last; it counts as a semantic change of the file). Each click on the website sends a fresh token
+  `Math.floor(Date.now() / 1000)`.
+- EA, gated by `InpRemoteParams`, evaluated as soon as the file is read (NOT "when flat"). Token t is APPLIED when all
+  hold: t > the last applied / seen token (GlobalVariable `Dobby3_capreset_<magic>`, persists across re-init), the daily
+  cap is currently hit (g_capHit), and t's server day (t + (TimeCurrent() - TimeGMT())) is today's server day.
+  Otherwise journal `DAYCAP_RESET` "IGNORED: <reason>" and remember t anyway (a new click brings a new token).
+- Apply: day start := the current virtual balance; day P&L := 0 from now (an offset the history replay does not undo,
+  persisted with its server day in GlobalVariables; it expires with the server day); g_capHit := false; module flags
+  untouched. Journal `DAYCAP_RESET` e.g. "day P&L -47.93 -> 0.00, day start 464.15 -> 416.22, token 1762794000". The
+  cap can hit again after another -InpDailyCapPct % of the new day start.
+- A token older than 48 h is out of bounds for the agent, which then REJECTS the whole desired.params block every
+  cycle. The website therefore never leaves a token behind (11.5).
+
+### 11.4 Status JSON, schema_version 6 (everything of schema 5 unchanged)
+- `virtual.cap_reset_applied` (int, the last applied token, 0 when none), `virtual.cap_resets_today` (int, 0 when none);
+  `virtual.day_start` reflects the reset.
+- `positions[]` get `runner: {"on": bool, "converted": bool, "k": int, "sl_floor": number|null, "target": number|null}`.
+- `params.runner: {"enable": bool, "a": bool, "ny": bool, "c5g": bool, "keep_pct": n, "step": n, "max_steps": n, "safety_tp": n}`.
+- `remote.effective` / the remote diff include the eight runner keys like the others.
+
+### 11.5 Agent / app (dobby_agent.py 1.2.1, DobbyApp 1.2.2)
+- REMOTE_PARAMS += the eight runner keys with the 4.2 bounds and `cap_reset` "token" (integer unix seconds within 48 h
+  of now).
+- Compatibility: when the EA status reports `ea_version < 3.05` (or there is no status) the agent DROPS the v3.05 keys
+  from the remote file (logs "dropped for EA <ver>") instead of rejecting the whole desired set, so friends still on
+  v3.04 keep working while the website already knows the keys. The website's "ต้องอัปเดต EA เป็น v3.05" callout is where
+  the user learns why a runner setting never reached a v3.04 bot.
+- The app installs `Dobby3_v305.ex5` + `Dobby3_v305_web.set` the way it installs the v304 pair today (the .set = the
+  v304 web preset + the eight runner inputs at their defaults, runner OFF).
+
+### 11.6 Website
+- `params.js`: group `runner` ("โหมด runner (ปล่อยให้วิ่งหลัง TP)", hint "ค่าที่ทดสอบ: เก็บ 75 % / ก้าว 0.5 / ไม่จำกัด") with the eight
+  keys (Thai labels, defaults, ranges, remote); `validatePreset` warns when `InpRunnerEnable` is on ("ทดสอบในคอมแล้ว
+  ยังไม่ผ่าน Strategy Tester กำไรเพิ่มมาจากไม้ส่วนน้อยที่วิ่งไกล"). `COMMANDS` = the one-shot commands (`cap_reset`, int,
+  within 48 h): never preset rows, never in a .set, dropped by `normalizeParams`; `DESIRED_KEYS = REMOTE_KEYS +
+  COMMAND_KEYS` is the allow-list of desired.params; `validateCommand` holds the bounds. `liveValuesFromStatus` reads
+  `params.runner` (schema 6) and `remote.effective`. The chat Edge Function gets the same table and the commands through
+  `tools/sync_chat_params.mjs`.
+- `toDesiredParams(v, {eaVersion})` strips the eight runner keys unless the bot reports `ea_version >= 3.05` (every sender:
+  ตั้งค่าบอท, พรีเซ็ต "ส่งค่าไปที่บอท", the deposit and round capital fixes), so an app still on 1.2.0 never meets a key it
+  does not know.
+- ตั้งค่าบอท: the section "โหมด runner (ปล่อยให้วิ่งหลัง TP)" (master toggle with the "ทดลอง" chip, the three module ticks,
+  a plain-Thai explainer, the warning callout while the switch is on, the four numbers collapsed under "ค่าขั้นสูง") is
+  shown only when the bot reports `ea_version >= 3.05`; otherwise a callout "ต้องอัปเดต EA เป็น v3.05 และแอป Dobby 1.2.2
+  ก่อน" with the downloads link (and the note that the app drops runner keys for an older EA). Saving uses the normal
+  path (patchDesired, versioned, the EA applies when flat, the usual "รอบอทรับ" progress). The change list has
+  "โหมด runner" and "ค่าของ runner"; the summary rows show "โหมด runner" when it is on. The install texts say
+  Dobby3_v305 / Dobby3_v305_web.set.
+- ภาพรวม: when `status.virtual.day_cap_hit` is true, the banner "ถึงจุดหยุดรายวันแล้ว วันนี้ −X (−Y %) บอทหยุดเปิดไม้ใหม่
+  จนถึงวันถัดไป" (X = `virtual.day_pnl`, Y = day_pnl / `virtual.day_start`) with the button "รีเซ็ตจุดหยุดรายวัน". The
+  button works when ALL hold: the viewer owns the bot; there is a control row; the status reports `ea_version >= 3.05`;
+  the app is online (bots.last_seen < 60 s); the status is younger than 15 min (`heartbeat_gmt_unix`);
+  `remote.params_enabled` is true; the PC's `limits.allow_remote_params` is not false. Otherwise it is disabled with the
+  reason next to it. Click -> a plain-Thai confirm dialog (day start becomes the current virtual balance, P&L restarts
+  at 0, the bot may lose another InpDailyCapPct % today, the loss taken stays, the owner's decision) -> `patchDesired`
+  with `params = the current params (desired.params, else the bot's effective values) + cap_reset: token` -> the chip
+  "ส่งคำสั่งแล้ว รอบอทรับ" while the token sits in desired.params, until the status shows `cap_reset_applied >= token` or
+  `day_cap_hit === false` (toast "บอทรีเซ็ตจุดหยุดรายวันแล้ว"); after 3 minutes without an answer: "ยังไม่ได้รับ ตรวจว่าแอป
+  เปิดอยู่" and the button is usable again. The token is its own send time, so every device shows the same state.
+- Token hygiene: as soon as a token is done (applied, the cap cleared, or the 3-minute timeout) ภาพรวม patches
+  desired.params again WITHOUT `cap_reset` (every other value kept). `patchDesired` drops a `cap_reset` older than 3 min
+  from params on every other patch too (pause, blackouts, sides), and every settings save (ตั้งค่าบอท, พรีเซ็ต, capital
+  fixes, an AI proposal) replaces params without `cap_reset`; only the reset button passes `keepCommand`. So no stale
+  token can ever reach the agent's 48 h limit.
+- Position cards: `positions[].runner.converted` -> the chip "runner วิ่งอยู่" and the line "runner: ขยับแล้ว k ครั้ง, SL
+  กันกำไร <sl_floor>, เป้า <target>" (the broker TP is labelled "TP สำรอง"); `runner.on` without a conversion -> a small
+  "runner" chip. The details panel shows the bot's runner settings; the journal / trade page know RUN_ON, RUN_UP,
+  DAYCAP_RESET and the close reason RUN; the hero text of a capped v3.05 bot mentions the button; the guide has the
+  sections "โหมด runner คืออะไร" and "รีเซ็ตจุดหยุดรายวัน".
+- Demo mode: คอมหลัก is EA 3.05 / app 1.2.1 with the runner off (the switch can be tried; BotSim reports schema 6,
+  `params.runner`, `positions[].runner`, `cap_reset_applied` / `cap_resets_today`); คอมนก is EA 3.05 with the runner on
+  and an open C5G trade past its TP (k = 1: the converted card state); โน้ตบุ๊กบีม stays 3.04 (the update callout). The
+  simulated agent drops the v3.05 keys for an EA below 3.05, forwards `cap_reset` at once (applied when the cap is hit
+  today, else a DAYCAP_RESET IGNORED row). ภาพรวม of คอมหลัก has the demo-only button "ตัวอย่าง: จำลองวันที่ถึงจุดหยุด"
+  (one losing A_new trade that hits the cap) so the banner and the reset can be exercised end to end.
+- AI assistant: the settings reference lists the runner group and the command; proposals of runner keys need EA v3.05
+  and warn about the simulation-only evidence; a `cap_reset` proposal is accepted only as an integer unix time within
+  48 h for a v3.05 bot and the card points to the button on ภาพรวม (10.5).
+
+### 11.7 Compatibility with v3.04 bots
+Everything of schema 5 and of the v3.04 remote file is unchanged. A v3.04 bot keeps working with website, app and agent
+1.2.1: the website never sends it the runner keys or `cap_reset`, the agent drops them if they appear, the runner section
+is an update callout and the daily-cap button is disabled with "ต้องอัปเดต EA เป็น v3.05". Presets and .set files may
+carry the runner inputs (MT5 ignores unknown keys in a .set).

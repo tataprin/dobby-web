@@ -12,7 +12,7 @@ import { readBars } from '../pricechart.js';
 import { openChat } from '../chat.js';
 
 const HOUR = 3600000, MIN = 60000;
-const TIMELINE = new Set(['SIGNAL', 'ARM', 'ORDER', 'OPEN', 'NEAR1', 'NEARTP', 'LOCK1', 'LOCK', 'SHADOWLOCK1', 'SHADOWLOCK', 'CLOSE', 'CANCEL', 'ERROR', 'SKIP']);
+const TIMELINE = new Set(['SIGNAL', 'ARM', 'ORDER', 'OPEN', 'NEAR1', 'NEARTP', 'LOCK1', 'LOCK', 'SHADOWLOCK1', 'SHADOWLOCK', 'RUN_ON', 'RUN_UP', 'CLOSE', 'CANCEL', 'ERROR', 'SKIP']);
 const srv = (wall) => wallString(wall, '-', true).replace(' ', 'T');
 
 export async function render(root, ctx) {

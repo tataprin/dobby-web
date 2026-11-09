@@ -4,7 +4,7 @@
   * app data folder (%APPDATA%\\DobbyApp) and its config (same agent_config.json format as the CLI agent)
   * MT5 detection (%APPDATA%\\MetaQuotes\\Terminal\\<id>\\origin.txt) and the EA common folder
   * EA install from the private Storage bucket `downloads` into <data>\\MQL5\\Experts\\Dobby, and the generic preset
-    Dobby3_v304_web.set written by the app (SPEC 7.4) into <data>\\MQL5\\Presets
+    Dobby3_v305_web.set written by the app (SPEC 7.4) into <data>\\MQL5\\Presets
   * bot catalog and the simple settings model (SPEC 7.1-7.3): auto from balance, Thai summary, risk estimate (5.1)
   * "open MT5 with Dobby": a startup ini (/config:) - only after the user confirms, only when that MT5 is closed
     and no chart of it already runs a Dobby EA
@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - python 2
 import dobby_agent as da
 
 APP_NAME = "Dobby App"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 DEFAULT_URL = "https://rpzuzhefviydjmeggvvz.supabase.co"
 DEFAULT_KEY = "sb_publishable_208tCs0INvDHYohhl5_DGQ_ezVQkJst"   # publishable key: public by design (RLS protects data)
 WEB_URL = "https://tataprin.github.io/dobby-web/"
@@ -51,8 +51,8 @@ APP_LOCK_NAME = "app.lock"
 LAUNCHER_NAME = "DobbyApp-autostart.cmd"
 LAUNCHER_MARK = "Dobby App autostart"
 EA_ONLINE_S = da.OFFLINE_AFTER_S          # heartbeat younger than this = the EA is running
-EA_CHART_NAME = "Dobby3_v304"
-WEB_PRESET_NAME = "Dobby3_v304_web.set"     # SPEC 7.4: the generic preset every friend loads (written by the app)
+EA_CHART_NAME = "Dobby3_v305"
+WEB_PRESET_NAME = "Dobby3_v305_web.set"     # SPEC 7.4: the generic preset every friend loads (written by the app)
 STARTUP_INI_NAME = "mt5_startup.ini"        # in the app data folder: MT5 /config: file for "open MT5 with Dobby"
 TERMINAL_EXE = "terminal64.exe"
 
@@ -1193,8 +1193,8 @@ def catalog_entry(kind="dobby"):
 # Simple bot settings (SPEC 7.2 / 7.3): what a friend sees instead of EA input names
 # ---------------------------------------------------------------------------------------------------------------------
 LOT_MIN, LOT_MAX = 0.01, 0.50
-PRESET_MAX_LOTS = 0.50       # InpRemoteMaxLots of Dobby3_v304_web.set: the EA ceiling for every remote lot
-PRESET_MAX_CAP = 10.0        # InpRemoteMaxCapPct of Dobby3_v304_web.set
+PRESET_MAX_LOTS = 0.50       # InpRemoteMaxLots of Dobby3_v305_web.set: the EA ceiling for every remote lot
+PRESET_MAX_CAP = 10.0        # InpRemoteMaxCapPct of Dobby3_v305_web.set
 WEB_PRESET_BALANCE = 300.0   # the generic preset carries the 7.3 values for a 300 USD account
 # (simple key, name shown, EA use key, EA lot key)
 MODULES = [("a", "A_new", "InpUseA", "InpLotsA"), ("ny", "NY", "InpUseNY", "InpLotsNY"),
@@ -1334,7 +1334,8 @@ def _sane_locks(s):
 
 
 def settings_to_params(s):
-    """Simple settings -> the FULL remote key set (SPEC 4.2 allow-list, in its order) for desired.params."""
+    """Simple settings -> the full v3.04 remote key set (SPEC 4.2 allow-list, in its order) for desired.params.
+    The v3.05 runner keys and the cap_reset command are the website's (SPEC 11): the app never sends them."""
     lots = settings_lots(s)
     at, to, a1, t1 = _sane_locks(s)
     stages = int(_num(s.get("lock_stages"), 0))
@@ -1357,7 +1358,7 @@ def settings_to_params(s):
         "InpLockShadow": True, "InpLock1Enable": stages >= 2,
         "InpLockAtPct": at, "InpLockToPct": to, "InpLock1AtPct": a1, "InpLock1ToPct": t1,
     }
-    return dict((k, v[k]) for k in da.REMOTE_KEYS)
+    return dict((k, v[k]) for k in da.REMOTE_KEYS if k not in da.V305_KEYS)
 
 
 def params_to_settings(p):
@@ -1625,7 +1626,7 @@ def risk_estimate(balance, lot, cap_pct=10.0):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# EA inputs (Dobby3_v304.mq5 input block, in order) and the generic preset Dobby3_v304_web.set (SPEC 7.4)
+# EA inputs (Dobby3_v305.mq5 input block, in order) and the generic preset Dobby3_v305_web.set (SPEC 7.4)
 # ---------------------------------------------------------------------------------------------------------------------
 EA_INPUTS = [
     ("InpUseA", "bool", True), ("InpUseNY", "bool", True), ("InpUseC5G", "bool", True),
@@ -1657,13 +1658,19 @@ EA_INPUTS = [
     ("InpRemoteParams", "bool", False), ("InpRemoteLive", "bool", False), ("InpRemoteMaxLots", "double", 0.10),
     ("InpRemoteMaxCapPct", "double", 10.0), ("InpRemoteFile", "string", "Dobby\\dobby3_remote.txt"),
     ("InpRemoteTesterFrom", "datetime", 0),
+    # group "v3.05 runner (web)" (contract 2026-11-10 §1): OFF by default = v3.04 behaviour trade for trade
+    ("InpRunnerEnable", "bool", False), ("InpRunner_A", "bool", True), ("InpRunner_NY", "bool", True),
+    ("InpRunner_C5G", "bool", True), ("InpRunnerKeepPct", "double", 75.0), ("InpRunnerStep", "double", 0.5),
+    ("InpRunnerMaxSteps", "int", 0), ("InpRunnerSafetyTP", "double", 4.0),
 ]
 EA_INPUT_KIND = dict((k, t) for k, t, _ in EA_INPUTS)
+RUNNER_DEFAULTS = dict((k, d) for k, _, d in EA_INPUTS if k in da.V305_KEYS)   # the eight runner inputs
 WEB_PRESET_COMMENTS = [
-    "Dobby3 v3.04 web preset (Dobby3_v304_web.set), written by Dobby App: the same file for every friend.",
+    "Dobby3 v3.05 web preset (Dobby3_v305_web.set), written by Dobby App: the same file for every friend.",
     "= EA defaults + the auto settings for a 300 USD account (0.03 lot each, locks 85->83 / 95->93, ASIA16 off).",
-    "Remote ON: the Dobby website sets lots, balance and locks (InpRemoteParams=true, ceilings 0.50 lot / 10% cap)",
-    "and switches live trading (InpRemoteLive=true). InpAllowLive=false: no live trade until the app sends live=1.",
+    "Remote ON: the Dobby website sets lots, balance, locks and the runner (InpRemoteParams=true, ceilings 0.50 lot /",
+    "10% cap) and switches live trading (InpRemoteLive=true). InpAllowLive=false: no live trade until live=1 arrives.",
+    "Runner mode OFF (InpRunnerEnable=false) = v3.04 behaviour; the website switches it on per bot.",
 ]
 
 
@@ -1737,7 +1744,7 @@ def preset_target(data_dir):
 
 
 def install_web_preset(data_dir):
-    """Write Dobby3_v304_web.set into <data>\\MQL5\\Presets (our own file: replaced when different)."""
+    """Write Dobby3_v305_web.set into <data>\\MQL5\\Presets (our own file: replaced when different)."""
     target = preset_target(data_dir)
     res = install_file(target, web_preset_bytes(), overwrite=True)
     LOG.info("preset written: %s (%s)", WEB_PRESET_NAME, res)
@@ -2366,6 +2373,7 @@ class DemoServer(object):
         }
         self.files = [("Dobby3_v303.ex5", 181248, "2026-11-03T06:00:00Z"),
                       ("Dobby3_v304.ex5", 186368, "2026-11-07T06:00:00Z"),
+                      ("Dobby3_v305.ex5", 191488, "2026-11-10T06:00:00Z"),
                       ("Dobby3_usd280_0.03each.set", 9812, "2026-11-05T06:00:00Z"),
                       ("DobbyApp.exe", 11534336, "2026-11-07T09:00:00Z")]
         self.registered = []        # register_bot bodies
@@ -2595,8 +2603,9 @@ def build_demo_appdata(base, with_common=False):
 
 
 class DemoEA(object):
-    """A fake Dobby3 v3.04 in a TEMP common folder: writes dobby2_status.json + a short journal like a running EA, and
-    reads dobby3_remote.txt like the real one (InpRemoteParams / InpRemoteLive on: live and the web settings)."""
+    """A fake Dobby3 v3.05 in a TEMP common folder: writes dobby2_status.json (schema 6) + a short journal like a
+    running EA, and reads dobby3_remote.txt like the real one (InpRemoteParams / InpRemoteLive on: live, the web
+    settings incl. the runner keys, and the one-shot `cap_reset` token)."""
 
     def __init__(self, common, offset_min=120, clock=time.time, balance=1000.0):
         self.common = common
@@ -2612,10 +2621,15 @@ class DemoEA(object):
         self.position = True
         self.paused = None
         self.effective = settings_to_params(auto_settings(WEB_PRESET_BALANCE))
+        self.effective.update(RUNNER_DEFAULTS)
         self.live = False
         self.remote_version = 0
         self._remote_mtime = None
         self._journal_add = []
+        self.day_cap_hit = False            # contract §3: a cap_reset token is applied only while the cap is hit
+        self.cap_reset_seen = 0             # last token seen (applied or ignored), like Dobby3_capreset_<magic>
+        self.cap_reset_applied = 0
+        self.cap_resets_today = 0
 
     def _read_remote(self):
         p = os.path.join(self.common, da.REMOTE_NAME)
@@ -2638,6 +2652,17 @@ class DemoEA(object):
                 if self.live != (v == "1"):
                     self._journal_add.append(("REMOTE", "LIVE %s v%d" % ("on" if v == "1" else "off", ver)))
                 self.live = v == "1"
+            elif k == "cap_reset":
+                tok = int(da.to_num(v) or 0)
+                if tok > self.cap_reset_seen:
+                    self.cap_reset_seen = tok
+                    if self.day_cap_hit:
+                        self.day_cap_hit = False
+                        self.cap_reset_applied = tok
+                        self.cap_resets_today += 1
+                        self._journal_add.append(("DAYCAP_RESET", "day P&L -> 0.00, token %d" % tok))
+                    else:
+                        self._journal_add.append(("DAYCAP_RESET", "IGNORED: cap not hit, token %d" % tok))
             elif k in self.effective:
                 kind = da.REMOTE_SPEC[k][0]
                 val = (v == "true") if kind == "bool" else (int(float(v)) if kind == "int" else float(v))
@@ -2656,27 +2681,34 @@ class DemoEA(object):
         e = self.effective
         lots = e["InpLotsC5G"]
         opened = da.epoch_to_naive((int(now + self.offset_min * 60) // 900) * 900 - 9 * 900)
+        runner = {"on": bool(e["InpRunnerEnable"] and e["InpRunner_C5G"]), "converted": False, "k": 0,
+                  "sl_floor": None, "target": None}
         pos = {"open": True, "module": "C5G", "ticket": 4123, "side": "BUY", "lots": lots, "open_price": 4012.30,
                "sl": 4005.90, "tp": 4021.90, "profit": round(self.profit, 2), "swap": 0.0,
-               "open_time": opened.strftime("%Y.%m.%d %H:%M:%S")} if self.position else {"open": False,
-                                                                                            "module": "C5G"}
+               "open_time": opened.strftime("%Y.%m.%d %H:%M:%S"), "runner": runner} if self.position else {
+            "open": False, "module": "C5G"}
         locked = (not self.live) if self.live_locked is None else self.live_locked
         mods = [{"module": name, "enabled": bool(e[use_k]), "lots": e[lot_k]} for _, name, use_k, lot_k in MODULES]
         return {
-            "schema_version": 5, "ea": "Dobby3", "ea_version": "3.04", "tag": "A_new+NY+C5G", "symbol": "XAUUSD",
+            "schema_version": 6, "ea": "Dobby3", "ea_version": "3.05", "tag": "A_new+NY+C5G", "symbol": "XAUUSD",
             "server_time": server, "heartbeat_gmt_unix": int(now),
             "account": {"mode": "REAL", "currency": "USD", "balance": self.balance,
                         "equity": round(self.balance + self.profit, 2), "connected": True,
                         "trade_permitted": self.trade_permitted},
             "virtual": {"start": e["InpVirtualStart"], "balance": round(e["InpVirtualStart"] + 32.4, 2), "day": day,
-                        "day_start": e["InpVirtualStart"], "day_pnl": 12.4, "day_cap_hit": False, "trades": 12,
-                        "wins": 7, "losses": 5},
+                        "day_start": e["InpVirtualStart"], "day_pnl": 12.4, "day_cap_hit": self.day_cap_hit,
+                        "trades": 12, "wins": 7, "losses": 5, "cap_reset_applied": self.cap_reset_applied,
+                        "cap_resets_today": self.cap_resets_today},
             "modules": mods,
             "positions": [{"open": False, "module": "A_new"}, {"open": False, "module": "NY"}, pos],
             "position": pos,
             "control": {"file_exists": True, "mode": self.paused or "run", "lots": lots, "id": "W001"},
             "flags": {"live_locked": locked, "allow_live_input": False},
-            "params": {"daily_cap_pct": e["InpDailyCapPct"], "lots_input": e["InpLotsA"], "max_lots": e["InpMaxLots"]},
+            "params": {"daily_cap_pct": e["InpDailyCapPct"], "lots_input": e["InpLotsA"], "max_lots": e["InpMaxLots"],
+                       "runner": {"enable": bool(e["InpRunnerEnable"]), "a": bool(e["InpRunner_A"]),
+                                  "ny": bool(e["InpRunner_NY"]), "c5g": bool(e["InpRunner_C5G"]),
+                                  "keep_pct": e["InpRunnerKeepPct"], "step": e["InpRunnerStep"],
+                                  "max_steps": e["InpRunnerMaxSteps"], "safety_tp": e["InpRunnerSafetyTP"]}},
             "remote": {"params_enabled": True, "live_enabled": True,
                        "file_exists": os.path.exists(os.path.join(self.common, da.REMOTE_NAME)),
                        "version": self.remote_version, "applied_version": self.remote_version, "pending": False,
@@ -2696,7 +2728,7 @@ class DemoEA(object):
         if not os.path.exists(jp):
             with open(jp, "w", encoding="utf-8", newline="") as f:
                 f.write(da.JOURNAL_HEADER + "\r\n")
-                f.write("%s 00:05:00,START,ALL,NONE,0.00,,,,0.00,1032.40,0,v3.04 demo\r\n" % day)
+                f.write("%s 00:05:00,START,ALL,NONE,0.00,,,,0.00,1032.40,0,v3.05 demo\r\n" % day)
                 f.write("%s 08:15:00,OPEN,A_new,SELL,0.03,4019.10,4025.10,4010.10,0.00,1032.40,0,demo\r\n" % day)
                 f.write("%s 08:58:00,LOCK1,A_new,SELL,0.03,4011.40,4011.45,4010.10,0.00,1032.40,0,stage-1 85->83\r\n"
                         % day)

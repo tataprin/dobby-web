@@ -498,9 +498,9 @@ export async function render(root, ctx) {
 
 function evTone(e) {
   if (e === 'CLOSE' || e === 'OPEN') return 'trade';
-  if (e.startsWith('LOCK') || e.startsWith('NEAR') || e.startsWith('SHADOW')) return 'lock';
+  if (e.startsWith('LOCK') || e.startsWith('NEAR') || e.startsWith('SHADOW') || e.startsWith('RUN_')) return 'lock';
   if (e === 'ERROR' || e === 'DAYCAP') return 'bad';
-  if (e === 'CONTROL' || e === 'REMOTE' || e === 'START' || e === 'STOP') return 'sys';
+  if (e === 'CONTROL' || e === 'REMOTE' || e === 'START' || e === 'STOP' || e === 'DAYCAP_RESET') return 'sys';
   return 'other';
 }
 

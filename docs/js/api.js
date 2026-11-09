@@ -36,7 +36,7 @@
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { createDemoDb, DEMO_OFFSET_MIN } from './demo.js';
 import { sleep, utcToServer } from './util.js';
-import { normalizeParams, remoteSubset, REMOTE_KEYS, formatValue, PARAM_BY_KEY } from './params.js';
+import { normalizeParams, remoteSubset, REMOTE_KEYS, RUNNER_KEYS, COMMAND_KEYS, formatValue, PARAM_BY_KEY, runnerSupported, validateCommand } from './params.js';
 
 export const SUPABASE_CDN = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm';
 
@@ -642,6 +642,16 @@ export class DemoApi {
   async listBots() { await this.wait(); this.approvedOrThrow(); if (this.noBots) return []; return clone(this.db.bots.filter((b) => b.owner === this.uidCur)); }
   // Demo only: show the "no bot yet" state (reachable from the guide); the demo bots come back with on = false.
   setDemoNoBots(on) { this.noBots = !!on; }
+  // Demo only (SPEC 11): the owner's bot loses one more trade and hits today's daily cap, so ภาพรวม shows the banner and
+  // "รีเซ็ตจุดหยุดรายวัน" can be tried end to end (the reset itself goes through updateDesired like on a real bot).
+  async demoHitCap(botId) {
+    await this.wait(200);
+    this.ownBot(botId, true);
+    const sim = this.db.sims[botId];
+    if (!sim) throw new ApiError('not_found');
+    for (const r of sim.forceCapHit(Date.now())) this.emit(botId, 'journal', r);
+    this.emit(botId, 'status', this.statusRow(botId));
+  }
   // the admin reads every bot (like the RLS SELECT policies); everyone else reads their own
   async adminBots() { await this.wait(); if (!this.isAdmin()) throw new ApiError('admin_only'); return clone(this.db.bots.filter((b) => b.owner !== this.uidCur)); }
   statusRow(botId) {
@@ -772,13 +782,26 @@ export class DemoApi {
       if (!lim.allow_remote_params) rejected.push('params_not_allowed_locally');
       else if (!sim.remote) rejected.push('params_need_ea_v304');
       else {
-        const next = normalizeParams({ ...P, ...d.params });
-        const unknown = Object.keys(d.params).filter((k) => !REMOTE_KEYS.includes(k));
+        // agent 1.2.1 (SPEC 11 §5): the v3.05 keys and cap_reset are DROPPED for an EA below 3.05 instead of failing the set
+        const params = { ...d.params };
+        if (!runnerSupported(sim.cfg.ea)) for (const k of [...RUNNER_KEYS, ...COMMAND_KEYS]) delete params[k];
+        // the one-shot command travels with the params but is not a parameter: the EA evaluates it at once (not when flat)
+        const capToken = params.cap_reset;
+        delete params.cap_reset;
+        const next = normalizeParams({ ...P, ...params });
+        const unknown = Object.keys(params).filter((k) => !REMOTE_KEYS.includes(k));
         const overLots = ['InpLotsA', 'InpLotsNY', 'InpLotsC5G', 'InpMaxLots', 'InpLotsAsia'].some((k) => next[k] > lim.max_lots + 1e-9);
         if (unknown.length) rejected.push('params_unknown_key');
+        else if (capToken !== undefined && validateCommand('cap_reset', capToken, now)) rejected.push('params_out_of_bounds');
         else if (overLots) rejected.push('params_lots_over_limit');
         else if (next.InpDailyCapPct > lim.max_daily_cap_pct) rejected.push('params_cap_over_limit');
-        else this.remoteParams(botId, sim, row.version, next);
+        else {
+          this.remoteParams(botId, sim, row.version, next);
+          if (capToken !== undefined && P.InpRemoteParams) {
+            const r = sim.capResetCmd(capToken, now);
+            if (r) this.emit(botId, 'journal', r);
+          }
+        }
       }
     }
     bot.agent_state = {
@@ -792,6 +815,12 @@ export class DemoApi {
   remoteParams(botId, sim, version, next) {
     sim.remote.version = version;
     const changes = Object.keys(next).filter((k) => REMOTE_KEYS.includes(k) && next[k] !== sim.params[k]);
+    // nothing to change (e.g. a cap_reset token alone): the version is taken at once, no trade is touched
+    if (!changes.length) {
+      sim.remote.applied_version = version; sim.remote.pending = false; sim.remote.waiting = '';
+      this.emit(botId, 'status', this.statusRow(botId));
+      return;
+    }
     const apply = () => {
       const txt = changes.map((k) => `${k} ${formatValue(PARAM_BY_KEY[k], sim.params[k])}->${formatValue(PARAM_BY_KEY[k], next[k])}`).join(', ') || 'no change';
       // like the EA: a new InpVirtualStart recomputes the virtual balance; the account balance does not move

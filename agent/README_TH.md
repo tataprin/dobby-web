@@ -26,11 +26,11 @@ agent คือโปรแกรมเล็ก ๆ ที่รันบนเ
       3 สูตรเปิด, เอเชียปิด, ล็อก 2 ชั้น 85->83 / 95->93, หยุดเมื่อขาดทุน 10%/วัน พร้อมประมาณความเสี่ยง (SPEC 5.1)
       หรือเปิด **ปรับเอง**: เปิด/ปิดสูตร, ล็อตเท่ากัน/แยกสูตร, ไม่ล็อก/1 ชั้น/2 ชั้น, ขาดทุนต่อวัน, ขั้นสูง
    5. **เชื่อม MT5** - เลือก MT5, แอปดาวน์โหลด `Dobby3_v3*.ex5` ตัวใหม่สุดจาก bucket `downloads` ไป
-      `MQL5\Experts\Dobby\` และ **สร้าง** พรีเซ็ต `Dobby3_v304_web.set` (ค่าเริ่มต้นของ EA + ค่าอัตโนมัติของทุน 300 +
-      remote เปิด, InpAllowLive=false) ไป `MQL5\Presets\` แล้วเลือก
+      `MQL5\Experts\Dobby\` และ **สร้าง** พรีเซ็ต `Dobby3_v305_web.set` (ค่าเริ่มต้นของ EA + ค่าอัตโนมัติของทุน 300 +
+      remote เปิด, InpAllowLive=false, runner ปิด) ไป `MQL5\Presets\` แล้วเลือก
       - **เปิด MT5 พร้อม Dobby ให้อัตโนมัติ** (แนะนำ): ใช้ได้เมื่อ MT5 ตัวนั้น**ปิดอยู่** และ**ไม่มีกราฟไหน** (ทุกโปรไฟล์ใน
         `MQL5\Profiles\Charts`) ที่มี Dobby อยู่แล้ว และไม่มี Dobby ตัวอื่นส่งสัญญาณอยู่ แอปเขียน
-        `%APPDATA%\DobbyApp\mt5_startup.ini` (Expert=Dobby\<ชื่อ ex5>, ExpertParameters=Dobby3_v304_web.set,
+        `%APPDATA%\DobbyApp\mt5_startup.ini` (Expert=Dobby\<ชื่อ ex5>, ExpertParameters=Dobby3_v305_web.set,
         Symbol=XAUUSD หรือชื่อตามโบรก, Period=M15, [Experts] Enabled=1, AllowLiveTrading=1) บอกว่าจะทำอะไรแล้ว**ถามก่อน**
         จึงเปิด `"<ที่ติดตั้ง>	erminal64.exe" /config:"<ini>"`
       - **ทำเองใน MT5**: 6 ขั้นตอนพร้อมภาพประกอบ (Navigator > Refresh, ลากใส่กราฟ XAUUSD M15, Load พรีเซ็ต,
@@ -66,6 +66,20 @@ dist\DobbyApp.exe --selftest out.png --data-dir %TEMP%\dobby_selftest      ต�
 ไฟล์: `dobby_app.py` (หน้าจอ Tkinter + selftest), `dobby_app_ui.py` (ธีมและวิดเจ็ต), `dobby_app_gfx.py` (วาดมุมโค้ง/ไอคอน
 เป็น PNG ไม่ต้องใช้ Pillow), `dobby_app_core.py` (ส่วนที่ไม่ใช่หน้าจอ: โฟลเดอร์ MT5, Storage, ติดตั้ง EA, พรีเซ็ต,
 เปิด MT5 พร้อม Dobby, การตั้งค่าแบบง่าย, agent ใน thread, ข้อมูลปลอมสำหรับ demo/selftest), `build_exe.bat`
+
+### 1.2.2 / EA v3.05 (agent 1.2.1) - โหมด runner และรีเซ็ตจุดหยุดรายวัน
+- รายการคีย์ที่เว็บส่งให้ EA ได้ (SPEC 4.2) เพิ่ม 8 คีย์ของ runner ต่อจากคีย์ล็อก: `InpRunnerEnable`, `InpRunner_A`,
+  `InpRunner_NY`, `InpRunner_C5G` (true/false), `InpRunnerKeepPct` 50-99, `InpRunnerStep` 0.1-2.0, `InpRunnerMaxSteps`
+  0-50 (จำนวนเต็ม), `InpRunnerSafetyTP` 0-10 ตรวจขอบเขตเหมือนคีย์อื่น (ชุดที่มีค่าผิดถูกปฏิเสธทั้งชุด)
+- คำสั่ง `cap_reset` (รีเซ็ตจุดหยุดรายวัน ไม่ใช่ input ของ EA): ค่าเป็นเลขวินาที unix (ตัวเลขหรือสตริงตัวเลข, จำนวนเต็ม)
+  ต้องห่างจากเวลาปัจจุบันของเครื่องไม่เกิน 48 ชั่วโมง ไม่งั้นถูกปฏิเสธ agent เขียนเป็นบรรทัด **สุดท้าย** ของ
+  `dobby3_remote.txt` ว่า `cap_reset=<เลข>` และ token ใหม่ = เนื้อหาไฟล์เปลี่ยน -> เขียนไฟล์ใหม่พร้อม version ใหม่ให้ EA อ่าน
+- EA เก่ากว่า 3.05 (ดูจาก `ea_version` ในสถานะ หรือยังไม่เคยอ่านสถานะ): agent **ตัด** 9 คีย์นี้ออกจากไฟล์ (ไม่ปฏิเสธชุดคำสั่ง
+  ที่เหลือ) และบันทึกใน `agent_decisions.log` ครั้งเดียวต่อการเปลี่ยน `dropped v3.05 keys for EA 3.04: ...`
+  พออัปเดต EA เป็น 3.05 คีย์จะกลับมาในไฟล์เอง
+- แอป 1.2.2 ติดตั้ง `Dobby3_v305.ex5` (ตัวใหม่สุดใน bucket `downloads` ต้องอัปโหลดไฟล์นี้ขึ้น bucket ก่อน) และสร้าง
+  `Dobby3_v305_web.set` = พรีเซ็ต v304 + 8 input ของ runner ที่ค่าเริ่มต้น (runner ปิด = พฤติกรรม v3.04 เหมือนเดิม)
+  การตั้งค่าแบบง่ายในแอปไม่ส่งคีย์ runner (ตั้งบนเว็บ)
 
 ## ติดตั้ง (ครั้งเดียว)
 1. ติดตั้ง Python 3.8 ขึ้นไปจาก https://www.python.org/downloads/ (ติ๊ก **Add python.exe to PATH**)
@@ -143,7 +157,8 @@ python dobby_agent.py rename --name "คอมหลัก"
 pip install pytest
 python -m pytest -q
 ```
-ทุกเทสต์ทำงานแบบออฟไลน์ ใช้โฟลเดอร์ชั่วคราว ไม่แตะโฟลเดอร์ Common จริงของ EA (95 เทสต์: agent 74 + แอป 21)
+ทุกเทสต์ทำงานแบบออฟไลน์ ใช้โฟลเดอร์ชั่วคราว ไม่แตะโฟลเดอร์ Common จริงของ EA (298 เทสต์ ณ 1.2.2; อีก 2 เทสต์ข้ามเมื่อไม่มี
+`D:\Dobby\mt5\Dobby3_v305.mq5` / `presets\Dobby3_v305_web.set` ในเครื่อง: เทียบลำดับ input ของ EA และพรีเซ็ตที่แอปสร้างกับไฟล์จริง)
 
 ---
 

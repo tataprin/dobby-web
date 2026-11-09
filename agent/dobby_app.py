@@ -3336,13 +3336,13 @@ def run_selftest(out_png, data_dir):
         check("step 5 reached", wiz.index == STEP_MT5)
         pump(until=lambda: not mp.busy, timeout=20)
         d1 = ui.cfg["app"]["mt5_data_dir"]
-        ex5 = os.path.join(d1, "MQL5", "Experts", "Dobby", "Dobby3_v304.ex5")
+        ex5 = os.path.join(d1, "MQL5", "Experts", "Dobby", "Dobby3_v305.ex5")
         setf = core.preset_target(d1)
-        check("newest EA Dobby3_v304.ex5 (not v303) downloaded into MQL5\\Experts\\Dobby", os.path.isfile(ex5) and
-              not os.path.exists(os.path.join(d1, "MQL5", "Experts", "Dobby", "Dobby3_v303.ex5")))
+        check("newest EA Dobby3_v305.ex5 (not v304) downloaded into MQL5\\Experts\\Dobby", os.path.isfile(ex5) and
+              not os.path.exists(os.path.join(d1, "MQL5", "Experts", "Dobby", "Dobby3_v304.ex5")))
         data = open(setf, "rb").read() if os.path.isfile(setf) else b""
         keys = [k for k, _ in core.parse_set(data)]
-        check("Dobby3_v304_web.set: UTF-16LE BOM, every EA input exactly once",
+        check("Dobby3_v305_web.set: UTF-16LE BOM, every EA input exactly once",
               data[:2] == b"\xff\xfe" and keys == [k for k, _, _ in core.EA_INPUTS], "%d keys" % len(keys))
         procs[:] = [{"pid": 4242, "path": os.path.join(core.mt5_install_dir(d1), core.TERMINAL_EXE)}]
         mp.check_auto()
@@ -3367,8 +3367,8 @@ def run_selftest(out_png, data_dir):
         exe = os.path.join(core.mt5_install_dir(d1), core.TERMINAL_EXE)
         check("fake launcher got  \"terminal64.exe\" /config:\"<ini>\"",
               launched == [('"%s" /config:"%s"' % (exe, ini_path), core.mt5_install_dir(d1))], str(launched)[:120])
-        check("startup ini: Dobby\\Dobby3_v304 + Dobby3_v304_web.set + XAUUSD M15 + Algo Trading on",
-              ini == core.startup_ini_text("Dobby\\Dobby3_v304", core.WEB_PRESET_NAME, "XAUUSD"))
+        check("startup ini: Dobby\\Dobby3_v305 + Dobby3_v305_web.set + XAUUSD M15 + Algo Trading on",
+              ini == core.startup_ini_text("Dobby\\Dobby3_v305", core.WEB_PRESET_NAME, "XAUUSD"))
         check("the fake terminal64.exe lives in the temp folder", exe.startswith(data_dir))
         scroll_to(mp.auto_card)
         shot("wizard_mt5_launched")
@@ -3413,7 +3413,8 @@ def run_selftest(out_png, data_dir):
         check("register_bot once: live on, run, both sides, no blackouts",
               len(reg) == 1 and des.get("live") is True and des.get("control") == {
                   "mode": "run", "allow_long": True, "allow_short": True} and des.get("blackouts") == [])
-        check("params = the full remote key set of the settings", list(params) == da.REMOTE_KEYS and
+        check("params = the full v3.04 remote key set of the settings (runner keys are the website's)",
+              list(params) == [k for k in da.REMOTE_KEYS if k not in da.V305_KEYS] and
               params["InpLotsA"] == 0.03 and params["InpVirtualStart"] == 300.0 and params["InpLock1Enable"] is True)
         check("params pass the agent's own check with the chosen limits",
               not da.check_params(params, da.get_limits(ui.cfg))[1])
