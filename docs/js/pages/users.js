@@ -6,7 +6,7 @@
 //   ผู้ใช้และรหัสเชิญ  admin_overview, invites (create with copy, list, revoke), set role / approve / disable.
 //   ผู้ช่วย AI       users-ai.js: on / off, limits, budget, model, this month's usage (SPEC 10.4).
 import { h, mount, icon, fmtNum, fmtSigned, fmtThai, ago, toast, errText, confirmDialog, errorState, loadingState, emptyState, field, busy,
-  copyText, callout, money, serverToUtc, thaiDayKey, toneOf } from '../util.js';
+  copyText, callout, money, serverToUtc, thaiDayKey, toneOf, onWake } from '../util.js';
 import { app, selectBot } from '../state.js';
 import { renderAi } from './users-ai.js';
 import { panel, pageHead, modChip, sideEl } from '../views.js';
@@ -174,8 +174,10 @@ async function renderBots(root, ctx) {
   }
 
   draw();
-  const tick = setInterval(async () => { try { await load(); if (box.isConnected) draw(); } catch { /* keep the last data */ } }, 30000);
-  return () => clearInterval(tick);
+  const reload = async () => { try { await load(); if (box.isConnected) draw(); } catch { /* keep the last data */ } };
+  const tick = setInterval(reload, 30000);
+  const offWake = onWake(reload); // a phone froze the page: every "online" on it is old
+  return () => { clearInterval(tick); offWake(); };
 }
 
 // ------------------------------------------------------------------ ผู้ใช้และรหัสเชิญ

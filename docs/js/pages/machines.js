@@ -1,6 +1,6 @@
 // เครื่องของฉัน: one card per bot (status, last seen, EA version, rename, delete from the website, set as default).
 // bots.name update and bots delete are allowed to the owner by RLS (delete cascades bot_status/journal/bot_control).
-import { h, mount, icon, fmtNum, fmtThai, ago, money, toast, errText, openModal, errorState, loadingState, field, busy, callout, newId } from '../util.js';
+import { h, mount, icon, fmtNum, fmtThai, ago, money, toast, errText, openModal, errorState, loadingState, field, busy, callout, newId, onWake } from '../util.js';
 import { app, loadBots, selectBot, updateBotRow, defaultBotId, setDefaultBot } from '../state.js';
 import { onlineInfo, normDesired } from '../botctl.js';
 import { pageHead, noBotState } from '../views.js';
@@ -135,8 +135,8 @@ export async function render(root, ctx) {
   draw();
   // live-ish: refresh the cards every 15 s (last seen, online state)
   const subs = app.bots.map((b) => ctx.api.subscribeBot(b.id, { bot: (row) => { updateBotRow(row); } }));
-  const tick = setInterval(async () => {
-    try { await loadAll(); draw(); } catch { /* keep */ }
-  }, 15000);
-  return () => { subs.forEach((u) => u()); clearInterval(tick); };
+  const reload = async () => { try { await loadAll(); draw(); } catch { /* keep */ } };
+  const tick = setInterval(reload, 15000);
+  const offWake = onWake(reload); // a phone froze the page: the cards' "online" is old, read again now
+  return () => { subs.forEach((u) => u()); clearInterval(tick); offWake(); };
 }

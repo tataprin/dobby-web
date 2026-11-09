@@ -2,7 +2,7 @@
 // buy/sell sides and news blackouts. Settings are sent as desired.params = the full set of SPEC 4.2 remote keys
 // (patchDesired: read-modify-write with the version check). EA v3.03 bots: read-only + .set download.
 import { h, mount, icon, fmtNum, fmtThai, toast, errText, confirmDialog, openModal, errorState, loadingState, field, busy, isoUtc,
-  utcToThaiInput, thaiInputToUtc, utcToServer, until, callout, newId, downloadBlob } from '../util.js';
+  utcToThaiInput, thaiInputToUtc, utcToServer, until, callout, newId, downloadBlob, onWake } from '../util.js';
 import { app, currentBot, updateBotRow, on, ownsBot } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, onlineBadge, pendingChip, rejectionsBlock, appliedVersion, isPending, applyProgress } from '../botctl.js';
 import { liveSwitch, appliedLive } from '../liveswitch.js';
@@ -895,26 +895,40 @@ export async function render(root, ctx) {
   editorBox.before(aiNote);
   if (!friend && ctx.query.get('ai') === '1') applyAiProposal();
 
-  const unsub = ctx.api.subscribeBot(bot.id, {
-    status: (row) => { if (!row || !row.status) return; st = row.status; resync(); drawHead(); drawNow(); drawLive(); },
-    control: (row) => { ctl = row; refreshAll(); },
-    bot: (row) => { bot = { ...bot, ...row }; updateBotRow(bot); resync(); drawHead(); drawNow(); drawLive(); drawPause(); auto.update(); },
-  });
-  const offCtl = on('control-updated', (row) => { if (row && row.bot_id === bot.id) { ctl = row; refreshAll(); } });
-  const tick = setInterval(() => { drawHead(); drawBlackouts(); auto.update(); }, 15000);
-  const poll = setInterval(async () => {
+  // fresh rows before the head badge can say "offline": a phone that froze the page, or a realtime socket that died
+  // quietly, leaves last_seen ageing with nothing new coming in (the same rule as ภาพรวม)
+  let lastSync = Date.now(), syncing = false;
+  const heard = (fn) => (row) => { lastSync = Date.now(); fn(row); };
+  async function reload() {
+    if (syncing) return;
+    syncing = true;
     try {
       const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), friend ? ctx.api.adminBots() : ctx.api.listBots()]);
       const b = bots.find((x) => x.id === bot.id);
       if (b) { bot = { ...bot, ...b }; updateBotRow(bot); }
       if (s) st = s.status;
       if (c) ctl = c;
+      lastSync = Date.now();
       refreshAll();
     } catch { /* keep the last data */ }
-  }, 30000);
+    syncing = false;
+  }
+  const unsub = ctx.api.subscribeBot(bot.id, {
+    status: heard((row) => { if (!row || !row.status) return; st = row.status; resync(); drawHead(); drawNow(); drawLive(); }),
+    control: heard((row) => { ctl = row; refreshAll(); }),
+    bot: heard((row) => { bot = { ...bot, ...row }; updateBotRow(bot); resync(); drawHead(); drawNow(); drawLive(); drawPause(); auto.update(); }),
+  });
+  const offCtl = on('control-updated', (row) => { if (row && row.bot_id === bot.id) { ctl = row; refreshAll(); } });
+  const tick = setInterval(() => {
+    if (document.hidden || syncing) return;
+    if (Date.now() - lastSync > 20000) { reload(); return; }
+    drawHead(); drawBlackouts(); auto.update();
+  }, 15000);
+  const poll = setInterval(reload, 30000);
+  const offWake = onWake(() => { if (Date.now() - lastSync > 5000) reload(); });
   // Unsent edits are kept as a session draft and restored on return (no "Leave site?" prompt).
   return () => {
-    unsub(); offCtl(); clearInterval(tick); clearInterval(poll);
+    unsub(); offCtl(); offWake(); clearInterval(tick); clearInterval(poll);
     window.removeEventListener('scroll', onScroll);
     document.body.classList.remove('has-action-bar');
   };

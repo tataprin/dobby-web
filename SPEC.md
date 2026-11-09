@@ -328,7 +328,9 @@ Pages (hash router):
    virtual, day P&L vs daily cap (progress bar), open positions (side, lots, entry, SL, TP, live P&L, % to TP / SL from
    status.market), module table, NY range/state, lock settings, last event/error; **Live switch** (on/off with the
    re-auth + 2FA modal for ON; shows agent rejections such as live_not_allowed_locally); Pause/Resume; quick
-   "blackout next 2 h". Realtime updates.
+   "blackout next 2 h". Realtime updates; the page reads the rows again when it heard nothing for 20 s or a phone
+   wakes it (a frozen page drops the socket and missed rows are not replayed), so it never calls a running bot
+   "offline" from an old last_seen. Bot settings, machines, users and the price ticker re-read on wake too.
 3. **History** — journal table (filters: date range, module, event), paired trades (OPEN -> CLOSE per module in time
    order), equity curve (v_balance of CLOSE rows), daily P&L calendar heatmap, per-module stats (trades, win rate, net,
    avg win/loss, profit factor, best/worst), CSV export.

@@ -390,3 +390,32 @@ export function debounce(fn, ms = 250) {
   let t;
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 }
+
+// A phone freezes a page left in the background: timers stop, the realtime socket drops without a word, and what
+// changed meanwhile is never replayed. onWake(fn) calls fn when the page comes back: shown again after at least
+// minHiddenMs hidden, restored from the back-forward cache, the network back, or a timer gap that says the page was
+// frozen (some home-screen apps resume without a visibilitychange). Returns the function that removes the listeners.
+export function onWake(fn, minHiddenMs = 3000) {
+  let hiddenAt = document.hidden ? Date.now() : 0, last = 0, beat = Date.now();
+  const fire = () => {
+    if (Date.now() - last < 1500) return; // one wake fires several of these at once
+    last = Date.now();
+    try { fn(); } catch (e) { console.error(e); }
+  };
+  const vis = () => {
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    const was = hiddenAt; hiddenAt = 0;
+    if (!was || Date.now() - was >= minHiddenMs) fire();
+  };
+  const show = (e) => { if (e.persisted) fire(); };
+  const gap = setInterval(() => { const n = Date.now(); if (n - beat > 20000 && !document.hidden) fire(); beat = n; }, 5000);
+  document.addEventListener('visibilitychange', vis);
+  window.addEventListener('pageshow', show);
+  window.addEventListener('online', fire);
+  return () => {
+    clearInterval(gap);
+    document.removeEventListener('visibilitychange', vis);
+    window.removeEventListener('pageshow', show);
+    window.removeEventListener('online', fire);
+  };
+}

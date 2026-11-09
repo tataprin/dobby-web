@@ -1,8 +1,8 @@
 // ภาพรวม: the hero (hallmark stamp + one-sentence status + today's P&L, then today's price line with Dobby's trades
 // stamped on it), the engraved numbers row, the open trade with an SL - entry - price - TP gauge, recent trades, then
-// details. Realtime + 30 s fallback poll (SPEC 5 page 2).
+// details. Realtime; read again after 20 s without news or when a phone wakes the page (SPEC 5 page 2).
 import { h, mount, icon, fmtNum, fmtSigned, fmtPct, pnl, fmtThai, timeEl, serverToUtc, parseWall, toast, errText, confirmDialog,
-  errorState, loadingState, isoUtc, toneOf, utcToServer, ago, debounce, thaiDayKey, money, duration } from '../util.js';
+  errorState, loadingState, isoUtc, toneOf, utcToServer, ago, debounce, thaiDayKey, money, duration, onWake } from '../util.js';
 import { app, currentBot, updateBotRow, on, ownsBot } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, rejectionsBlock, isPending, heroState } from '../botctl.js';
 import { modChip, sideEl, kv, panel, noBotState, onOff, pageHead } from '../views.js';
@@ -104,8 +104,8 @@ export async function render(root, ctx) {
     const chips = [
       (st && st.ea_version) || bot.ea_version ? h('span', { class: 'chip hide-sm' }, `EA ${(st && st.ea_version) || bot.ea_version}`) : null,
       st && st.account && st.account.mode ? h('span', { class: `chip ${st.account.mode === 'REAL' ? 'real' : ''}` }, st.account.mode === 'REAL' ? 'บัญชีจริง' : `บัญชี ${st.account.mode}`) : null,
-      h('span', { class: 'chip', title: rtState === 'SUBSCRIBED' ? 'รับข้อมูลแบบสด' : 'ดึงข้อมูลใหม่ทุก 30 วินาที' },
-        rtState === 'SUBSCRIBED' ? [h('span', { class: 'live-dot', 'aria-hidden': 'true' }), 'ข้อมูลสด'] : 'อัปเดตทุก 30 วินาที'),
+      h('span', { class: 'chip', title: rtState === 'SUBSCRIBED' ? 'รับข้อมูลแบบสด' : 'ดึงข้อมูลใหม่ทุก 20 วินาที' },
+        rtState === 'SUBSCRIBED' ? [h('span', { class: 'live-dot', 'aria-hidden': 'true' }), 'ข้อมูลสด'] : 'อัปเดตทุก 20 วินาที'),
     ];
     if (ro) chips.unshift(h('span', { class: 'chip live' }, icon('eye'), `ของ ${bot.owner_name || 'สมาชิก'}`));
     mount(headBox, pageHead('ภาพรวม', h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name), chips), null, 'dashboard'));
@@ -429,23 +429,47 @@ export async function render(root, ctx) {
     if (barsBefore !== barsNow) redrawChart();
   };
   const addRow = debounce(() => { drawRecent(); drawChart(false); drawRisk(); drawPositions(true); if (rounds.length) drawFigs(); }, 500);
+
+  // Fresh rows before any "offline" verdict. An online PC sends a status row every ~10 s and its bots row every
+  // 30 s, so 20 s without a word means the page does not know: a phone froze it, or the realtime socket died while it
+  // still says SUBSCRIBED, and the rows it missed are never replayed. Ask the database again instead of letting
+  // last_seen age into "offline" (the old poll ran only while realtime was not joined).
+  const STALE_MS = 20000;
+  let lastSync = Date.now(), lastTry = 0, syncing = null;
+  const heard = (fn) => (row) => { lastSync = Date.now(); fn(row); };
+  function resync() {
+    if (syncing) return syncing;
+    lastTry = Date.now();
+    syncing = (async () => {
+      try {
+        const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), ro ? ctx.api.adminBots() : ctx.api.listBots()]);
+        const b = bots.find((x) => x.id === bot.id);
+        if (b) onBot(b);
+        if (c) onControl(c);
+        if (s) onStatus(s);
+        lastSync = Date.now();
+      } catch { /* keep the last data; the next tick asks again */ }
+      syncing = null;
+      drawHero();
+    })();
+    return syncing;
+  }
   const unsub = ctx.api.subscribeBot(bot.id, {
-    status: onStatus, control: onControl, bot: onBot,
-    journal: (row) => { rows = prepareRows([...rows, row], off()); addRow(); },
-    state: (s) => { rtState = s; drawHead(); },
+    status: heard(onStatus), control: heard(onControl), bot: heard(onBot),
+    journal: heard((row) => { rows = prepareRows([...rows, row], off()); addRow(); }),
+    // joined again after a drop: what changed while it was down is not replayed
+    state: (s) => { const was = rtState; rtState = s; drawHead(); if (s === 'SUBSCRIBED' && was && was !== 'SUBSCRIBED') resync(); },
   });
   const offCtl = on('control-updated', (row) => { if (row && row.bot_id === bot.id) onControl(row); });
   const offTheme = on('theme', () => drawChart(false));
-  const ages = setInterval(() => drawHero(), 5000);
-  const poll = setInterval(async () => {
-    if (rtState === 'SUBSCRIBED') return;
-    try {
-      const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), ro ? ctx.api.adminBots() : ctx.api.listBots()]);
-      const b = bots.find((x) => x.id === bot.id);
-      if (b) onBot(b);
-      if (c) onControl(c);
-      if (s) onStatus(s);
-    } catch { /* keep the last data */ }
-  }, 30000);
-  return () => { unsub(); offCtl(); offTheme(); clearInterval(ages); clearInterval(poll); chart.destroy(); tvBox.destroy(); };
+  const ages = setInterval(() => {
+    if (document.hidden) return;
+    if (Date.now() - lastSync > STALE_MS) {
+      if (syncing) return; // keep the last picture until the answer is in
+      if (Date.now() - lastTry > 15000) { resync(); return; }
+    }
+    drawHero();
+  }, 5000);
+  const offWake = onWake(() => { if (Date.now() - lastSync > 5000) resync(); });
+  return () => { unsub(); offCtl(); offTheme(); offWake(); clearInterval(ages); chart.destroy(); tvBox.destroy(); };
 }

@@ -1,7 +1,7 @@
 // Header ticker: XAUUSD bid of the selected bot (bot_status.status.market.bid) and the change since the first M15 bar
 // of the broker's (server) day, from bots.agent_state.bars (SPEC 8); without bars, from the first priced journal row
-// of that day. Realtime with a 30 s poll while realtime is not joined.
-import { h, mount, fmtNum, fmtSigned, fmtThai, utcToServer } from './util.js';
+// of that day. Realtime with a 30 s poll while realtime is not joined, and read again when a phone wakes the page.
+import { h, mount, fmtNum, fmtSigned, fmtThai, utcToServer, onWake } from './util.js';
 import { app, on, currentBot } from './state.js';
 import { readBars } from './pricechart.js';
 
@@ -59,6 +59,10 @@ export function ticker() {
     if (poll) { clearInterval(poll); poll = null; }
   }
 
+  async function refetch() {
+    try { const s = await app.api.botStatus(botId); const mk = s && s.status && s.status.market; if (mk) { bid = Number(mk.bid); draw(); } } catch { /* keep */ }
+  }
+
   async function bind() {
     const b = currentBot();
     if (b && b.id === botId) { bot = { ...bot, ...b }; draw(); return; }
@@ -80,10 +84,9 @@ export function ticker() {
       bot: (row) => { if (row) { bot = { ...bot, ...row }; draw(); } },
       state: (st) => { rt = st; draw(); },
     });
-    poll = setInterval(async () => {
+    poll = setInterval(() => {
       if (!el.isConnected) { stop(); return; }
-      if (rt === 'SUBSCRIBED') return;
-      try { const s = await app.api.botStatus(botId); const mk = s && s.status && s.status.market; if (mk) { bid = Number(mk.bid); draw(); } } catch { /* keep */ }
+      if (rt !== 'SUBSCRIBED') refetch();
     }, 30000);
   }
 
@@ -91,6 +94,8 @@ export function ticker() {
   requestAnimationFrame(() => { el.dataset.mounted = '1'; });
   on('bots-loaded', () => { if (el.isConnected || !el.dataset.mounted) bind(); });
   on('bot-changed', () => { if (el.isConnected || !el.dataset.mounted) bind(); });
+  // a phone froze the page: realtime missed the price moves (and may not be joined any more)
+  const offWake = onWake(() => { if (!el.isConnected && el.dataset.mounted) { offWake(); return; } if (botId) refetch(); });
   bind();
   return el;
 }
