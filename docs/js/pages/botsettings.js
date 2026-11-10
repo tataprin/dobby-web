@@ -2,7 +2,7 @@
 // buy/sell sides and news blackouts. Settings are sent as desired.params = the full set of SPEC 4.2 remote keys
 // (patchDesired: read-modify-write with the version check). EA v3.03 bots: read-only + .set download.
 import { h, mount, icon, fmtNum, fmtThai, toast, errText, confirmDialog, openModal, errorState, loadingState, field, busy, isoUtc,
-  utcToThaiInput, thaiInputToUtc, utcToServer, until, callout, newId, downloadBlob, onWake, ago } from '../util.js';
+  utcToThaiInput, thaiInputToUtc, utcToServer, until, callout, newId, downloadBlob, onWake } from '../util.js';
 import { app, currentBot, updateBotRow, on, ownsBot, canControl } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, onlineBadge, pendingChip, rejectionsBlock, appliedVersion, isPending, applyProgress } from '../botctl.js';
 import { liveSwitch, appliedLive } from '../liveswitch.js';
@@ -184,15 +184,7 @@ export async function render(root, ctx) {
         h('div', { class: 'now-foot' },
           h('a', { class: 'btn small', href: '#edit', onclick: (e) => { e.preventDefault(); editorBox.scrollIntoView({ behavior: smooth(), block: 'start' }); } }, icon('sliders'), editable() ? 'ปรับค่า' : 'ดูค่าทั้งหมด'),
           pendingChip(bot, ctl, onlineInfo(bot, st)),
-          byAdmin(),
           !showProg && prog && prog.done ? h('span', { class: 'muted small' }, 'ค่าล่าสุดที่ส่งจากเว็บ บอทใช้แล้ว') : null)));
-  }
-  // my own bot, last changed by someone else: only the admin can (2026-11-10); the details are in บันทึกการเปลี่ยนแปลง
-  function byAdmin() {
-    if (other || !ctl.updated_by || !app.user || ctl.updated_by === app.user.id) return null;
-    const t = Date.parse(ctl.updated_at);
-    return h('a', { class: 'chip', href: '#/audit', title: 'ดูว่าแอดมินเปลี่ยนอะไร' }, icon('shield'),
-      `แอดมินเปลี่ยนค่าล่าสุด${Number.isFinite(t) ? ` ${ago(t)}` : ''}`);
   }
 
   // ---------------- live + pause cards

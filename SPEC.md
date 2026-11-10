@@ -115,8 +115,9 @@ objects of 9.7, `push_subscriptions`, `bots.offline_notified_at` and `register_p
   member's bot settings, the whole of bot_control (live switch, pause, sides, lots, values, blackouts, auto blackouts),
   with no opt-in by the owner. Gate: the admin's own password sign-in within the last 30 minutes, plus aal2 when the
   admin has a verified 2FA factor (`admin_edit_status()`, enforced by `bot_control_before`); live ON keeps the 5-minute
-  live gate on top. The website asks the password in a dialog on the first change (adminUnlock). The owner sees
-  "แอดมินเปลี่ยนค่าล่าสุด" on ตั้งค่าบอท and every change in บันทึกการเปลี่ยนแปลง (actor = admin). Everything else of a
+  live gate on top. The website asks the password in a dialog on the first change (adminUnlock). Members get no notice
+  that the admin changed their bot (site owner's decision): no chip, and their บันทึกการเปลี่ยนแปลง lists such a change
+  without a name (the database still stores actor = admin, updated_by = admin). Everything else of a
   member's bot (bots row, history, deposits, rounds, notes) stays read only. The PC's local limits (allow live, max lots,
   allow params) still apply: the agent does not know who wrote desired.
 - news_events: approved select; admin insert/update/delete.

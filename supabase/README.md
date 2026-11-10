@@ -111,7 +111,8 @@ pause, sides, lots, values, blackouts) after signing in again with the admin's o
 (and the 2FA code when the admin has 2FA): new `admin_edit_status()`, the `bot_control_update` policy lets the admin
 through, and `bot_control_before` raises `admin_reauth_required` / `admin_mfa_required` otherwise. Turning live ON still
 needs the 5-minute live gate on top. Everything else of a member's bot (bots row, history, deposits, rounds, notes)
-stays read only for the admin. `audit.actor` and `bot_control.updated_by` name the admin, so the owner sees the change.
+stays read only for the admin. `audit.actor` and `bot_control.updated_by` name the admin (the website shows members no
+name and no notice for it: site owner's decision).
 Until the re-run the website says the database is not ready when the admin tries to change a member's bot.
 
 ### AI assistant (one time, dashboard only; Thai steps above)
