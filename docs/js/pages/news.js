@@ -1,10 +1,13 @@
 // News: upcoming news_events in Thai time merged with the PC's own calendar (agent_state.news, SPEC 9.3: Forex Factory, USD,
 // High; the same moment is shown once), one-click blackout per bot (default -30/+90 min), admin add/edit/delete.
+// Each line shows its forecast and previous value and which way gold usually goes when the real number comes out above,
+// at or below the forecast (newsguide.js, 2026-11-10).
 import { h, mount, icon, fmtThai, thaiDayKey, until, toast, errText, confirmDialog, openModal, errorState, loadingState, emptyState,
   field, busy, isoUtc, utcToThaiInput, thaiInputToUtc, utcToServer } from '../util.js';
 import { app, myBot, isAdmin, ownsBot } from '../state.js';
 import { normDesired, patchDesired } from '../botctl.js';
 import { panel, pageHead } from '../views.js';
+import { guideFor, outcomes } from '../newsguide.js';
 
 const MIN = 60000;
 const TIER = { 1: ['สำคัญมาก', 'tier1'], 2: ['สำคัญ', 'tier2'], 3: ['ทั่วไป', 'tier3'] };
@@ -86,7 +89,8 @@ export async function render(root, ctx) {
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(n);
     }
-    mount(listBox, calNote,
+    const guideNote = h('p', { class: 'muted small' }, 'ใต้ข่าวแต่ละตัวมีค่าคาดการณ์ ค่าครั้งก่อน และทองมักขึ้นหรือลงเมื่อตัวเลขจริงออกมาสูงหรือต่ำกว่าที่คาด เป็นแนวโน้มทั่วไปของตลาด ไม่ใช่คำทำนาย ช่วงแรกหลังข่าวราคามักกระชากทั้งสองทาง');
+    mount(listBox, calNote, guideNote,
       upcoming.length ? h('div', { class: 'news-days' }, [...groups.entries()].map(([k, list]) => h('section', { class: 'news-day' },
         h('h2', null, fmtThai(Date.parse(list[0].ts_utc), 'longday')),
         h('ul', { class: 'news-list' }, list.map(item))))) : emptyState('ไม่มีข่าวที่จะถึง', null),
@@ -105,9 +109,7 @@ export async function render(root, ctx) {
       h('div', { class: 'news-main' },
         h('p', { class: 'news-name' }, n.name, ' ', h('span', { class: `chip ${cls}` }, label), n.auto ? [' ', h('span', { class: 'chip quiet-chip' }, 'ปฏิทินอัตโนมัติ')] : null),
         n.note ? h('p', { class: 'muted small' }, n.note) : null,
-        (n.cal || []).length && !(n.auto && n.cal.length === 1 && !n.cal[0].forecast) ? h('ul', { class: 'cal-lines' }, n.cal.map((c) => h('li', null,
-          n.auto ? null : `${c.title} `, c.forecast ? ['คาด ', h('span', { class: 'num' }, c.forecast)] : null,
-          c.previous ? [c.forecast ? ' ' : '', 'ครั้งก่อน ', h('span', { class: 'num' }, c.previous)] : null))) : null,
+        detail(n),
         off !== null ? h('p', { class: 'muted small' }, `เวลาเซิร์ฟเวอร์ ${utcToServer(t, off).slice(11)}`) : null),
       h('div', { class: 'news-actions' },
         bot ? (done ? h('span', { class: 'chip good' }, icon('check'), 'งดไว้แล้ว')
@@ -115,6 +117,33 @@ export async function render(root, ctx) {
         undo,
         isAdmin() && !n.auto ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': `แก้ไข ${n.name}`, onclick: () => editNews(n) }, icon('edit')) : null,
         isAdmin() && !n.auto ? h('button', { class: 'icon-btn', type: 'button', 'aria-label': `ลบ ${n.name}`, onclick: () => delNews(n) }, icon('trash')) : null));
+  }
+
+  // forecast / previous of each calendar line of this news, and which way gold usually goes (newsguide.js)
+  function detail(n) {
+    const cal = n.cal || [];
+    const lines = cal.length ? cal : [{ title: n.name, currency: 'USD' }]; // an admin item without the PC calendar
+    const named = !(lines.length === 1 && (n.auto || !cal.length)); // one line: its title is already the item's name
+    const whys = new Set();
+    const rows = lines.map((c) => {
+      const g = guideFor(c.title, c.currency);
+      const nums = !!(c.forecast || c.previous);
+      if (!g && !nums && !named) return null;
+      const talk = g && (g.kind === 'talk' || g.kind === 'off');
+      const why = g && !talk && !whys.has(g.why) ? (whys.add(g.why), g.why) : null; // once per news
+      const outs = outcomes(g, c.forecast, c.previous);
+      return h('li', { class: 'cal-line' },
+        named || g ? h('p', { class: 'cal-title' }, named ? h('span', null, c.title) : null, g ? h('span', { class: 'cal-th' }, g.th) : null) : null,
+        nums ? h('p', { class: 'cal-nums' },
+          h('span', null, 'คาดการณ์ ', h('strong', { class: 'num' }, c.forecast || '—')),
+          h('span', null, 'ครั้งก่อน ', h('strong', { class: 'num' }, c.previous || '—'))) : null,
+        outs.length ? h('ul', { class: 'gold-react', 'aria-label': 'ทองมักขึ้นหรือลง' }, outs.map(([label, dir, text]) => h('li', null,
+          h('span', { class: 'react-k' }, label),
+          h('span', { class: `react-v${dir ? ` ${dir === 'up' ? 'pos' : 'neg'}` : ''}` }, dir ? (dir === 'up' ? '▲ ' : '▼ ') : '', text)))) : null,
+        talk ? h('p', { class: 'react-talk' }, g.why) : null,
+        why ? h('p', { class: 'muted small react-why' }, 'ทำไม: ', why) : null);
+    }).filter(Boolean);
+    return rows.length ? h('ul', { class: 'cal-lines' }, rows) : null;
   }
 
   async function blackout(n, btn) {

@@ -1273,7 +1273,9 @@ button.cal-cell:hover { outline: 2px solid var(--ink); outline-offset: -2px; }
 .news-main { display: grid; gap: 2px; min-width: 0; }
 .news-name { font-weight: 600; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); align-items: center; }
 .news-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
-@media (min-width: 720px) { .news-item { grid-template-columns: 112px minmax(0, 1fr) auto; align-items: center; } .news-actions { grid-column: auto; justify-content: flex-end; } }
+/* the forecast / gold guide under each news needs width: the buttons go to the right only on wide screens */
+@media (min-width: 720px) { .news-item { grid-template-columns: 112px minmax(0, 1fr); } }
+@media (min-width: 1200px) { .news-item { grid-template-columns: 112px minmax(0, 1fr) auto; } .news-actions { grid-column: auto; justify-content: flex-end; } }
 .news-ctrl { display: flex; flex-wrap: wrap; gap: var(--s4) var(--gutter); align-items: flex-end; }
 .news-ctrl > p { flex: 1 1 280px; min-width: 0; align-self: center; }
 .news-ctrl .field { width: 160px; }
@@ -1678,7 +1680,20 @@ a.trade:hover .trade-main > p:first-child { text-decoration: underline; text-dec
 .pc-hit.on-mark { cursor: pointer; }
 /* news: the PC calendar */
 .cal-note { margin-bottom: calc(-1 * var(--s2)); }
-.cal-lines { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: var(--fs-14); color: var(--slate); }
+.cal-lines { list-style: none; margin: var(--s1) 0 0; padding: 0; display: grid; gap: var(--s3); font-size: var(--fs-14); }
+/* each line: forecast / previous, then which way gold usually goes (newsguide.js) */
+.cal-line { display: grid; gap: var(--s1); min-width: 0; }
+.cal-line + .cal-line { border-top: 1px dashed var(--hair); padding-top: var(--s3); }
+.cal-title { display: flex; flex-wrap: wrap; gap: 0 var(--s2); font-weight: 600; overflow-wrap: anywhere; }
+.cal-title .cal-th { font-weight: 400; color: var(--slate); }
+.cal-nums { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); color: var(--slate); }
+.cal-nums strong { color: var(--ink); font-size: var(--fs-16); }
+.gold-react { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.gold-react > li { display: grid; grid-template-columns: 6.5em minmax(0, 1fr); gap: var(--s2); }
+.gold-react .react-k { color: var(--slate); }
+.gold-react .react-v { overflow-wrap: anywhere; }
+.gold-react .react-v.pos, .gold-react .react-v.neg { font-weight: 600; }
+.react-talk, .react-why { overflow-wrap: anywhere; }
 
 /* ================================================================ print: ประวัติ > สรุป as one clean page */
 @media print {
