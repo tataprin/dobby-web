@@ -17,7 +17,7 @@ function tabs(active) {
     h('a', { href: '#/calc', class: active === 'calc' ? 'on' : '', 'aria-current': active === 'calc' ? 'page' : null }, icon('calc'), 'คำนวณล็อต')));
 }
 
-// "ใช้กับบอท" / "ส่งไปที่บอท" always mean my own bot (also while the admin is viewing a friend's bot)
+// "ใช้กับบอท" / "ส่งไปที่บอท" mean the bot shown: mine, or the member's bot the admin is looking at (2026-11-10)
 async function botStatus(ctx) {
   const bot = myBot();
   if (!bot) return { bot: null, st: null };

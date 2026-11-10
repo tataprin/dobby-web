@@ -100,9 +100,10 @@ test('admin reads every friend bot (status, journal, control, presets, audit) bu
   assert.ok(all >= 4);
   assert.equal(await count(admin, 'public.audit', 'actor = $1 or actor = $2', [bob, erin]), all);
 
-  // writes stay owner-only: updates and deletes touch 0 rows, inserts are refused
+  // writes stay owner-only: updates and deletes touch 0 rows, inserts are refused. bot_control is the one exception
+  // (2026-11-10, admin_edit.test.js): only after a fresh admin sign-in, so this 1 h old one is refused
   assert.equal((await ctx.as(admin, `update public.bots set name = 'x' where id = $1 returning 1`, [botB])).length, 0);
-  assert.equal((await ctx.as(admin, `update public.bot_control set desired = '{"live":false}' where bot_id = $1 returning 1`, [botB])).length, 0);
+  await assert.rejects(ctx.as(admin, `update public.bot_control set desired = '{"live":false}' where bot_id = $1 returning 1`, [botB]), /admin_reauth_required/);
   assert.equal((await ctx.as(admin, `update public.bot_status set status = '{}' where bot_id = $1 returning 1`, [botB])).length, 0);
   assert.equal((await ctx.as(admin, `update public.journal set detail = 'x' where bot_id = $1 returning 1`, [botB])).length, 0);
   assert.equal((await ctx.as(admin, `update public.presets set name = 'x' where id = $1 returning 1`, [presetB])).length, 0);

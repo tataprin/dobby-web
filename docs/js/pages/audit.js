@@ -44,7 +44,8 @@ export async function render(root, ctx) {
   for (const b of others) botInfo[b.id] = { name: b.name, owner: b.owner };
   for (const r of rows) if (r.action === 'bot_delete' && r.bot_id && r.before && !botInfo[r.bot_id]) botInfo[r.bot_id] = { name: r.before.name || 'บอทที่ลบแล้ว', owner: r.before.owner, deleted: true };
   const person = (id) => (!id ? 'ระบบ' : id === me ? 'คุณ' : names[id] || `ผู้ใช้ ${String(id).slice(0, 8)}`);
-  const actor = person;
+  // a member's own bot changed by someone else: only the admin can (2026-11-10), whose name members cannot read
+  const actor = (id, r) => (id && id !== me && !names[id] && r && r.action === 'control' && botInfo[r.bot_id] && botInfo[r.bot_id].owner === me ? 'แอดมิน' : person(id));
   const botName = (id) => { const b = botInfo[id]; return b ? b.name : id ? 'บอทที่ลบแล้วหรือของผู้ใช้อื่น' : ''; };
   const botLabel = (id) => {
     const b = botInfo[id];
@@ -80,7 +81,7 @@ export async function render(root, ctx) {
           h('div', { class: 'audit-head' },
             h('span', { class: 'audit-action' }, ACTIONS[r.action] || r.action),
             r.bot_id ? h('span', { class: 'chip' }, icon('monitor'), botLabel(r.bot_id)) : null,
-            h('span', { class: 'muted small' }, h('strong', { class: 'audit-who' }, actor(r.actor)), ` เมื่อ ${fmtThai(Date.parse(r.ts), 'seconds')}`)),
+            h('span', { class: 'muted small' }, h('strong', { class: 'audit-who' }, actor(r.actor, r)), ` เมื่อ ${fmtThai(Date.parse(r.ts), 'seconds')}`)),
           changes.length ? h('ul', { class: 'changes' }, changes.slice(0, 10).map((c) => h('li', null, c)), changes.length > 10 ? h('li', { class: 'muted' }, `และอีก ${changes.length - 10} รายการ`) : null)
             : h('p', { class: 'muted small' }, 'ไม่มีค่าที่เปลี่ยน'),
           h('details', null, h('summary', null, 'ดูข้อมูลดิบ'),

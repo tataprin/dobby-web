@@ -2,7 +2,7 @@
 // High; the same moment is shown once), one-click blackout per bot (default -30/+90 min), admin add/edit/delete.
 import { h, mount, icon, fmtThai, thaiDayKey, until, toast, errText, confirmDialog, openModal, errorState, loadingState, emptyState,
   field, busy, isoUtc, utcToThaiInput, thaiInputToUtc, utcToServer } from '../util.js';
-import { app, myBot, isAdmin } from '../state.js';
+import { app, myBot, isAdmin, ownsBot } from '../state.js';
 import { normDesired, patchDesired } from '../botctl.js';
 import { panel, pageHead } from '../views.js';
 
@@ -27,7 +27,7 @@ export function mergeNews(events, agentNews) {
 }
 
 export async function render(root, ctx) {
-  const bot = myBot(); // blackouts go to my own bot, also while the admin is viewing a friend's bot
+  const bot = myBot(); // blackouts go to the bot shown: mine, or the member's bot the admin is looking at (2026-11-10)
   root.append(pageHead('ข่าว', 'ข่าวเศรษฐกิจที่มีผลกับราคาทอง (เวลาไทย) กดปุ่มข้างข่าวเพื่อให้บอทงดเข้าไม้ช่วงนั้น', null, 'news'));
   const ctrlBox = h('div'), listBox = h('div', { class: 'stack-lg' }), adminBox = h('div');
   root.append(ctrlBox, listBox, adminBox);
@@ -51,7 +51,7 @@ export async function render(root, ctx) {
   [beforeIn, afterIn].forEach((el) => el.addEventListener('change', () => drawList()));
   ctrlBox.append(panel(null, {},
     h('div', { class: 'news-ctrl' },
-      h('p', { class: 'grow' }, bot ? ['งดเข้าไม้สำหรับ ', h('strong', null, bot.name), app.bots.length > 1 ? h('span', { class: 'muted small' }, ' (เปลี่ยนบอทได้ที่ด้านบน)') : null] : h('span', { class: 'muted' }, 'ยังไม่มีบอท ปุ่มงดเข้าไม้จะใช้ได้เมื่อมีบอท')),
+      h('p', { class: 'grow' }, bot ? ['งดเข้าไม้สำหรับ ', h('strong', null, bot.name), ownsBot(bot) ? null : ` ของ ${bot.owner_name || 'สมาชิก'}`, app.bots.length > 1 ? h('span', { class: 'muted small' }, ' (เปลี่ยนบอทได้ที่ด้านบน)') : null] : h('span', { class: 'muted' }, 'ยังไม่มีบอท ปุ่มงดเข้าไม้จะใช้ได้เมื่อมีบอท')),
       field('ก่อนข่าว (นาที)', beforeIn, { cls: 'narrow' }), field('หลังข่าว (นาที)', afterIn, { cls: 'narrow' }))));
 
   const mins = () => [Math.max(0, Math.min(600, Number(beforeIn.value) || 0)), Math.max(0, Math.min(600, Number(afterIn.value) || 0))];

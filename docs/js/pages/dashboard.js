@@ -3,7 +3,7 @@
 // details. Realtime; read again after 20 s without news or when a phone wakes the page (SPEC 5 page 2).
 import { h, mount, icon, fmtNum, fmtSigned, fmtPct, pnl, fmtThai, timeEl, serverToUtc, parseWall, toast, errText, confirmDialog,
   errorState, loadingState, isoUtc, toneOf, utcToServer, ago, debounce, thaiDayKey, money, duration, onWake, busy } from '../util.js';
-import { app, currentBot, updateBotRow, on, ownsBot } from '../state.js';
+import { app, currentBot, updateBotRow, on, ownsBot, canControl } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, rejectionsBlock, isPending, heroState } from '../botctl.js';
 import { modChip, sideEl, kv, panel, noBotState, onOff, pageHead } from '../views.js';
 import { runnerSupported, capResetToken, minutesToClock } from '../params.js';
@@ -43,11 +43,14 @@ export async function render(root, ctx) {
   const bot0 = currentBot();
   if (!bot0) { root.append(pageHead('ภาพรวม', null, null, 'dashboard'), noBotState()); return; }
   let bot = bot0, st = null, ctl = null, rtState = '', rows = [], journalReady = false, flows = [], rounds = [];
-  const ro = !ownsBot(bot0); // the admin viewing someone else's bot: no pause, no blackout, nothing is sent
+  const other = !ownsBot(bot0); // someone else's bot (the admin looking at a member's bot)
+  // nothing is sent: no pause, no blackout. The admin may change a member's bot like its owner (2026-11-10), after the
+  // admin's password (patchDesired / adminUnlock).
+  const ro = !canControl(bot0);
   root.append(loadingState('กำลังโหลดสถานะบอท…'));
   const off = () => bot.server_utc_offset_min ?? 0;
   try {
-    const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), (ro ? ctx.api.adminBots() : ctx.api.listBots()).catch(() => [])]);
+    const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), (other ? ctx.api.adminBots() : ctx.api.listBots()).catch(() => [])]);
     st = s ? s.status : null; ctl = c;
     const fresh = bots.find((b) => b.id === bot.id); // last_seen in app.bots may be minutes old
     if (fresh) { bot = { ...bot, ...fresh }; updateBotRow(bot); }
@@ -111,7 +114,7 @@ export async function render(root, ctx) {
       h('span', { class: 'chip', title: rtState === 'SUBSCRIBED' ? 'รับข้อมูลแบบสด' : 'ดึงข้อมูลใหม่ทุก 20 วินาที' },
         rtState === 'SUBSCRIBED' ? [h('span', { class: 'live-dot', 'aria-hidden': 'true' }), 'ข้อมูลสด'] : 'อัปเดตทุก 20 วินาที'),
     ];
-    if (ro) chips.unshift(h('span', { class: 'chip live' }, icon('eye'), `ของ ${bot.owner_name || 'สมาชิก'}`));
+    if (other) chips.unshift(h('span', { class: 'chip live' }, icon(ro ? 'eye' : 'shield'), `ของ ${bot.owner_name || 'สมาชิก'}`));
     mount(headBox, pageHead('ภาพรวม', h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name), chips), null, 'dashboard'));
   }
 
@@ -129,7 +132,7 @@ export async function render(root, ctx) {
     const ageBucket = Number.isFinite(updated) ? Math.min(12, Math.floor((Date.now() - updated) / 10000)) : -1;
     const v = (st && st.virtual) || {};
     const stamp = stampOf(hs, info, st);
-    const demoCap = ctx.api.mode === 'demo' && !ro && typeof ctx.api.demoHitCap === 'function' && runnerSupported(eaVer()) && st && v.day_cap_hit !== true;
+    const demoCap = ctx.api.mode === 'demo' && !other && typeof ctx.api.demoHitCap === 'function' && runnerSupported(eaVer()) && st && v.day_cap_hit !== true;
     if (changed('hero', [hs, paused, pending, !!ctl, summary, ageBucket, info.online, stamp, v.day_pnl, v.day_cap_hit, demoCap, cur()]) || force) {
       mount(stampBox, hallmark({ tone: stamp.tone, state: stamp.state, title: `Dobby: ${hs.title}` }));
       mount(copyBox,
@@ -169,9 +172,11 @@ export async function render(root, ctx) {
   const capToken = () => { const d = normDesired(ctl && ctl.desired); const t = d.params ? Number(d.params.cap_reset) : NaN; return Number.isFinite(t) && t > 0 ? Math.floor(t) : 0; };
   const capResolved = (token, v) => !!(token && st && (Number(v.cap_reset_applied) >= token || v.day_cap_hit === false));
   const capAge = (token) => Date.now() - token * 1000;
-  // take the token out of desired.params (owner only, a few tries per token; every other value stays)
+  // take the token out of desired.params (owner only, a few tries per token; every other value stays). Not on a
+  // member's bot the admin looks at: a background patch there would ask for the admin's password out of nowhere; any
+  // later change drops a stale token anyway (patchDesired).
   function clearCapToken(token) {
-    if (ro || capClearing || !ctl) return;
+    if (other || capClearing || !ctl) return;
     if (token !== capClearToken) { capClearToken = token; capClearTries = 0; }
     if (capClearTries >= 5) return;
     capClearTries += 1;
@@ -568,7 +573,7 @@ export async function render(root, ctx) {
     lastTry = Date.now();
     syncing = (async () => {
       try {
-        const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), ro ? ctx.api.adminBots() : ctx.api.listBots()]);
+        const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), other ? ctx.api.adminBots() : ctx.api.listBots()]);
         const b = bots.find((x) => x.id === bot.id);
         if (b) onBot(b);
         if (c) onControl(c);

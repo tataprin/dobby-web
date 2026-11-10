@@ -1,7 +1,7 @@
 // Live trading switch (SPEC 0 rule 2, 2.4, 5 Dashboard).
 // OFF: a plain confirm. ON: ask live_gate_status() first, then a fresh password sign-in and, when the account has a
 // verified TOTP factor, a 6-digit code (aal2); then desired.live = true. The database enforces the same gate.
-import { app } from './state.js';
+import { app, ownsBot } from './state.js';
 import { normDesired, patchDesired, isPending, pendingChip, onlineInfo, cmdBlock } from './botctl.js';
 import { h, icon, openModal, confirmDialog, toast, callout, errText, loadingState, busy, newId } from './util.js';
 
@@ -39,7 +39,7 @@ export function liveSwitch({ bot, ctl, st, compact = false }) {
 
 export async function requestLive(bot, on, st) {
   if (!on) {
-    const ok = await confirmDialog('ปิดการเทรดจริง?',
+    const ok = await confirmDialog(ownsBot(bot) ? 'ปิดการเทรดจริง?' : `ปิดการเทรดจริงของบอท ${bot.owner_name || 'สมาชิก'}?`,
       'บอทจะหยุดเปิดไม้ใหม่ทันทีที่เครื่องรับคำสั่ง ไม้ที่เปิดอยู่ไม่ถูกปิด และยังมี SL/TP ที่โบรกเกอร์ตามเดิม',
       { ok: 'ปิดเทรดจริง', danger: true });
     if (!ok) return false;
@@ -77,7 +77,7 @@ function openLiveOnModal(bot, st) {
     const api = app.api;
     let done = false;
     const m = openModal({
-      title: 'เปิดเทรดจริง',
+      title: ownsBot(bot) ? 'เปิดเทรดจริง' : `เปิดเทรดจริงให้บอทของ ${bot.owner_name || 'สมาชิก'}`, // the admin (2026-11-10)
       body: loadingState('กำลังตรวจการยืนยันตัวตน…'),
       actions: [{ label: 'ยกเลิก' }],
       onClose: () => resolve(done),

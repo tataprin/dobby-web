@@ -11,6 +11,8 @@
 //   mfaUnenroll(id), aal() -> {current, next}
 //   profile(), redeemInvite(code) -> 'ok'|'already_approved', setDisplayName(name)
 //   liveGateStatus() -> 'ok'|'reauth_required'|'mfa_required'   (RPC live_gate_status, asked before the ON modal)
+//   adminEditStatus() -> 'ok'|'admin_only'|'admin_reauth_required'|'admin_mfa_required'   (RPC admin_edit_status:
+//     the admin's fresh sign-in, 30 min, before changing a member's bot settings; 2026-11-10)
 //   listBots(), renameBot(botId, name), deleteBot(botId), botStatus(botId) -> row|null, botControl(botId) -> row|null,
 //   updateDesired(botId, desired, expectedVersion) -> control row, journal(botId, {fromServer, toServer}) -> rows (desc)
 //   subscribeBot(botId, {status, control, bot, journal}) -> unsubscribe (sync)
@@ -20,8 +22,10 @@
 //   adminSetUser(userId, role, approved, disabled)
 //   adminBots() -> other users' bots, adminPresets() -> other users' presets   (admin, read only; RLS SELECT only)
 //   journalTail(botId, n) -> the newest n journal rows (desc)
-//   Writes to a bot are for its owner only: renameBot / deleteBot / updateDesired on someone else's bot throw
-//   ApiError('read_only') before anything is sent (RLS would refuse them anyway: 0 rows).
+//   Writes to a bot are for its owner only: renameBot / deleteBot / cash flows / rounds / notes on someone else's bot
+//   throw ApiError('read_only') before anything is sent (RLS would refuse them anyway: 0 rows). One exception
+//   (2026-11-10): updateDesired on a member's bot by the admin (adminBots() lists it); the database then asks for the
+//   admin's fresh sign-in (admin_reauth_required / admin_mfa_required).
 //   listDownloads() -> [{name,size,updated_at}], downloadUrl(name) -> url|null, uploadDownload(file), deleteDownload(name)
 // Feature batch (SPEC 9; the same owner-only rule for every write, the admin reads):
 //   bars(botId, fromIso, toIso) -> [{t, close, vwap}] ascending                                   (9.1)
@@ -82,7 +86,10 @@ const THAI = {
   session_expired: 'เซสชันหมดอายุ เข้าสู่ระบบใหม่',
   same_password: 'รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสเดิม',
   storage: 'จัดการไฟล์ไม่สำเร็จ',
-  read_only: 'บอทนี้เป็นของสมาชิกคนอื่น ผู้ดูแลดูได้อย่างเดียว สั่งงานไม่ได้',
+  read_only: 'บอทนี้เป็นของสมาชิกคนอื่น ส่วนนี้แก้ได้เฉพาะเจ้าของบอท',
+  admin_reauth_required: 'ต้องใส่รหัสผ่านแอดมินก่อนตั้งค่าบอทของสมาชิก (ใช้ได้ 30 นาที)',
+  admin_mfa_required: 'บัญชีแอดมินเปิด 2FA ไว้ ต้องใส่รหัส 6 หลักก่อนตั้งค่าบอทของสมาชิก',
+  cancelled: 'ยังไม่ได้ส่งคำสั่ง (ยังไม่ได้ยืนยันรหัสผ่านแอดมิน)',
   not_deployed: 'ส่วนนี้ยังไม่พร้อมในฐานข้อมูล ผู้ดูแลต้องรัน supabase/schema.sql รุ่นใหม่ก่อน',
   ai_not_configured: 'ผู้ดูแลยังไม่ได้เปิดผู้ช่วย AI (ต้องสร้างฟังก์ชัน chat และใส่ API key ใน Supabase ก่อน)',
   ai_disabled: 'ผู้ดูแลปิดผู้ช่วย AI ไว้ชั่วคราว',
@@ -107,11 +114,12 @@ export function thaiError(e) {
   // exact database codes first
   const exact = msg.trim();
   if (THAI[exact] && !['network', 'permission', 'not_found', 'version_conflict'].includes(exact)) return pick(exact);
-  for (const c of ['reauth_required', 'mfa_required', 'invite_invalid', 'already_approved', 'account_disabled', 'admin_only',
+  for (const c of ['admin_reauth_required', 'admin_mfa_required', 'reauth_required', 'mfa_required', 'invite_invalid', 'already_approved', 'account_disabled', 'admin_only',
     'not_approved', 'cannot_demote_self', 'cannot_disable_self', 'desired_invalid', 'name_invalid']) {
     if (low.includes(c)) return pick(c);
   }
   if (code === 'PGRST205' || code === '42P01' || low.includes('could not find the table') || (low.includes('relation') && low.includes('does not exist'))) return pick('not_deployed');
+  if (code === 'PGRST202' || code === '42883' || low.includes('could not find the function')) return pick('not_deployed');
   if (low.includes('duplicate key') || code === '23505') return new ApiError('duplicate', msg, 'มีรายการนี้อยู่แล้ว');
   if (low.includes('too many rounds')) return new ApiError('too_many_rounds', msg, 'บอทนี้มีครบ 200 รอบแล้ว ยกเลิกรอบเก่าก่อนถึงจะเริ่มรอบใหม่ได้');
   if (code === 'reauthentication_needed' || low.includes('reauthentication')) {
@@ -250,11 +258,17 @@ export class SupabaseApi {
   }
   async setDisplayName(name) { unwrap(await this.sb.rpc('set_display_name', { p_name: name })); }
   async liveGateStatus() { return unwrap(await this.sb.rpc('live_gate_status')); }
+  async adminEditStatus() { return unwrap(await this.sb.rpc('admin_edit_status')); }
   // bot_control is UPDATE only (rows come from register_bot); bots may be renamed or deleted by the owner.
-  // The admin can read other users' bots (RLS), never write them: every write checks ownership first.
+  // The admin can read other users' bots (RLS) and write only their bot_control (settings, 2026-11-10): every other
+  // write checks ownership first.
   async assertOwn(botId) {
     if (!this.ownIds || !this.ownIds.has(botId)) await this.listBots();
     if (!this.ownIds.has(botId)) throw new ApiError('read_only');
+  }
+  async assertControl(botId) {
+    if (this.friendIds && this.friendIds.has(botId)) return; // the admin: the database asks for the fresh sign-in
+    await this.assertOwn(botId);
   }
   async renameBot(botId, name) {
     await this.assertOwn(botId);
@@ -272,7 +286,9 @@ export class SupabaseApi {
   }
   // admin: everyone else's bots and presets (read only)
   async adminBots() {
-    return unwrap(await this.sb.from('bots').select('*').neq('owner', this.uid()).order('created_at'));
+    const rows = unwrap(await this.sb.from('bots').select('*').neq('owner', this.uid()).order('created_at'));
+    this.friendIds = new Set(rows.map((b) => b.id));
+    return rows;
   }
   async adminPresets() {
     return unwrap(await this.sb.from('presets').select('*').neq('owner', this.uid()).order('updated_at', { ascending: false }));
@@ -287,7 +303,7 @@ export class SupabaseApi {
     return unwrap(await this.sb.from('bot_control').select('*').eq('bot_id', botId).maybeSingle());
   }
   async updateDesired(botId, desired, expectedVersion) {
-    await this.assertOwn(botId);
+    await this.assertControl(botId);
     let q = this.sb.from('bot_control').update({ desired }).eq('bot_id', botId);
     if (expectedVersion !== undefined && expectedVersion !== null) q = q.eq('version', expectedVersion);
     const data = unwrap(await q.select().maybeSingle());
@@ -620,6 +636,14 @@ export class DemoApi {
     if (this.myFactors().some((f) => f.status === 'verified') && this.aalLevel !== 'aal2') return 'mfa_required';
     return 'ok';
   }
+  // same rules as the database's admin_edit_status(): the admin's fresh sign-in within 30 min (+ 2FA when set up)
+  adminGate() {
+    if (!this.isAdmin()) return 'admin_only';
+    if (Date.now() - this.passwordAt > 1800000) return 'admin_reauth_required';
+    if (this.myFactors().some((f) => f.status === 'verified') && this.aalLevel !== 'aal2') return 'admin_mfa_required';
+    return 'ok';
+  }
+  async adminEditStatus() { await this.wait(60); this.need(); return this.adminGate(); }
   async renameBot(botId, name) {
     await this.wait();
     const b = this.ownBot(botId, true);
@@ -678,7 +702,13 @@ export class DemoApi {
 
   async updateDesired(botId, desired, expectedVersion) {
     await this.wait(250);
-    this.ownBot(botId, true);
+    // the owner, or the admin on a member's bot after a fresh admin sign-in (2026-11-10, like the database trigger)
+    const target = this.readBot(botId);
+    if (target.owner !== this.uidCur) {
+      const g = this.adminGate();
+      if (g === 'admin_only') throw new ApiError('read_only');
+      if (g !== 'ok') throw new ApiError(g, g);
+    }
     const row = this.db.control.find((c) => c.bot_id === botId);
     if (!row) throw new ApiError('not_found');
     if (expectedVersion !== undefined && expectedVersion !== null && row.version !== expectedVersion) throw new ApiError('version_conflict');

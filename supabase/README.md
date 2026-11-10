@@ -105,6 +105,15 @@ Re-run the whole `schema.sql` once (new table `rounds`). Until then the website 
 says the database is not ready; nothing else changes. Then redeploy the Edge Function `chat` (paste the new
 `functions/chat/index.ts`, Verify JWT stays off) so the AI assistant gets the `get_rounds` tool.
 
+### Admin sets up members' bots 2026-11-10
+Re-run the whole `schema.sql` once. The admin may then change a member's bot settings (`bot_control` only: live switch,
+pause, sides, lots, values, blackouts) after signing in again with the admin's own password within the last 30 min
+(and the 2FA code when the admin has 2FA): new `admin_edit_status()`, the `bot_control_update` policy lets the admin
+through, and `bot_control_before` raises `admin_reauth_required` / `admin_mfa_required` otherwise. Turning live ON still
+needs the 5-minute live gate on top. Everything else of a member's bot (bots row, history, deposits, rounds, notes)
+stays read only for the admin. `audit.actor` and `bot_control.updated_by` name the admin, so the owner sees the change.
+Until the re-run the website says the database is not ready when the admin tries to change a member's bot.
+
 ### AI assistant (one time, dashboard only; Thai steps above)
 1. Edge Functions -> Deploy a new function -> Via Editor, name `chat`, paste `functions/chat/index.ts`, deploy, then
    turn **Verify JWT off** (the function checks the user's token itself with `/auth/v1/user`).
@@ -207,7 +216,10 @@ Things SPEC.md section 2 did not say, added here (nothing in the other parts' co
    `bot_id` cannot be changed by an update (`bot_id_immutable`).
 3. **CHECK on `bot_control.desired`:** JSON object; `live` absent, null or a JSON boolean.
 4. **New RPCs:** `live_gate_status() returns text` ('ok' | 'reauth_required' | 'mfa_required') and
-   `owns_bot(p_bot uuid) returns boolean`. Both security definer, stable, authenticated only.
+   `owns_bot(p_bot uuid) returns boolean`. Both security definer, stable, authenticated only. 2026-11-10:
+   `admin_edit_status() returns text` ('ok' | 'admin_only' | 'admin_reauth_required' | 'admin_mfa_required'), the same
+   check with a 30-minute window for the admin changing a member's bot; both use the internal `fresh_auth_status(int)`
+   (no client grant).
 5. **`admin_overview()` has an extra last column `email text`** (display names can collide). Still no balances.
 6. **`admin_set_user`:** a null argument keeps the current value. Self-protection also blocks setting your own
    `approved = false`. Errors `cannot_demote_self`, `cannot_disable_self`, `user_not_found`, `role_invalid`.
@@ -269,7 +281,7 @@ Things SPEC.md section 2 did not say, added here (nothing in the other parts' co
 
 ## Tests (`tests/`) and known limits
 
-`npm test` runs 91 tests in 6 files (schema, invites, rls, control, batch, ai) on PGlite 0.5 (Postgres 18 in
+`npm test` runs 105 tests in 8 files (schema, invites, rls, control, batch, ai, rounds, admin_edit) on PGlite 0.5 (Postgres 18 in
 WebAssembly). `batch.test.js` covers the SPEC 9 tables (owner / other member / admin / unapproved / disabled, the
 agent's `on conflict do nothing` upload, the cash-flow audit, the drop of the removed push objects, a third schema run
 with data). `ai.test.js` covers SPEC 10: the config row (admin update, checks, audit, kept on re-run), private chats

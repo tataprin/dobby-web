@@ -105,11 +105,20 @@ objects of 9.7, `push_subscriptions`, `bots.offline_notified_at` and `register_p
 - invites: admin select. Writes through RPCs only.
 - bots: owner (approved) select/insert/update/delete own; admin select all.
 - bot_status, journal: owner of the bot (approved) select/insert/update; admin select all. No delete except cascade.
-- bot_control: owner (approved) select/update (insert only through register_bot); admin select all. No delete.
+- bot_control: owner (approved) select/update (insert only through register_bot); admin select all, and update
+  (2026-11-10, below). No delete.
 - presets: owner (approved) all; admin select all.
 - audit: select where the caller owns the bot (or actor = caller); admin select all. Insert only by triggers.
 - The admin reads every friend's bot but writes only their own (2026-11-07, site owner's request): the website shows
   friends' bots to the admin as view-only. The website shows members no notice about it (site owner's decision).
+- 2026-11-10 (site owner's request: friends and family want the admin to set up their bots): the admin may change a
+  member's bot settings, the whole of bot_control (live switch, pause, sides, lots, values, blackouts, auto blackouts),
+  with no opt-in by the owner. Gate: the admin's own password sign-in within the last 30 minutes, plus aal2 when the
+  admin has a verified 2FA factor (`admin_edit_status()`, enforced by `bot_control_before`); live ON keeps the 5-minute
+  live gate on top. The website asks the password in a dialog on the first change (adminUnlock). The owner sees
+  "แอดมินเปลี่ยนค่าล่าสุด" on ตั้งค่าบอท and every change in บันทึกการเปลี่ยนแปลง (actor = admin). Everything else of a
+  member's bot (bots row, history, deposits, rounds, notes) stays read only. The PC's local limits (allow live, max lots,
+  allow params) still apply: the agent does not know who wrote desired.
 - news_events: approved select; admin insert/update/delete.
 - bars: approved owner of the bot select / insert / update (update only for PostgREST upserts); admin select. No
   client delete (cascade only).

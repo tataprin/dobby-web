@@ -47,7 +47,7 @@ export function validateAuto(a) {
   return [...new Set(errs)];
 }
 
-// get(): { bot, ctl, friend }; onSent(ctlRow)
+// get(): { bot, ctl, friend }; onSent(ctlRow). friend: read only (someone else's bot this viewer may not change)
 export function autoBlackouts({ get, onSent }) {
   const box = h('div', { class: 'auto-bo' });
   let base = null, edit = null, sending = false;

@@ -292,11 +292,11 @@ as $$
   );
 $$;
 
--- Spec addition: the live gate (SPEC 2.4) as a function, so the website can ask before it shows the switch.
--- Returns 'ok', 'reauth_required' or 'mfa_required' for the CALLER (auth.uid() and the caller's own JWT).
---   (a) the JWT claim amr must hold a password / otp / totp sign-in whose timestamp is within the last 300 s;
+-- Internal: has the CALLER signed in again recently? Returns 'ok', 'reauth_required' or 'mfa_required' for auth.uid()
+-- and the caller's own JWT:
+--   (a) the JWT claim amr must hold a password / otp / totp sign-in whose timestamp is within the last p_window_s s;
 --   (b) if the caller has a verified MFA factor, the JWT claim aal must be 'aal2'.
-create or replace function public.live_gate_status()
+create or replace function public.fresh_auth_status(p_window_s int)
 returns text
 language plpgsql stable security definer set search_path = public
 as $$
@@ -316,7 +316,7 @@ begin
     where jsonb_typeof(e) = 'object'
       and e ->> 'method' in ('password', 'otp', 'totp')
       and jsonb_typeof(e -> 'timestamp') = 'number'
-      and (e ->> 'timestamp')::numeric >= extract(epoch from now()) - 300
+      and (e ->> 'timestamp')::numeric >= extract(epoch from now()) - p_window_s
   ) into v_fresh;
   if not v_fresh then
     return 'reauth_required';
@@ -326,6 +326,36 @@ begin
     return 'mfa_required';
   end if;
   return 'ok';
+end;
+$$;
+
+-- Spec addition: the live gate (SPEC 2.4) as a function, so the website can ask before it shows the switch.
+-- Returns 'ok', 'reauth_required' or 'mfa_required' for the CALLER: a fresh sign-in within the last 300 s.
+create or replace function public.live_gate_status()
+returns text
+language plpgsql stable security definer set search_path = public
+as $$
+begin
+  return public.fresh_auth_status(300);
+end;
+$$;
+
+-- 2026-11-10: the admin may change the settings of a member's bot (bot_control only; see bot_control_before and the
+-- bot_control_update policy), after signing in again with the admin's own password within the last 30 min (and 2FA when
+-- the admin has it). Returns 'ok', 'admin_only', 'admin_reauth_required' or 'admin_mfa_required' for the CALLER.
+-- Turning live ON on that bot still needs the live gate (300 s) on top.
+create or replace function public.admin_edit_status()
+returns text
+language plpgsql stable security definer set search_path = public
+as $$
+declare
+  v text;
+begin
+  if not public.is_admin() then
+    return 'admin_only';
+  end if;
+  v := public.fresh_auth_status(1800);
+  return case when v = 'ok' then 'ok' else 'admin_' || v end;
 end;
 $$;
 
@@ -763,6 +793,13 @@ begin
     new.version    := old.version + 1;
     new.updated_by := auth.uid();
     new.updated_at := now();
+    -- not the owner: only the admin gets here (policy bot_control_update), with a fresh admin sign-in (2026-11-10)
+    if v_client and not public.owns_bot(new.bot_id) then
+      v_gate := public.admin_edit_status();
+      if v_gate <> 'ok' then
+        raise exception '%', v_gate;
+      end if;
+    end if;
     if v_client
        and coalesce((old.desired ->> 'live')::boolean, false) = false
        and coalesce((new.desired ->> 'live')::boolean, false) = true then
@@ -1102,6 +1139,7 @@ revoke execute on function public.is_approved()                               fr
 revoke execute on function public.is_admin()                                  from public, anon;
 revoke execute on function public.owns_bot(uuid)                              from public, anon;
 revoke execute on function public.live_gate_status()                          from public, anon;
+revoke execute on function public.admin_edit_status()                         from public, anon;
 revoke execute on function public.redeem_invite(text)                         from public, anon;
 revoke execute on function public.create_invite(text, int, text)              from public, anon;
 revoke execute on function public.revoke_invite(text)                         from public, anon;
@@ -1115,6 +1153,7 @@ grant execute on function public.is_approved()                               to 
 grant execute on function public.is_admin()                                  to authenticated, service_role;
 grant execute on function public.owns_bot(uuid)                              to authenticated, service_role;
 grant execute on function public.live_gate_status()                          to authenticated, service_role;
+grant execute on function public.admin_edit_status()                         to authenticated, service_role;
 grant execute on function public.redeem_invite(text)                         to authenticated, service_role;
 grant execute on function public.create_invite(text, int, text)              to authenticated, service_role;
 grant execute on function public.revoke_invite(text)                         to authenticated, service_role;
@@ -1133,6 +1172,7 @@ grant execute on function public.ai_finish_turn(bigint, text, int, int, int, int
 
 -- internal functions: nobody but the owner (triggers fire regardless of EXECUTE rights)
 revoke execute on function public.gen_invite_code()        from public, anon, authenticated;
+revoke execute on function public.fresh_auth_status(int)   from public, anon, authenticated;
 revoke execute on function public.handle_new_user()        from public, anon, authenticated;
 revoke execute on function public.bot_control_before()     from public, anon, authenticated;
 revoke execute on function public.bot_control_audit()      from public, anon, authenticated;
@@ -1224,12 +1264,16 @@ create policy bot_control_select on public.bot_control for select to authenticat
           and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
          or (select public.is_admin()));
 drop policy if exists bot_control_insert on public.bot_control;   -- deliberately none: register_bot() only
+-- the admin may change a member's bot settings too (2026-11-10); the trigger bot_control_before then asks for a fresh
+-- admin sign-in (admin_edit_status, 30 min). Every other table of a member's bot stays read only for the admin.
 drop policy if exists bot_control_update on public.bot_control;
 create policy bot_control_update on public.bot_control for update to authenticated
-  using ((select public.is_approved())
-         and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
-  with check ((select public.is_approved())
-              and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())));
+  using (((select public.is_approved())
+          and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+         or (select public.is_admin()))
+  with check (((select public.is_approved())
+               and bot_id in (select b.id from public.bots b where b.owner = (select auth.uid())))
+              or (select public.is_admin()));
 
 -- presets: approved owner all; the admin reads every preset (read only)
 drop policy if exists presets_select on public.presets;

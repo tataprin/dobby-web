@@ -1,6 +1,7 @@
 // Shared bot helpers: desired-state JSON, online/pending state, agent rejections, effective EA state.
-import { app, emit } from './state.js';
+import { app, emit, isAdmin } from './state.js';
 import { ApiError } from './api.js';
+import { adminUnlock } from './adminunlock.js';
 import { h, icon, agoSeconds, copyButton, serverToUtc, callout, fmtThai } from './util.js';
 
 // desired JSON (bot_control.desired), as written by this website:
@@ -36,11 +37,16 @@ export function normDesired(d) {
 const COMMAND_STALE_S = 3 * 60;
 
 // Read-modify-write with optimistic concurrency (version); one retry on a conflict.
-// Only for my own bots: the admin viewing a friend's bot never sends anything (the API checks again).
+// My own bots, and (2026-11-10) a member's bot for the admin: then the admin's password comes first when the last
+// sign-in is over 30 minutes old (adminUnlock; the database checks the same, admin_edit_status), once more if the
+// database still says so. Nobody else's bot is ever sent anything (the API and RLS check again).
 // keepCommand: only the daily-cap reset flow passes true; every other patch drops a stale cap_reset from params (a
 // fresh one, under 3 min, is left for the PC to pick up unless the patch replaced params altogether).
 export async function patchDesired(botId, mutate, { keepCommand = false } = {}) {
-  if (!app.bots.some((b) => b.id === botId)) throw new ApiError('read_only');
+  const own = app.bots.some((b) => b.id === botId);
+  const member = own ? null : app.friendBots.find((b) => b.id === botId);
+  if (!own && !(member && isAdmin())) throw new ApiError('read_only');
+  if (member) await adminUnlock(member.owner_name);
   for (let attempt = 0; attempt < 2; attempt++) {
     const ctl = await app.api.botControl(botId);
     if (!ctl) throw new ApiError('not_found', 'no bot_control row', 'บอทนี้ยังไม่มีแถวควบคุม ให้รัน python dobby_agent.py register ที่เครื่องอีกครั้ง');
@@ -56,6 +62,10 @@ export async function patchDesired(botId, mutate, { keepCommand = false } = {}) 
       return row;
     } catch (e) {
       if (e.code === 'version_conflict' && attempt === 0) continue;
+      if (member && attempt === 0 && (e.code === 'admin_reauth_required' || e.code === 'admin_mfa_required')) {
+        await adminUnlock(member.owner_name, e.code);
+        continue;
+      }
       throw e;
     }
   }

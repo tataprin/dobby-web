@@ -164,7 +164,7 @@ function botPicker() {
       for (const b of friends) { let g = owners.find((x) => x.owner === b.owner); if (!g) owners.push(g = { owner: b.owner, name: b.owner_name, bots: [] }); g.bots.push(b); }
       options = [
         h('optgroup', { label: 'บอทของฉัน' }, app.bots.length ? app.bots.map(opt) : h('option', { value: '', disabled: true }, 'ยังไม่มีบอท')),
-        ...owners.map((g) => h('optgroup', { label: `ของ ${g.name} (ดูอย่างเดียว)` }, g.bots.map(opt))),
+        ...owners.map((g) => h('optgroup', { label: `ของ ${g.name}` }, g.bots.map(opt))),
       ];
     }
     const sel = h('select', { class: 'botpick-select', 'aria-label': 'เลือกบอท', onchange: (e) => { if (e.target.value) selectBot(e.target.value); } }, options);
@@ -227,7 +227,8 @@ function demoBanner() {
   return box;
 }
 
-// Admin looking at someone else's bot: one clear line under the header, with the way back to their own bot.
+// Admin looking at someone else's bot: one clear line under the header, with the way back to their own bot. Since
+// 2026-11-10 the admin may change that bot's settings (after the admin's password); history and deposits stay the owner's.
 function viewBanner() {
   const box = h('div', { class: 'view-banner', role: 'status', hidden: true });
   const inner = h('div', { class: 'view-in wrap-col' });
@@ -239,8 +240,9 @@ function viewBanner() {
     document.body.classList.toggle('viewing-friend', friend);
     if (!friend) { mount(inner); return; }
     mount(inner,
-      h('span', { class: 'view-ico', 'aria-hidden': 'true' }, icon('eye')),
-      h('p', { class: 'grow' }, 'กำลังดูบอทของ ', h('strong', null, b.owner_name || 'สมาชิก'), ' ดูอย่างเดียว สั่งงานไม่ได้'),
+      h('span', { class: 'view-ico', 'aria-hidden': 'true' }, icon('shield')),
+      h('p', { class: 'grow' }, 'กำลังดูบอทของ ', h('strong', null, b.owner_name || 'สมาชิก'),
+        ' ตั้งค่าแทนได้ในฐานะแอดมิน'),
       app.bots.length ? h('button', { class: 'btn small', type: 'button', onclick: () => backToMyBot() }, 'กลับไปบอทของฉัน') : null);
   };
   draw();

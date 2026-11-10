@@ -2,8 +2,8 @@
 // buy/sell sides and news blackouts. Settings are sent as desired.params = the full set of SPEC 4.2 remote keys
 // (patchDesired: read-modify-write with the version check). EA v3.03 bots: read-only + .set download.
 import { h, mount, icon, fmtNum, fmtThai, toast, errText, confirmDialog, openModal, errorState, loadingState, field, busy, isoUtc,
-  utcToThaiInput, thaiInputToUtc, utcToServer, until, callout, newId, downloadBlob, onWake } from '../util.js';
-import { app, currentBot, updateBotRow, on, ownsBot } from '../state.js';
+  utcToThaiInput, thaiInputToUtc, utcToServer, until, callout, newId, downloadBlob, onWake, ago } from '../util.js';
+import { app, currentBot, updateBotRow, on, ownsBot, canControl } from '../state.js';
 import { normDesired, patchDesired, onlineInfo, onlineBadge, pendingChip, rejectionsBlock, appliedVersion, isPending, applyProgress } from '../botctl.js';
 import { liveSwitch, appliedLive } from '../liveswitch.js';
 import { panel, pageHead, noBotState, stepper, bigToggle, segmented, progressSteps, helpBtn } from '../views.js';
@@ -30,13 +30,15 @@ export async function render(root, ctx) {
   const bot0 = currentBot();
   if (!bot0) { root.append(pageHead('ตั้งค่าบอท', null, null, 'settings'), noBotState()); return; }
   let bot = bot0, st = null, ctl = null, news = [];
-  // The admin viewing someone else's bot: every value shown, every control hidden or disabled, nothing is sent.
-  const friend = !ownsBot(bot0);
+  // Someone else's bot. The admin may change its settings like the owner (2026-11-10: canControl; the admin's password
+  // first, patchDesired / adminUnlock). viewOnly: every value shown, every control hidden or disabled, nothing is sent.
+  const other = !ownsBot(bot0);
+  const viewOnly = !canControl(bot0);
   const ownerName = bot0.owner_name || 'สมาชิก';
   root.append(loadingState('กำลังโหลดค่าของบอท…'));
   try {
     const [s, c, n, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id),
-      ctx.api.listNews({ fromIso: new Date(Date.now() - 3 * 3600e3).toISOString() }).catch(() => []), (friend ? ctx.api.adminBots() : ctx.api.listBots()).catch(() => [])]);
+      ctx.api.listNews({ fromIso: new Date(Date.now() - 3 * 3600e3).toISOString() }).catch(() => []), (other ? ctx.api.adminBots() : ctx.api.listBots()).catch(() => [])]);
     st = s ? s.status : null; ctl = c; news = n || [];
     const fresh = bots.find((b) => b.id === bot.id); // last_seen in app.bots may be minutes old
     if (fresh) { bot = { ...bot, ...fresh }; updateBotRow(bot); }
@@ -77,7 +79,7 @@ export async function render(root, ctx) {
     const matches = !!(d.params && eff && matchesEffective(d.params, eff));
     const pending = !!(d.params && canSend() && !matches);
     const editBase = pending ? normalizeParams({ ...cv.values, ...d.params }) : cv.values;
-    return { now: cv.values, editBase, matches, pending, readOnly: friend || !canSend(), hasStatus: !!st };
+    return { now: cv.values, editBase, matches, pending, readOnly: viewOnly || !canSend(), hasStatus: !!st };
   }
   let B = computeBase();
   let baseVals = clone(B.editBase);
@@ -85,14 +87,14 @@ export async function render(root, ctx) {
   let lotMode = lotsSame(v) ? 'same' : 'per';
   let unlocked = false; // v3.03: edit only to download a .set
   let justSent = false;
-  const draft = friend ? null : readDraft(bot.id);
+  const draft = viewOnly ? null : readDraft(bot.id);
   if (draft && draft.v && JSON.stringify(draft.base) === JSON.stringify(baseVals) && describeChanges(baseVals, normalizeParams(draft.v), cur(), pnlNow()).length) {
     v = normalizeParams(draft.v);
     lotMode = lotsSame(v) ? 'same' : 'per';
     if (B.readOnly) unlocked = true;
     setTimeout(() => toast('กู้ค่าที่คุณแก้ค้างไว้ให้แล้ว (กด "ยกเลิก" ที่แถบด้านล่างถ้าไม่ต้องการ)', 'info', 5000), 300);
   }
-  const editable = () => !friend && (!B.readOnly || unlocked);
+  const editable = () => !viewOnly && (!B.readOnly || unlocked);
   const locked = () => !editable();
   const changes = () => describeChanges(baseVals, v, cur(), pnlNow());
   const errors = () => {
@@ -112,11 +114,11 @@ export async function render(root, ctx) {
   const sidesBox = h('section', { class: 'set-sec', id: 'set-sides', 'aria-label': 'ฝั่งที่เข้าได้' });
   const boBox = h('section', { class: 'set-sec', id: 'set-bo', 'aria-label': 'งดเข้าไม้' });
   // งดเข้าไม้: the automatic part (SPEC 9.3, its own editor that keeps unsent edits) above the windows set by hand
-  const auto = autoBlackouts({ get: () => ({ bot, ctl, friend }), onSent: (row) => { ctl = row; refreshAll(); } });
+  const auto = autoBlackouts({ get: () => ({ bot, ctl, friend: viewOnly }), onSent: (row) => { ctl = row; refreshAll(); } });
   const manualBox = h('div', { class: 'bo-manual' });
   boBox.append(
-    h('div', { class: 'set-sec-head' }, h('h2', null, 'งดเข้าไม้'), friend ? null : helpBtn('news', 'วิธีใช้'),
-      h('p', null, friend ? 'ช่วงที่บอทนี้ไม่เปิดไม้ใหม่' : 'ช่วงนี้บอทไม่เปิดไม้ใหม่ ไม้ที่เปิดอยู่ยังวิ่งต่อ')),
+    h('div', { class: 'set-sec-head' }, h('h2', null, 'งดเข้าไม้'), viewOnly ? null : helpBtn('news', 'วิธีใช้'),
+      h('p', null, viewOnly ? 'ช่วงที่บอทนี้ไม่เปิดไม้ใหม่' : 'ช่วงนี้บอทไม่เปิดไม้ใหม่ ไม้ที่เปิดอยู่ยังวิ่งต่อ')),
     h('div', { class: 'sub-head' }, h('h3', null, 'อัตโนมัติ'), h('p', null, 'ตามปฏิทินข่าวและตารางเวลา แอปที่เครื่องคำนวณช่วงงดให้เอง')),
     h('div', { class: 'group' }, auto),
     h('div', { class: 'sub-head' }, h('h3', null, 'ตั้งเอง'), h('p', null, 'งดทันที งดช่วงข่าวที่เลือก หรือกำหนดเวลาเอง')),
@@ -153,7 +155,7 @@ export async function render(root, ctx) {
   function drawHead() {
     mount(headBox, pageHead('ตั้งค่าบอท',
       h('span', { class: 'row gap wrap' }, h('strong', { class: 'bot-name' }, bot.name),
-        friend ? h('span', { class: 'chip live' }, icon('eye'), `ของ ${ownerName}`) : null, onlineBadge(onlineInfo(bot, st)),
+        other ? h('span', { class: 'chip live' }, icon(viewOnly ? 'eye' : 'shield'), `ของ ${ownerName}`) : null, onlineBadge(onlineInfo(bot, st)),
         eaVer() ? h('span', { class: 'chip hide-sm' }, `EA ${eaVer()}`) : null),
       null, 'settings'));
   }
@@ -168,7 +170,7 @@ export async function render(root, ctx) {
     const showProg = prog && (!prog.done || justSent);
     mount(nowBox,
       h('div', { class: 'set-sec-head' }, h('h2', null, 'ค่าที่บอทใช้อยู่ตอนนี้'),
-        friend ? h('span', { class: 'chip live' }, icon('eye'), 'ดูอย่างเดียว')
+        viewOnly ? h('span', { class: 'chip live' }, icon('eye'), 'ดูอย่างเดียว')
           : B.readOnly ? h('span', { class: 'chip warn' }, icon('lock'), `อ่านอย่างเดียว (บอทรุ่น ${eaVer() || '3.03'})`)
             : h('span', { class: 'chip good' }, icon('check'), 'เปลี่ยนจากเว็บได้')),
       h('div', { class: 'group', 'aria-live': 'polite' },
@@ -182,16 +184,24 @@ export async function render(root, ctx) {
         h('div', { class: 'now-foot' },
           h('a', { class: 'btn small', href: '#edit', onclick: (e) => { e.preventDefault(); editorBox.scrollIntoView({ behavior: smooth(), block: 'start' }); } }, icon('sliders'), editable() ? 'ปรับค่า' : 'ดูค่าทั้งหมด'),
           pendingChip(bot, ctl, onlineInfo(bot, st)),
+          byAdmin(),
           !showProg && prog && prog.done ? h('span', { class: 'muted small' }, 'ค่าล่าสุดที่ส่งจากเว็บ บอทใช้แล้ว') : null)));
+  }
+  // my own bot, last changed by someone else: only the admin can (2026-11-10); the details are in บันทึกการเปลี่ยนแปลง
+  function byAdmin() {
+    if (other || !ctl.updated_by || !app.user || ctl.updated_by === app.user.id) return null;
+    const t = Date.parse(ctl.updated_at);
+    return h('a', { class: 'chip', href: '#/audit', title: 'ดูว่าแอดมินเปลี่ยนอะไร' }, icon('shield'),
+      `แอดมินเปลี่ยนค่าล่าสุด${Number.isFinite(t) ? ` ${ago(t)}` : ''}`);
   }
 
   // ---------------- live + pause cards
   function drawLive(force) {
     const d = normDesired(ctl.desired);
     if (!changed('live', [d.live, d.control.mode, ctl.version, appliedVersion(bot), appliedLive(st), onlineInfo(bot, st).agentOnline]) && force !== true) return;
-    mount(liveBox, friend ? liveReadOnly(d) : liveSwitch({ bot, ctl, st }));
+    mount(liveBox, viewOnly ? liveReadOnly(d) : liveSwitch({ bot, ctl, st }));
   }
-  // live state as a row without the switch (friend's bot)
+  // live state as a row without the switch (viewOnly's bot)
   function liveReadOnly(d) {
     const eff = appliedLive(st);
     return h('section', { class: `live-panel${d.live ? ' on' : ''}`, 'aria-label': 'เทรดจริง' },
@@ -211,10 +221,10 @@ export async function render(root, ctx) {
     mount(pauseBox, h('section', { class: `quick-card${paused ? ' is-paused' : ''}`, 'aria-label': 'หยุดชั่วคราว' },
       h('div', { class: 'quick-head' },
         h('div', null, h('h2', null, paused ? 'หยุดชั่วคราวอยู่' : 'หยุดชั่วคราว'),
-          h('p', { class: 'muted' }, friend ? (paused ? `${ownerName} สั่งหยุดไว้ บอทไม่เปิดไม้ใหม่` : 'ไม่ได้หยุด บอทเปิดไม้ใหม่ได้ตามสัญญาณ')
+          h('p', { class: 'muted' }, viewOnly ? (paused ? `${ownerName} สั่งหยุดไว้ บอทไม่เปิดไม้ใหม่` : 'ไม่ได้หยุด บอทเปิดไม้ใหม่ได้ตามสัญญาณ')
             : paused ? 'บอทไม่เปิดไม้ใหม่ จนกว่าจะกด "ทำงานต่อ"' : 'หยุดเปิดไม้ใหม่ชั่วคราว ไม้ที่เปิดอยู่ยังมี SL/TP ตามเดิม'),
           pend ? h('p', { class: 'muted small' }, 'รอเครื่องรับคำสั่ง…') : null),
-        friend ? h('span', { class: `chip ${paused ? 'pending' : 'good'}` }, icon(paused ? 'pause' : 'play'), paused ? 'หยุดอยู่' : 'ทำงานอยู่')
+        viewOnly ? h('span', { class: `chip ${paused ? 'pending' : 'good'}` }, icon(paused ? 'pause' : 'play'), paused ? 'หยุดอยู่' : 'ทำงานอยู่')
           : h('button', { class: `btn ${paused ? 'primary' : ''}`, type: 'button', onclick: (e) => togglePause(e.currentTarget, !paused) },
             icon(paused ? 'play' : 'pause'), paused ? 'ทำงานต่อ' : 'หยุดชั่วคราว'))));
   }
@@ -251,7 +261,7 @@ export async function render(root, ctx) {
   function buildEditor() {
     updaters.length = 0;
     const ro = B.readOnly;
-    const roBox = ro && !friend ? h('div', { class: 'upgrade-box' }) : null;
+    const roBox = ro && !viewOnly ? h('div', { class: 'upgrade-box' }) : null;
     if (roBox) {
       roBox.update = () => {
         mount(roBox, 
@@ -488,7 +498,7 @@ export async function render(root, ctx) {
       h('span', null, 'เมื่อราคาถึง TP ไม่ปิดไม้ แต่กันกำไรไว้แล้วปล่อยให้วิ่งต่อ ', h('a', { href: '#/guide/runner' }, 'โหมด runner คืออะไร')));
     if (!runnerBuilt) {
       secRunner = h('section', { class: 'ed-sec', id: 'set-runner' }, runnerHead,
-        h('div', { class: 'group' }, friend
+        h('div', { class: 'group' }, viewOnly
           ? h('p', { class: 'muted group-note' }, `บอทนี้เป็นรุ่น ${eaVer() || '3.04'} ยังไม่มีโหมด runner (มีตั้งแต่ EA v3.05)`)
           : callout('info', 'ต้องอัปเดต EA เป็น v3.05 และแอป Dobby 1.2.2 ก่อน',
             h('p', null, `บอทนี้รายงานรุ่น ${eaVer() || 'ไม่ทราบ'} โหลดแอป Dobby รุ่นล่าสุดจากหน้า `, h('a', { href: '#/downloads' }, 'ดาวน์โหลดแอป'),
@@ -538,18 +548,18 @@ export async function render(root, ctx) {
     }
 
     // --- presets + .set
-    const tools = friend
+    const tools = viewOnly
       ? h('div', { class: 'ed-tools' }, h('button', { class: 'btn ghost', type: 'button', onclick: () => downloadSet() }, icon('download'), 'ดาวน์โหลด .set ของค่านี้'))
       : h('div', { class: 'ed-tools' },
         h('button', { class: 'btn', type: 'button', onclick: () => loadPresetDialog() }, icon('folder'), 'โหลดจากพรีเซ็ตที่บันทึกไว้'),
         h('button', { class: 'btn', type: 'button', onclick: () => savePresetDialog() }, icon('save'), 'บันทึกเป็นพรีเซ็ต'),
         h('button', { class: 'btn ghost', type: 'button', onclick: () => downloadSet() }, icon('download'), 'ดาวน์โหลด .set'));
-    if (!friend) { tools.querySelectorAll('button')[0].update = function () { this.disabled = locked(); }; reg(tools.querySelectorAll('button')[0]); }
+    if (!viewOnly) { tools.querySelectorAll('button')[0].update = function () { this.disabled = locked(); }; reg(tools.querySelectorAll('button')[0]); }
 
     mount(editorBox, 
       h('div', { class: 'ed-head' },
         h('div', { class: 'section-label' }, h('h2', null, B.readOnly ? 'ค่าทั้งหมดของบอท' : 'ปรับการตั้งค่า'),
-          h('p', { class: 'muted small' }, friend ? `ค่าที่บอทของ ${ownerName} ใช้อยู่ ดูอย่างเดียว แก้ไม่ได้` : B.readOnly ? 'ค่าที่บอทรุ่นนี้รายงานมา' : 'แก้ได้หลายอย่าง แล้วกด "บันทึกและส่งให้บอท" ที่แถบด้านล่างครั้งเดียว')),
+          h('p', { class: 'muted small' }, viewOnly ? `ค่าที่บอทของ ${ownerName} ใช้อยู่ ดูอย่างเดียว แก้ไม่ได้` : B.readOnly ? 'ค่าที่บอทรุ่นนี้รายงานมา' : 'แก้ได้หลายอย่าง แล้วกด "บันทึกและส่งให้บอท" ที่แถบด้านล่างครั้งเดียว')),
         helpBtn('settings')),
       roBox,
       h('div', { class: `editor-body${ro ? ' readonly' : ''}` }, secMoney, secStrat, secLock, secCap, secRunner, advBox),
@@ -780,7 +790,7 @@ export async function render(root, ctx) {
     const sideVal = d.control.allow_long && d.control.allow_short ? 'both' : d.control.allow_long ? 'long' : d.control.allow_short ? 'short' : 'none';
     let sending = false;
     const seg = segmented({
-      label: 'ฝั่งที่เข้าได้', wide: true, get: () => sideVal, disabled: () => sending || friend,
+      label: 'ฝั่งที่เข้าได้', wide: true, get: () => sideVal, disabled: () => sending || viewOnly,
       options: [{ value: 'both', label: 'ซื้อและขาย' }, { value: 'long', label: 'ซื้ออย่างเดียว' }, { value: 'short', label: 'ขายอย่างเดียว' }],
       set: async (val) => {
         if (val === sideVal || sending) return;
@@ -794,13 +804,13 @@ export async function render(root, ctx) {
       },
     });
     mount(sidesBox,
-      h('div', { class: 'set-sec-head' }, h('h2', null, 'ฝั่งที่เข้าได้'), h('p', null, friend ? 'ฝั่งที่บอทนี้เปิดไม้ได้' : 'เลือกแล้วส่งทันที ไม้ที่เปิดอยู่ไม่ถูกปิด')),
+      h('div', { class: 'set-sec-head' }, h('h2', null, 'ฝั่งที่เข้าได้'), h('p', null, viewOnly ? 'ฝั่งที่บอทนี้เปิดไม้ได้' : 'เลือกแล้วส่งทันที ไม้ที่เปิดอยู่ไม่ถูกปิด')),
       h('div', { class: 'group' },
         h('div', { class: 'set-row' }, seg),
-        sideVal === 'none' ? callout('warn', 'ปิดทั้งสองฝั่งอยู่', h('p', null, friend ? 'บอทไม่เปิดไม้ใหม่' : 'บอทจะไม่เปิดไม้ใหม่ เลือก "ซื้อและขาย" เพื่อกลับมาปกติ')) : null,
-        friend ? controlReadOnly(d) : advancedControl(d)));
+        sideVal === 'none' ? callout('warn', 'ปิดทั้งสองฝั่งอยู่', h('p', null, viewOnly ? 'บอทไม่เปิดไม้ใหม่' : 'บอทจะไม่เปิดไม้ใหม่ เลือก "ซื้อและขาย" เพื่อกลับมาปกติ')) : null,
+        viewOnly ? controlReadOnly(d) : advancedControl(d)));
   }
-  // control-file overrides as plain rows (friend's bot)
+  // control-file overrides as plain rows (viewOnly's bot)
   function controlReadOnly(d) {
     const c = d.control;
     const rows = [
@@ -859,7 +869,7 @@ export async function render(root, ctx) {
           h('p', { class: 'bo-time' }, `${fmtThai(b.from, 'short')} ถึง ${fmtThai(b.to, sameDay ? 'time' : 'short')} น.`),
           h('p', { class: 'muted small', title: `เวลาเซิร์ฟเวอร์ ${utcToServer(b.from, off())} ถึง ${utcToServer(b.to, off())}` }, b.label || 'ไม่มีชื่อ')),
         h('span', { class: `chip ${b.from <= now && b.to > now ? 'warn' : ''}` }, state),
-        friend ? null : h('button', { class: 'icon-btn', type: 'button', 'aria-label': `ลบช่วง ${fmtThai(b.from, 'short')}`, onclick: () => removeBo(b) }, icon('trash')));
+        viewOnly ? null : h('button', { class: 'icon-btn', type: 'button', 'aria-label': `ลบช่วง ${fmtThai(b.from, 'short')}`, onclick: () => removeBo(b) }, icon('trash')));
     };
     const upcoming = news.filter((n) => NEWS_RE.test(n.name) && Date.parse(n.ts_utc) > now - 90 * MIN).slice(0, 12);
     const covered = (n) => { const t = Date.parse(n.ts_utc); return d.blackouts.some((x) => Date.parse(x.from_utc) <= t - 30 * MIN && Date.parse(x.to_utc) >= t + 90 * MIN); };
@@ -876,7 +886,7 @@ export async function render(root, ctx) {
       serverHint.textContent = Number.isFinite(a) && Number.isFinite(b) ? `เวลาเซิร์ฟเวอร์ของโบรก: ${utcToServer(a, off())} ถึง ${utcToServer(b, off())}` : '';
     };
     fromIn.addEventListener('input', updHint); toIn.addEventListener('input', updHint); updHint();
-    if (friend) {
+    if (viewOnly) {
       mount(manualBox,
         h('div', { class: 'group' }, list.length ? h('ul', { class: 'bo-list' }, list.map(item)) : h('p', { class: 'muted group-note' }, 'ไม่มีช่วงงดเข้าไม้')));
       return;
@@ -960,12 +970,12 @@ export async function render(root, ctx) {
   function refreshAll() { resync(); drawHead(); drawNow(); drawLive(); drawPause(); drawSides(); drawBlackouts(); auto.update(); drawBar(); }
 
   drawHead(); drawNow(true); drawLive(true); drawPause(true); buildEditor(); drawSides(true); drawBlackouts(true); drawBar();
-  const presetId = friend ? null : ctx.query.get('preset');
+  const presetId = viewOnly ? null : ctx.query.get('preset');
   if (presetId && editable()) {
     ctx.api.listPresets().then((list) => { const p = list.find((x) => x.id === presetId); if (p) applyPreset(p); }).catch(() => {});
   }
   editorBox.before(aiNote);
-  if (!friend && ctx.query.get('ai') === '1') applyAiProposal();
+  if (!other && ctx.query.get('ai') === '1') applyAiProposal(); // the AI proposes for the asker's own bot only
 
   // fresh rows before the head badge can say "offline": a phone that froze the page, or a realtime socket that died
   // quietly, leaves last_seen ageing with nothing new coming in (the same rule as ภาพรวม)
@@ -975,7 +985,7 @@ export async function render(root, ctx) {
     if (syncing) return;
     syncing = true;
     try {
-      const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), friend ? ctx.api.adminBots() : ctx.api.listBots()]);
+      const [s, c, bots] = await Promise.all([ctx.api.botStatus(bot.id), ctx.api.botControl(bot.id), other ? ctx.api.adminBots() : ctx.api.listBots()]);
       const b = bots.find((x) => x.id === bot.id);
       if (b) { bot = { ...bot, ...b }; updateBotRow(bot); }
       if (s) st = s.status;

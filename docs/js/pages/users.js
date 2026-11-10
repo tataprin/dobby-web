@@ -1,8 +1,9 @@
 // ผู้ใช้ (admin): two views.
-//   บอทของสมาชิก  every other user's bots at a glance, read only (RLS lets the admin SELECT them; writes stay owner-only):
+//   บอทของสมาชิก  every other user's bots at a glance (RLS lets the admin SELECT them; since 2026-11-10 the admin may
+//                 also change their settings on ตั้งค่าบอท after the admin's password; every other write stays owner-only):
 //                 status, trading state, blackout, rejections, versions, strategies + lots, lock stages, daily cap,
 //                 balance / today / since start, open trades, the last trade, the settings summary, saved presets,
-//                 and "ดูบอทนี้" (opens ภาพรวม / ประวัติ / ตั้งค่าบอท for that bot in view-only mode).
+//                 and "ดูบอทนี้" (opens ภาพรวม / ประวัติ / ตั้งค่าบอท for that bot).
 //   ผู้ใช้และรหัสเชิญ  admin_overview, invites (create with copy, list, revoke), set role / approve / disable.
 //   ผู้ช่วย AI       users-ai.js: on / off, limits, budget, model, this month's usage (SPEC 10.4).
 import { h, mount, icon, fmtNum, fmtSigned, fmtThai, ago, toast, errText, confirmDialog, errorState, loadingState, emptyState, field, busy,
@@ -23,7 +24,7 @@ const initial = (name) => { const s = String(name || '?').trim(); return (/^[เ
 
 export async function render(root, ctx) {
   const tab = TABS.some((t) => t.id === ctx.query.get('tab')) ? ctx.query.get('tab') : 'bots';
-  root.append(pageHead('ผู้ใช้', 'ดูบอทของสมาชิกทุกคนแบบดูอย่างเดียว และจัดการผู้ใช้กับรหัสเชิญ', null, 'start'),
+  root.append(pageHead('ผู้ใช้', 'ดูและตั้งค่าบอทของสมาชิกทุกคน และจัดการผู้ใช้กับรหัสเชิญ', null, 'start'),
     h('div', { class: 'view-tabs' }, h('nav', { class: 'segmented', 'aria-label': 'มุมมอง' }, TABS.map((t) => h('a', {
       href: `#/users${t.id === 'bots' ? '' : `?tab=${t.id}`}`, class: tab === t.id ? 'on' : '', 'aria-current': tab === t.id ? 'page' : null,
     }, icon(t.icon), t.label)))));
@@ -164,7 +165,7 @@ async function renderBots(root, ctx) {
       h('div', { class: 'fbot-foot' },
         h('button', { class: 'btn', type: 'button', onclick: () => openBot(b, '#/dashboard') }, icon('eye'), 'ดูบอทนี้'),
         h('button', { class: 'btn ghost', type: 'button', onclick: () => openBot(b, '#/history') }, icon('history'), 'ประวัติ'),
-        h('button', { class: 'btn ghost', type: 'button', onclick: () => openBot(b, '#/bot') }, icon('sliders'), 'ค่าทั้งหมด')));
+        h('button', { class: 'btn ghost', type: 'button', onclick: () => openBot(b, '#/bot') }, icon('sliders'), 'ตั้งค่าบอท')));
   }
 
   function openBot(b, hash) {
