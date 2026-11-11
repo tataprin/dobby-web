@@ -18,3 +18,4 @@ dist/
 *.spec
 agent/*.lock
 .claude/
+dist_next/
