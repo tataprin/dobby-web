@@ -323,6 +323,63 @@ create table if not exists public.shadow_lessons (
   tickets     bigint[] not null default '{}'                    -- the trades whose reviews touched this lesson
 );
 create index if not exists shadow_lessons_bot_idx on public.shadow_lessons (bot_id, status, weight desc);
+
+-- AI trader (SPEC 10.8, 2026-11-11, owner's request): the shadow AI also decides on its OWN when to open a trade and
+-- manages it. PAPER ONLY: the trades live in ai_trades, the Dobby app follows them on the live bid / ask and closes them
+-- at their stop / target; nothing is ever sent to the EA or the broker. ticket = 900000000000 + id, so its management
+-- decisions and its review reuse shadow_decisions / shadow_reviews (module 'AI').
+alter table public.ai_config add column if not exists ai_trader_enabled boolean not null default false;
+alter table public.ai_config add column if not exists ai_trader_interval_s int not null default 1800
+  check (ai_trader_interval_s between 300 and 14400);
+alter table public.ai_config add column if not exists ai_trader_lots numeric not null default 0.20
+  check (ai_trader_lots between 0.01 and 5);
+
+create table if not exists public.ai_trades (
+  id           bigserial primary key,
+  bot_id       uuid not null references public.bots(id) on delete cascade,
+  user_id      uuid not null references public.profiles(id) on delete cascade,
+  ticket       bigint not null default 0,
+  opened_at    timestamptz not null default now(),
+  side         text not null check (side in ('BUY', 'SELL')),
+  lots         numeric not null check (lots > 0),
+  entry        numeric not null check (entry > 0),
+  sl           numeric not null check (sl > 0),
+  tp           numeric not null check (tp > 0),
+  first_sl     numeric not null check (first_sl > 0),
+  status       text not null default 'open' check (status in ('open', 'closed')),
+  closed_at    timestamptz,
+  exit         numeric,
+  pnl          numeric,
+  close_reason text check (close_reason is null or close_reason in ('sl', 'tp', 'ai_close', 'reverse', 'time', 'stale')),
+  plan         jsonb not null default '{}'::jsonb check (jsonb_typeof(plan) = 'object'),   -- the AI's reason / confidence / prices
+  parent_id    bigint                                                                     -- the trade it reversed
+);
+create index if not exists ai_trades_bot_idx on public.ai_trades (bot_id, opened_at desc);
+create unique index if not exists ai_trades_one_open on public.ai_trades (bot_id) where status = 'open';
+
+-- every "should I open a trade now?" answer (wait or open), for the record and the cost
+create table if not exists public.ai_scans (
+  id            bigserial primary key,
+  bot_id        uuid not null references public.bots(id) on delete cascade,
+  user_id       uuid not null references public.profiles(id) on delete cascade,
+  ts            timestamptz not null default now(),
+  action        text not null check (action in ('open', 'wait', 'error')),
+  side          text check (side is null or side in ('BUY', 'SELL')),
+  entry         numeric,
+  sl            numeric,
+  tp            numeric,
+  confidence    int check (confidence is null or confidence between 0 and 100),
+  reason        text not null default '' check (char_length(reason) <= 2000),
+  valid         boolean not null default true,
+  details       jsonb not null default '{}'::jsonb check (jsonb_typeof(details) = 'object'),
+  trade_id      bigint,
+  memory_rev    int not null default 0,
+  model         text,
+  input_tokens  int not null default 0 check (input_tokens >= 0),
+  output_tokens int not null default 0 check (output_tokens >= 0),
+  cost_usd      numeric(12, 6) not null default 0 check (cost_usd >= 0)
+);
+create index if not exists ai_scans_bot_ts_idx on public.ai_scans (bot_id, ts desc);
 create index if not exists shadow_decisions_ticket_idx on public.shadow_decisions (bot_id, ticket, ts);
 create index if not exists shadow_decisions_ts_idx on public.shadow_decisions (ts);
 
@@ -352,6 +409,8 @@ alter table public.ai_usage           enable row level security;
 alter table public.shadow_decisions   enable row level security;
 alter table public.shadow_reviews     enable row level security;
 alter table public.shadow_lessons     enable row level security;
+alter table public.ai_trades          enable row level security;
+alter table public.ai_scans           enable row level security;
 
 
 -- -----------------------------------------------------------------------------------------------------
@@ -835,7 +894,142 @@ as $$
   select coalesce((select sum(d.cost_usd) from public.shadow_decisions d
                    where d.ts >= (date_trunc('month', now() at time zone 'Asia/Bangkok') at time zone 'Asia/Bangkok')), 0)
        + coalesce((select sum(r.cost_usd) from public.shadow_reviews r
-                   where r.ts >= (date_trunc('month', now() at time zone 'Asia/Bangkok') at time zone 'Asia/Bangkok')), 0);
+                   where r.ts >= (date_trunc('month', now() at time zone 'Asia/Bangkok') at time zone 'Asia/Bangkok')), 0)
+       + coalesce((select sum(s.cost_usd) from public.ai_scans s
+                   where s.ts >= (date_trunc('month', now() at time zone 'Asia/Bangkok') at time zone 'Asia/Bangkok')), 0);
+$$;
+
+-- SPEC 10.8: money of a paper trade at a price (100 oz per lot)
+create or replace function public.ai_trade_pnl(p_side text, p_entry numeric, p_exit numeric, p_lots numeric)
+returns numeric
+language sql immutable set search_path = public
+as $$
+  select round(case when p_side = 'BUY' then p_exit - p_entry else p_entry - p_exit end * p_lots * 100, 2);
+$$;
+
+-- SPEC 10.8: service_role ONLY. May the AI look for a new trade now? not_approved, bot_not_found, shadow_disabled,
+-- ai_trader_disabled, shadow_budget, ai_trade_open (it already has one), shadow_too_soon (a scan within interval - 20 s).
+create or replace function public.ai_scan_start(p_user uuid, p_bot uuid)
+returns jsonb
+language plpgsql volatile security definer set search_path = public
+as $$
+declare
+  v_prof public.profiles%rowtype;
+  v_cfg  public.ai_config%rowtype;
+  v_last timestamptz;
+begin
+  select * into v_prof from public.profiles where id = p_user;
+  if not found or not v_prof.approved or v_prof.disabled then
+    raise exception 'not_approved';
+  end if;
+  if not exists (select 1 from public.bots b where b.id = p_bot and b.owner = p_user) then
+    raise exception 'bot_not_found';
+  end if;
+  select * into v_cfg from public.ai_config where id = 1 for update;
+  if not found or not v_cfg.shadow_enabled then
+    raise exception 'shadow_disabled';
+  end if;
+  if not v_cfg.ai_trader_enabled then
+    raise exception 'ai_trader_disabled';
+  end if;
+  if public.shadow_month_cost() >= v_cfg.shadow_budget_usd then
+    raise exception 'shadow_budget';
+  end if;
+  if exists (select 1 from public.ai_trades t where t.bot_id = p_bot and t.status = 'open') then
+    raise exception 'ai_trade_open';
+  end if;
+  select max(s.ts) into v_last from public.ai_scans s where s.bot_id = p_bot;
+  if v_last is not null and v_last > now() - make_interval(secs => greatest(v_cfg.ai_trader_interval_s - 20, 60)) then
+    raise exception 'shadow_too_soon';
+  end if;
+  return jsonb_build_object('model', v_cfg.shadow_model, 'interval_s', v_cfg.ai_trader_interval_s, 'lots', v_cfg.ai_trader_lots,
+                            'memory_rev', (select count(*)::int from public.shadow_reviews r where r.bot_id = p_bot));
+end;
+$$;
+
+-- SPEC 10.8: service_role ONLY. Stores a scan; when it is a valid "open", the paper trade too. Returns {scan_id, trade}.
+create or replace function public.ai_scan_record(p_user uuid, p_bot uuid, p_row jsonb)
+returns jsonb
+language plpgsql volatile security definer set search_path = public
+as $$
+declare
+  v_scan  bigint;
+  v_trade public.ai_trades%rowtype;
+  v_open  boolean := p_row->>'action' = 'open' and coalesce((p_row->>'valid')::boolean, false);
+begin
+  if not exists (select 1 from public.bots b where b.id = p_bot and b.owner = p_user) then
+    raise exception 'bot_not_found';
+  end if;
+  insert into public.ai_scans (bot_id, user_id, action, side, entry, sl, tp, confidence, reason, valid, details, memory_rev,
+                               model, input_tokens, output_tokens, cost_usd)
+  values (p_bot, p_user, p_row->>'action', p_row->>'side', (p_row->>'entry')::numeric, (p_row->>'sl')::numeric,
+          (p_row->>'tp')::numeric, (p_row->>'confidence')::int, left(coalesce(p_row->>'reason', ''), 2000),
+          coalesce((p_row->>'valid')::boolean, true),
+          case when jsonb_typeof(p_row->'details') = 'object' then p_row->'details' else '{}'::jsonb end,
+          coalesce((p_row->>'memory_rev')::int, 0), p_row->>'model', coalesce((p_row->>'input_tokens')::int, 0),
+          coalesce((p_row->>'output_tokens')::int, 0), coalesce((p_row->>'cost_usd')::numeric, 0))
+  returning id into v_scan;
+  if v_open then
+    insert into public.ai_trades (bot_id, user_id, side, lots, entry, sl, tp, first_sl, plan)
+    values (p_bot, p_user, p_row->>'side', (p_row->>'lots')::numeric, (p_row->>'entry')::numeric, (p_row->>'sl')::numeric,
+            (p_row->>'tp')::numeric, (p_row->>'sl')::numeric,
+            jsonb_build_object('reason', left(coalesce(p_row->>'reason', ''), 2000), 'confidence', (p_row->>'confidence')::int,
+                               'scan_id', v_scan, 'details', coalesce(p_row->'details', '{}'::jsonb)))
+    returning * into v_trade;
+    update public.ai_trades set ticket = 900000000000 + v_trade.id where id = v_trade.id returning * into v_trade;
+    update public.ai_scans set trade_id = v_trade.id where id = v_scan;
+    return jsonb_build_object('scan_id', v_scan, 'trade', to_jsonb(v_trade));
+  end if;
+  return jsonb_build_object('scan_id', v_scan, 'trade', null);
+end;
+$$;
+
+-- SPEC 10.8: service_role ONLY. Applies something to the bot's open paper trade and returns {trade, new_trade}:
+--   {"op":"sl","sl":x}          the AI tightened the stop (must be on the trade's stop side of entry... any price; the
+--                                function checks it against the market)
+--   {"op":"close","price":x,"reason":"sl|tp|ai_close|time|stale"}
+--   {"op":"reverse","price":x,"entry":y,"sl":a,"tp":b}   close + open the opposite trade (same lots)
+create or replace function public.ai_trade_apply(p_user uuid, p_bot uuid, p_trade bigint, p_op jsonb)
+returns jsonb
+language plpgsql volatile security definer set search_path = public
+as $$
+declare
+  v_t   public.ai_trades%rowtype;
+  v_new public.ai_trades%rowtype;
+  v_op  text := p_op->>'op';
+begin
+  if not exists (select 1 from public.bots b where b.id = p_bot and b.owner = p_user) then
+    raise exception 'bot_not_found';
+  end if;
+  select * into v_t from public.ai_trades where id = p_trade and bot_id = p_bot for update;
+  if not found then
+    raise exception 'ai_trade_not_found';
+  end if;
+  if v_t.status <> 'open' then
+    return jsonb_build_object('trade', to_jsonb(v_t), 'new_trade', null, 'already_closed', true);
+  end if;
+  if v_op = 'sl' then
+    update public.ai_trades set sl = (p_op->>'sl')::numeric where id = v_t.id returning * into v_t;
+  elsif v_op in ('close', 'reverse') then
+    update public.ai_trades
+       set status = 'closed', closed_at = now(), exit = (p_op->>'price')::numeric,
+           pnl = public.ai_trade_pnl(v_t.side, v_t.entry, (p_op->>'price')::numeric, v_t.lots),
+           close_reason = case when v_op = 'reverse' then 'reverse' else coalesce(p_op->>'reason', 'ai_close') end
+     where id = v_t.id returning * into v_t;
+    if v_op = 'reverse' then
+      insert into public.ai_trades (bot_id, user_id, side, lots, entry, sl, tp, first_sl, plan, parent_id)
+      values (p_bot, p_user, case when v_t.side = 'BUY' then 'SELL' else 'BUY' end, v_t.lots, (p_op->>'entry')::numeric,
+              (p_op->>'sl')::numeric, (p_op->>'tp')::numeric, (p_op->>'sl')::numeric,
+              jsonb_build_object('reason', left(coalesce(p_op->>'reason_text', ''), 2000), 'reversed_from', v_t.id), v_t.id)
+      returning * into v_new;
+      update public.ai_trades set ticket = 900000000000 + v_new.id where id = v_new.id returning * into v_new;
+      return jsonb_build_object('trade', to_jsonb(v_t), 'new_trade', to_jsonb(v_new));
+    end if;
+  else
+    raise exception 'bad_op';
+  end if;
+  return jsonb_build_object('trade', to_jsonb(v_t), 'new_trade', null);
+end;
 $$;
 
 -- SPEC 10.6: service_role ONLY (the Edge Function `shadow`). Checks in this order: not_approved, bot_not_found
@@ -900,7 +1094,8 @@ begin
   if exists (select 1 from public.shadow_reviews r where r.bot_id = p_bot and r.ticket = p_ticket) then
     raise exception 'review_done';
   end if;
-  if not exists (select 1 from public.shadow_decisions d where d.bot_id = p_bot and d.ticket = p_ticket) then
+  if not exists (select 1 from public.shadow_decisions d where d.bot_id = p_bot and d.ticket = p_ticket)
+     and not exists (select 1 from public.ai_trades t where t.bot_id = p_bot and t.ticket = p_ticket and t.status = 'closed') then
     raise exception 'review_nothing';
   end if;
   return jsonb_build_object('model', v_cfg.shadow_model);
@@ -1373,12 +1568,13 @@ revoke all on table public.profiles, public.invites, public.bots, public.bot_sta
                     public.bot_control, public.presets, public.audit, public.news_events,
                     public.bars, public.cash_flows, public.trade_notes, public.rounds,
                     public.ai_config, public.ai_conversations, public.ai_messages, public.ai_usage,
-                    public.shadow_decisions, public.shadow_reviews, public.shadow_lessons
+                    public.shadow_decisions, public.shadow_reviews, public.shadow_lessons, public.ai_trades,
+                    public.ai_scans
   from anon, authenticated;
 revoke all on sequence public.journal_id_seq, public.audit_id_seq, public.news_events_id_seq,
                        public.cash_flows_id_seq, public.ai_messages_id_seq, public.ai_usage_id_seq,
                        public.rounds_id_seq, public.shadow_decisions_id_seq, public.shadow_reviews_id_seq,
-                       public.shadow_lessons_id_seq
+                       public.shadow_lessons_id_seq, public.ai_trades_id_seq, public.ai_scans_id_seq
   from anon, authenticated;
 
 grant select                         on table public.profiles, public.invites, public.audit to authenticated;
@@ -1397,6 +1593,7 @@ grant select                         on table public.shadow_decisions to authent
 grant select                         on table public.shadow_reviews to authenticated;    -- writes: shadow_review_record only
 grant select                         on table public.shadow_lessons to authenticated;
 grant update (status)                on table public.shadow_lessons to authenticated;    -- the owner retires a lesson by hand
+grant select                         on table public.ai_trades, public.ai_scans to authenticated;  -- writes: service RPCs only
 grant usage, select on sequence public.journal_id_seq, public.news_events_id_seq, public.cash_flows_id_seq,
                                 public.ai_messages_id_seq, public.rounds_id_seq
   to authenticated;
@@ -1446,6 +1643,13 @@ revoke execute on function public.shadow_review_start(uuid, uuid, bigint)      f
 revoke execute on function public.shadow_review_record(uuid, uuid, jsonb, jsonb) from public, anon, authenticated;
 grant execute on function public.shadow_review_start(uuid, uuid, bigint)       to service_role;
 grant execute on function public.shadow_review_record(uuid, uuid, jsonb, jsonb) to service_role;
+revoke execute on function public.ai_scan_start(uuid, uuid)                    from public, anon, authenticated;
+revoke execute on function public.ai_scan_record(uuid, uuid, jsonb)            from public, anon, authenticated;
+revoke execute on function public.ai_trade_apply(uuid, uuid, bigint, jsonb)    from public, anon, authenticated;
+revoke execute on function public.ai_trade_pnl(text, numeric, numeric, numeric) from public, anon, authenticated;
+grant execute on function public.ai_scan_start(uuid, uuid)                     to service_role;
+grant execute on function public.ai_scan_record(uuid, uuid, jsonb)             to service_role;
+grant execute on function public.ai_trade_apply(uuid, uuid, bigint, jsonb)     to service_role;
 
 -- internal functions: nobody but the owner (triggers fire regardless of EXECUTE rights)
 revoke execute on function public.gen_invite_code()        from public, anon, authenticated;
@@ -1727,6 +1931,13 @@ create policy shadow_reviews_select on public.shadow_reviews for select to authe
   using (((select public.is_approved()) and (select public.owns_bot(bot_id))) or (select public.is_admin()));
 drop policy if exists shadow_lessons_select on public.shadow_lessons;
 create policy shadow_lessons_select on public.shadow_lessons for select to authenticated
+  using (((select public.is_approved()) and (select public.owns_bot(bot_id))) or (select public.is_admin()));
+-- ai_trades / ai_scans (SPEC 10.8): the bot owner and the admin read; no client writes
+drop policy if exists ai_trades_select on public.ai_trades;
+create policy ai_trades_select on public.ai_trades for select to authenticated
+  using (((select public.is_approved()) and (select public.owns_bot(bot_id))) or (select public.is_admin()));
+drop policy if exists ai_scans_select on public.ai_scans;
+create policy ai_scans_select on public.ai_scans for select to authenticated
   using (((select public.is_approved()) and (select public.owns_bot(bot_id))) or (select public.is_admin()));
 drop policy if exists shadow_lessons_retire on public.shadow_lessons;
 create policy shadow_lessons_retire on public.shadow_lessons for update to authenticated

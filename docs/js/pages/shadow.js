@@ -122,6 +122,50 @@ function memoryPanel(lessons, reviews, onRetire, canEdit) {
     h('p', { class: 'muted small' }, 'AI เรียนจากผลจริงของไม้ที่ปิดแล้ว ไม้เดียวอาจเป็นแค่โชค บทเรียนที่น้ำหนักสูงจึงน่าเชื่อกว่า บทเรียนที่ถูกค้านจนน้ำหนักเหลือ 0 จะถูกเลิกใช้เอง'));
 }
 
+// ------------------------------------------------------------------ SPEC 10.8: the AI's own paper trades
+const CLOSE_TH = { sl: 'โดน SL', tp: 'ถึง TP', ai_close: 'AI สั่งปิด', reverse: 'AI กลับฝั่ง', time: 'หมดเวลา', stale: 'ปิดเพราะไม่มีราคา' };
+
+function aiPortfolioPanel(trades, scans, status) {
+  const open = trades.find((t) => t.status === 'open');
+  const closed = trades.filter((t) => t.status === 'closed');
+  const total = closed.reduce((s, t) => s + Number(t.pnl || 0), 0);
+  const wins = closed.filter((t) => Number(t.pnl) > 0).length;
+  const m = (status && status.market) || {};
+  let openBox = h('p', { class: 'muted' }, 'ตอนนี้ AI ไม่มีไม้เปิดอยู่');
+  if (open) {
+    const px = Number(open.side === 'BUY' ? m.bid : m.ask);
+    const live = Number.isFinite(px) && px > 0 ? Math.round((open.side === 'BUY' ? px - open.entry : open.entry - px) * open.lots * 100 * 100) / 100 : null;
+    const risk = Math.round(Math.abs(open.entry - open.sl) * open.lots * 100 * 100) / 100, reward = Math.round(Math.abs(open.tp - open.entry) * open.lots * 100 * 100) / 100;
+    openBox = h('div', { class: 'shadow-ai-open' },
+      h('div', { class: 'shadow-head' }, h('span', { class: 'chip live' }, 'ไม้ของ AI เปิดอยู่'), sideEl(open.side), h('span', { class: 'num' }, `${fmtNum(open.lots)} ล็อต`),
+        h('span', null, `เข้า ${fmtNum(open.entry)}`), h('span', { class: 'muted small' }, `เปิด ${fmtThai(Date.parse(open.opened_at), 'datetime')}`)),
+      h('div', { class: 'shadow-plan-line' }, `SL ${fmtNum(open.sl)} ถ้าโดน `, pnl(-risk), ` · TP ${fmtNum(open.tp)} ถ้าถึง `, pnl(reward)),
+      live !== null ? h('div', { class: 'shadow-plan-line' }, 'ตอนนี้ ', pnl(live)) : null,
+      open.plan && open.plan.reason ? h('p', { class: 'muted' }, open.plan.reason) : null);
+  }
+  const last = scans[0];
+  return panel('พอร์ตของ AI (เทรดเองบนกระดาษ)', { sub: 'AI ตัดสินใจเองว่าจะเปิดไม้เมื่อไหร่ ฝั่งไหน SL และ TP เท่าไหร่ แล้วดูแลไม้ของตัวเองทุก 5 นาที ใช้ราคาจริงคิดผล แต่ไม่มีคำสั่งไปถึงโบรกเกอร์' },
+    h('dl', { class: 'kv' },
+      h('dt', null, 'ไม้ที่ปิดแล้ว'), h('dd', null, `${closed.length} ไม้ ชนะ ${wins}${closed.length ? ` (${Math.round((wins / closed.length) * 100)} %)` : ''}`),
+      h('dt', null, 'กำไรรวมของ AI'), h('dd', null, pnl(total))),
+    openBox,
+    last ? h('div', { class: 'shadow-review' }, h('p', { class: 'shadow-review-title' }, `AI ดูตลาดล่าสุด ${fmtThai(Date.parse(last.ts), 'datetime')}: `,
+      h('span', { class: `chip ${last.action === 'open' ? 'live' : 'off'}` }, last.action === 'open' ? `เปิด${last.side === 'BUY' ? 'ซื้อ' : 'ขาย'}` : last.action === 'wait' ? 'รอ' : 'ถามไม่สำเร็จ')),
+    h('p', null, last.reason || '—')) : null,
+    closed.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'rtable compact' },
+      h('thead', null, h('tr', null, ['เปิด', 'ฝั่ง', 'เข้า', 'SL', 'TP', 'ออก', 'ปิดเพราะ', 'กำไร', 'เหตุผลที่เปิด'].map((x) => h('th', { scope: 'col' }, x)))),
+      h('tbody', null, closed.map((t) => h('tr', null,
+        h('td', { 'data-label': 'เปิด' }, fmtThai(Date.parse(t.opened_at), 'datetime')),
+        h('td', { 'data-label': 'ฝั่ง' }, sideEl(t.side)),
+        h('td', { 'data-label': 'เข้า', class: 'num' }, fmtNum(t.entry)),
+        h('td', { 'data-label': 'SL', class: 'num' }, fmtNum(t.first_sl)),
+        h('td', { 'data-label': 'TP', class: 'num' }, fmtNum(t.tp)),
+        h('td', { 'data-label': 'ออก', class: 'num' }, fmtNum(t.exit)),
+        h('td', { 'data-label': 'ปิดเพราะ' }, CLOSE_TH[t.close_reason] || t.close_reason || '—'),
+        h('td', { 'data-label': 'กำไร' }, pnl(t.pnl)),
+        h('td', { 'data-label': 'เหตุผลที่เปิด', class: 'shadow-reason' }, (t.plan && t.plan.reason) || '—')))))) : null);
+}
+
 function tradePanel(t, close, review, lessonsById) {
   const mv = firstMove(t);
   const real = close ? [pnl(close.pnl), h('span', { class: 'muted small' }, ` ${close.reason || ''}`)] : h('span', { class: 'muted' }, 'ยังเปิดอยู่ หรือยังไม่เห็นผลในประวัติล่าสุด');
@@ -159,14 +203,17 @@ export async function render(root, ctx) {
   root.append(box);
   box.append(loadingState());
 
-  let rows = [], journal = [], cost = null, lessons = [], reviews = [];
+  let rows = [], journal = [], cost = null, lessons = [], reviews = [], aiTrades = [], aiScans = [], st = null;
   try {
-    [rows, journal, cost, lessons, reviews] = await Promise.all([
+    [rows, journal, cost, lessons, reviews, aiTrades, aiScans, st] = await Promise.all([
       ctx.api.shadowDecisions(bot.id, { limit: 400 }),
       ctx.api.journalTail(bot.id, 400).catch(() => []),
       isAdmin() ? ctx.api.shadowMonthCost().catch(() => null) : null,
       ctx.api.shadowLessons(bot.id).catch(() => []),          // SPEC 10.7 (schema.sql older than the memory: none)
       ctx.api.shadowReviews(bot.id).catch(() => []),
+      ctx.api.aiTrades(bot.id).catch(() => []),                // SPEC 10.8
+      ctx.api.aiScans(bot.id).catch(() => []),
+      ctx.api.botStatus(bot.id).catch(() => null),
     ]);
   } catch (e) {
     if (e && e.code === 'not_deployed') {
@@ -206,6 +253,7 @@ export async function render(root, ctx) {
     if (!(await confirmDialog(`เลิกใช้บทเรียน #${l.id}`, `${l.text} — AI จะไม่อ่านบทเรียนนี้อีก`, { ok: 'เลิกใช้', danger: true }))) return;
     try { await ctx.api.retireLesson(bot.id, l.id); toast('เลิกใช้บทเรียนแล้ว AI จะไม่อ่านบทเรียนนี้อีก', 'good'); ctx.route(); } catch (e) { toast(errText(e), 'bad'); }
   };
-  mount(box, intro, ...status, summary, memoryPanel(lessons, reviews, retire, ownsBot(bot)),
+  const stJson = st && (st.status || st);
+  mount(box, intro, ...status, aiPortfolioPanel(aiTrades, aiScans, stJson), summary, memoryPanel(lessons, reviews, retire, ownsBot(bot)),
     ...trades.map((t) => tradePanel(t, closes.get(t.ticket), reviewByTicket.get(t.ticket), lessonsById)));
 }

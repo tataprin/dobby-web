@@ -114,6 +114,10 @@ export async function renderAi(root, ctx) {
   const shModel = h('select', { class: 'input select' }, MODELS.map((m) => h('option', { value: m.id, selected: m.id === (cfg.shadow_model || 'claude-opus-5-5') }, m.label)));
   const shBudget = h('input', { class: 'input', type: 'number', min: '0', max: '10000', step: '1', inputmode: 'decimal', value: String(Number(cfg.shadow_budget_usd ?? 30)) });
   const shEvery = h('input', { class: 'input', type: 'number', min: '1', max: '60', step: '1', inputmode: 'numeric', value: String(Math.round(Number(cfg.shadow_interval_s ?? 300) / 60)) });
+  // SPEC 10.8 the AI trader (its own paper trades)
+  const atOn = h('input', { type: 'checkbox', class: 'toggle', role: 'switch', checked: !!cfg.ai_trader_enabled, 'aria-label': 'ให้ AI เทรดเองบนกระดาษ' });
+  const atEvery = h('input', { class: 'input', type: 'number', min: '5', max: '240', step: '5', inputmode: 'numeric', value: String(Math.round(Number(cfg.ai_trader_interval_s ?? 1800) / 60)) });
+  const atLots = h('input', { class: 'input', type: 'number', min: '0.01', max: '5', step: '0.01', inputmode: 'decimal', value: String(Number(cfg.ai_trader_lots ?? 0.2)) });
   const shErr = h('p', { class: 'field-error', role: 'alert' });
   const shSave = h('button', { class: 'btn primary', type: 'submit' }, icon('save'), 'บันทึก');
   const shCost = h('p', { class: 'muted small' });
@@ -126,9 +130,13 @@ export async function renderAi(root, ctx) {
       const mins = Number(shEvery.value), budget = Number(shBudget.value);
       if (!(Number.isInteger(mins) && mins >= 1 && mins <= 60)) { shErr.textContent = 'ถามทุกกี่นาที ต้องเป็นจำนวนเต็ม 1 ถึง 60'; return; }
       if (!(budget >= 0 && budget <= 10000)) { shErr.textContent = 'งบต่อเดือนต้องอยู่ระหว่าง 0 ถึง 10,000 USD'; return; }
+      const atMins = Number(atEvery.value), atL = Number(atLots.value);
+      if (!(Number.isInteger(atMins) && atMins >= 5 && atMins <= 240)) { shErr.textContent = 'AI ดูตลาดทุกกี่นาที ต้องเป็นจำนวนเต็ม 5 ถึง 240'; return; }
+      if (!(atL >= 0.01 && atL <= 5)) { shErr.textContent = 'ล็อตของ AI ต้องอยู่ระหว่าง 0.01 ถึง 5'; return; }
       busy(shSave, true, 'กำลังบันทึก…');
       try {
-        cfg = await ctx.api.updateAiConfig({ shadow_enabled: shOn.checked, shadow_model: shModel.value, shadow_budget_usd: budget, shadow_interval_s: mins * 60 });
+        cfg = await ctx.api.updateAiConfig({ shadow_enabled: shOn.checked, shadow_model: shModel.value, shadow_budget_usd: budget, shadow_interval_s: mins * 60,
+          ...('ai_trader_enabled' in cfg ? { ai_trader_enabled: atOn.checked, ai_trader_interval_s: atMins * 60, ai_trader_lots: atL } : {}) });
         toast(cfg.shadow_enabled ? 'เปิด AI เงาแล้ว' : 'ปิด AI เงาแล้ว', 'good');
       } catch (ex) { shErr.textContent = errText(ex); }
       busy(shSave, false);
@@ -141,6 +149,13 @@ export async function renderAi(root, ctx) {
     field('รุ่น Claude ของ AI เงา', shModel, { hint: 'ค่าเริ่มต้น Opus 5.5 คิดละเอียดที่สุด Sonnet ราคาราวครึ่งหนึ่ง' }),
     field('ถามทุกกี่นาที', shEvery, { hint: 'ต่อไม้ที่เปิดอยู่ 1 ไม้' }),
     field('งบ AI เงาต่อเดือน (USD)', shBudget, { hint: 'แยกจากงบผู้ช่วย ครบงบแล้วหยุดถามจนถึงต้นเดือนหน้า' })),
+  'ai_trader_enabled' in cfg ? [
+    h('div', { class: 'set-row ai-switch' }, h('div', { class: 'set-row-main' },
+      h('div', { class: 'set-copy' }, h('p', { class: 'set-label' }, 'ให้ AI เทรดเองบนกระดาษ'),
+        h('p', { class: 'hint' }, 'AI ดูตลาดแล้วตัดสินใจเปิดไม้ของตัวเอง ตั้ง SL และ TP เอง ดูแลไม้เองทุก 5 นาที ใช้ราคาจริงคิดผล ไม่มีคำสั่งไปถึงโบรกเกอร์')), atOn)),
+    h('div', { class: 'grid-2 ai-fields' },
+      field('AI ดูตลาดทุกกี่นาที', atEvery, { hint: 'ตอนที่ AI ไม่มีไม้เปิด ยิ่งถี่ยิ่งเปลืองงบ' }),
+      field('ล็อตของไม้ AI', atLots, { hint: 'ใช้คิดเงินบนกระดาษ ตั้งเท่าบอทเพื่อเทียบกันได้' }))] : null,
   shCost, shErr,
   h('div', { class: 'ai-actions' }, shSave));
   const shadowPanel = hasShadow

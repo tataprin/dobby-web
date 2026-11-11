@@ -38,7 +38,10 @@ def open_status(env, **changes):
                      market={"bid": 4051.03, "ask": 4051.19, "spread": 0.16}, **changes)
 
 
-def make(env, answers=None):
+def make(env, answers=None, ai_trader=False):
+    cfg = env.config()
+    cfg["ai_trader"] = ai_trader          # SPEC 10.8 scans are tested on their own below
+    da.save_config(env.cfg_path, cfg)
     a = env.agent()
     fake = FakePost(answers)
     a.shadow.post = fake
@@ -237,6 +240,120 @@ def test_no_close_row_gives_up_after_30_minutes(env):
     a.cycle()
     assert a.shadow.pending == {}
     assert not [c for c in fake.calls if c["body"].get("mode") == "review"]
+
+
+# ------------------------------------------------------------------ SPEC 10.8 AI trader (paper)
+TRADE = {"id": 5, "ticket": 900000000005, "side": "BUY", "lots": 0.2, "entry": 4050.16, "sl": 4044.16, "tp": 4059.16,
+         "first_sl": 4044.16, "status": "open", "opened_at": "2026-11-09T08:00:00Z"}
+
+
+def market(env, bid, ask=None, **changes):
+    env.tick(5, market={"bid": bid, "ask": ask if ask is not None else round(bid + 0.16, 2), "spread": 0.16}, **changes)
+
+
+def scans(fake):
+    return [c for c in fake.calls if c["body"].get("mode") == "scan"]
+
+
+def test_ai_scan_opens_a_paper_trade_then_hits_its_target_and_is_reviewed(env):
+    write_bars(env)
+    a, fake = make(env, ai_trader=True, answers=[
+        (200, {"ok": True, "action": "open", "trade": dict(TRADE), "next_after_s": 1800, "reason": "ซื้อ"})])
+    before = env.snapshot()
+    market(env, 4050.0)
+    a.cycle()
+    assert len(scans(fake)) == 1
+    snap = scans(fake)[0]["body"]["snapshot"]
+    assert "position" not in snap and snap["market"]["bid"] == 4050.0 and "dobby_open_trades" in snap
+    assert a.shadow.ai_trade["ticket"] == 900000000005
+    # management question on its own trade (module AI) after the first cycle
+    market(env, 4052.0)
+    a.cycle()
+    own = [c for c in fake.calls if c["body"].get("snapshot", {}).get("position", {}).get("module") == "AI"]
+    assert own and own[0]["body"]["snapshot"]["position"]["profit"] == 36.8      # (4052 - 4050.16) x 20
+    # the target is touched on the live bid -> close event, then a review with its own close
+    fake.answers = [(200, {"ok": True, "trade": dict(TRADE, status="closed", exit=4059.2, pnl=180.8, close_reason="tp",
+                                                     closed_at="2026-11-09T09:00:00Z")}),
+                    (200, {"ok": True, "review_id": 3, "summary": "s", "mistakes": "m"})]
+    market(env, 4059.2)
+    a.cycle()
+    ev = [c for c in fake.calls if c["body"].get("mode") == "ai_trade_event"]
+    assert ev and ev[0]["body"] == {"mode": "ai_trade_event", "bot_id": BOT, "trade_id": 5, "price": 4059.2, "reason": "tp"}
+    assert a.shadow.ai_trade is None
+    market(env, 4059.0)
+    a.cycle()
+    rv = [c for c in fake.calls if c["body"].get("mode") == "review"]
+    assert rv and rv[0]["body"]["ticket"] == 900000000005 and rv[0]["body"]["close"]["pnl"] == 180.8
+    assert rv[0]["body"]["close"]["reason"] == "tp"
+    # paper only: no EA file was written by any of this except the agent's normal control / remote files
+    after = env.snapshot()
+    assert set(after) - set(before) <= {"dobby2_control.txt", "dobby3_remote.txt"}
+
+
+def test_ai_stop_on_a_sell_uses_the_ask_and_the_trade_survives_a_restart(env):
+    a, fake = make(env, ai_trader=True)
+    a.shadow.ai_trade = dict(TRADE, side="SELL", entry=4050.0, sl=4056.0, tp=4041.0)
+    a.shadow._save()
+    b = env.agent()                                          # restart: the paper trade is read back from shadow_state.json
+    fake2 = FakePost([(200, {"ok": True, "trade": dict(TRADE, side="SELL", status="closed", exit=4056.1, pnl=-122.0,
+                                                       close_reason="sl")})])
+    b.shadow.post, b.shadow.threaded = fake2, False
+    assert b.shadow.ai_trade["side"] == "SELL"
+    market(env, 4055.9, 4056.1)                              # bid under the stop, ask over it: a SELL stops on the ask
+    b.cycle()
+    ev = [c for c in fake2.calls if c["body"].get("mode") == "ai_trade_event"]
+    assert ev[0]["body"]["reason"] == "sl" and ev[0]["body"]["price"] == 4056.1
+
+
+def test_ai_no_scan_with_a_stale_price_or_on_friday_evening_and_off_switch(env):
+    a, fake = make(env, ai_trader=True)
+    env.status["heartbeat_gmt_unix"] = int(env.clock()) - 600
+    env.write_status(fresh=False)
+    a.cycle()
+    assert scans(fake) == []                                 # the EA's price is 10 min old
+    fri = server_time_str(env.clock() + 4 * 86400 + 12 * 3600)   # Friday 22:00 server
+    env.tick(5, server_time=fri)
+    env.status["server_time"] = fri
+    env.write_status(fresh=False, heartbeat_gmt_unix=int(env.clock()))
+    a.cycle()
+    assert scans(fake) == []
+    c, fake3 = make(env, ai_trader=False)
+    market(env, 4050.0)
+    c.cycle()
+    assert scans(fake3) == []
+
+
+def test_ai_scan_waits_the_interval_and_backs_off_when_disabled(env):
+    a, fake = make(env, ai_trader=True, answers=[(200, {"ok": True, "action": "wait", "trade": None, "next_after_s": 1800}),
+                                                (403, {"error": "ai_trader_disabled"})])
+    market(env, 4050.0)
+    a.cycle()
+    market(env, 4050.5)
+    a.cycle()
+    assert len(scans(fake)) == 1
+    assert a.agent_state(env.clock())["shadow"]["last_scan"]["action"] == "wait"
+    env.tick(1800)
+    market(env, 4051.0)
+    a.cycle()
+    assert len(scans(fake)) == 2                              # disabled -> next try in 30 min
+    env.tick(600)
+    market(env, 4051.0)
+    a.cycle()
+    assert len(scans(fake)) == 2
+
+
+def test_own_trade_decision_applies_the_server_answer(env):
+    a, fake = make(env, ai_trader=True)
+    a.shadow.ai_trade = dict(TRADE)
+    fake.answers = [(200, {"ok": True, "decision": {"action": "reverse", "details": {}}, "valid": True, "next_after_s": 300,
+                           "ai_trade": {"trade": dict(TRADE, status="closed", exit=4048.0, pnl=-43.2, close_reason="reverse"),
+                                        "new_trade": {"id": 6, "ticket": 900000000006, "side": "SELL", "lots": 0.2,
+                                                      "entry": 4047.84, "sl": 4053.0, "tp": 4039.0, "first_sl": 4053.0,
+                                                      "status": "open", "opened_at": "2026-11-09T08:30:00Z"}}})]
+    market(env, 4048.0)
+    a.cycle()
+    assert a.shadow.ai_trade["ticket"] == 900000000006
+    assert 900000000005 in a.shadow.pending and a.shadow.pending[900000000005]["close"]["reason"] == "reverse"
 
 
 def test_shadow_bar_rows_needs_the_offset():

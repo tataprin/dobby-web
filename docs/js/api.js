@@ -439,7 +439,7 @@ export class SupabaseApi {
   async aiConfig() { return unwrap(await this.sb.from('ai_config').select('*').eq('id', 1).maybeSingle()); }
   async updateAiConfig(patch) {
     const keys = ['enabled', 'member_daily_limit', 'admin_daily_limit', 'monthly_budget_usd', 'model',
-      'shadow_enabled', 'shadow_model', 'shadow_budget_usd', 'shadow_interval_s'];
+      'shadow_enabled', 'shadow_model', 'shadow_budget_usd', 'shadow_interval_s', 'ai_trader_enabled', 'ai_trader_interval_s', 'ai_trader_lots'];
     const row = Object.fromEntries(Object.entries(patch || {}).filter(([k]) => keys.includes(k)));
     return unwrap(await this.sb.from('ai_config').update(row).eq('id', 1).select().single());
   }
@@ -455,6 +455,14 @@ export class SupabaseApi {
   async shadowReviews(botId, { limit = 100 } = {}) {
     return unwrap(await this.sb.from('shadow_reviews').select('id,ts,ticket,module,side,outcome,summary,mistakes,ops,cost_usd').eq('bot_id', botId)
       .order('ts', { ascending: false }).limit(limit));
+  }
+  // SPEC 10.8 the AI's own paper trades and its "should I open now?" answers
+  async aiTrades(botId, { limit = 200 } = {}) {
+    return unwrap(await this.sb.from('ai_trades').select('*').eq('bot_id', botId).order('opened_at', { ascending: false }).limit(limit));
+  }
+  async aiScans(botId, { limit = 30 } = {}) {
+    return unwrap(await this.sb.from('ai_scans').select('id,ts,action,side,entry,sl,tp,confidence,reason,valid,details,trade_id,cost_usd')
+      .eq('bot_id', botId).order('ts', { ascending: false }).limit(limit));
   }
   async retireLesson(botId, id) {
     await this.assertOwn(botId);
@@ -1103,6 +1111,7 @@ export class DemoApi {
       this.db.ai = { convs: [], msgs: [], usage, seq: 1,
         config: { id: 1, enabled: true, member_daily_limit: 20, admin_daily_limit: 100, monthly_budget_usd: 30, model: 'claude-opus-5-5',
           shadow_enabled: true, shadow_model: 'claude-opus-5-5', shadow_budget_usd: 30, shadow_interval_s: 300,
+          ai_trader_enabled: true, ai_trader_interval_s: 1800, ai_trader_lots: 0.2,
           updated_at: new Date(now - 86400e3).toISOString(), updated_by: null } };
     }
     return this.db.ai;
@@ -1130,11 +1139,13 @@ export class DemoApi {
     const models = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
     if (!int(next.member_daily_limit, 0, 1000) || !int(next.admin_daily_limit, 0, 5000) || !(Number(next.monthly_budget_usd) >= 0 && Number(next.monthly_budget_usd) <= 100000)
       || !models.includes(next.model) || !models.includes(next.shadow_model) || !int(next.shadow_interval_s, 60, 3600)
-      || !(Number(next.shadow_budget_usd) >= 0 && Number(next.shadow_budget_usd) <= 10000)) throw new ApiError('invalid', '', 'ค่าที่ใส่อยู่นอกช่วงที่ตั้งได้');
+      || !(Number(next.shadow_budget_usd) >= 0 && Number(next.shadow_budget_usd) <= 10000)
+      || !int(next.ai_trader_interval_s ?? 1800, 300, 14400) || !(Number(next.ai_trader_lots ?? 0.2) >= 0.01 && Number(next.ai_trader_lots ?? 0.2) <= 5)) throw new ApiError('invalid', '', 'ค่าที่ใส่อยู่นอกช่วงที่ตั้งได้');
     const before = clone(c);
     Object.assign(c, { enabled: !!next.enabled, member_daily_limit: Number(next.member_daily_limit), admin_daily_limit: Number(next.admin_daily_limit),
       monthly_budget_usd: Number(next.monthly_budget_usd), model: next.model, shadow_enabled: !!next.shadow_enabled, shadow_model: next.shadow_model,
-      shadow_budget_usd: Number(next.shadow_budget_usd), shadow_interval_s: Number(next.shadow_interval_s), updated_at: new Date().toISOString(), updated_by: this.uidCur });
+      shadow_budget_usd: Number(next.shadow_budget_usd), shadow_interval_s: Number(next.shadow_interval_s),
+      ai_trader_enabled: !!next.ai_trader_enabled, ai_trader_interval_s: Number(next.ai_trader_interval_s ?? 1800), ai_trader_lots: Number(next.ai_trader_lots ?? 0.2), updated_at: new Date().toISOString(), updated_by: this.uidCur });
     this.audit(null, 'ai_config_update', before, clone(c));
     return clone(c);
   }
@@ -1217,6 +1228,39 @@ export class DemoApi {
   async shadowReviews(botId) {
     await this.wait(60); this.readBot(botId);
     return clone(this.shadowMemoryDb().reviews.filter((r) => r.bot_id === botId));
+  }
+  aiTraderDb() {
+    if (!this.db.aiTrader) {
+      const now = Date.now(), trades = [], scans = [];
+      for (const bot of this.db.bots) {
+        const live = Number((((this.statusRow(bot.id) || {}).status || {}).market || {}).bid);
+        const dlt = Number.isFinite(live) && live > 0 ? Math.round((live - 4047.1) * 100) / 100 : 0;   // the open demo trade sits near the demo price
+        const mk = (id, h, side, entry0, sl0, tp0, exit0, reason, why, conf) => {
+          const sh = (x) => (x === null ? null : Math.round((x + (exit0 === null ? dlt : 0)) * 100) / 100);
+          const entry = sh(entry0), sl = sh(sl0), tp = sh(tp0), exit = exit0;
+          const pnl = exit === null ? null : Math.round((side === 'BUY' ? exit - entry : entry - exit) * 20 * 100) / 100;
+          trades.push({ id, bot_id: bot.id, ticket: 900000000000 + id, opened_at: new Date(now - h * 3600e3).toISOString(), side, lots: 0.2, entry, sl, tp, first_sl: sl,
+            status: exit === null ? 'open' : 'closed', closed_at: exit === null ? null : new Date(now - (h - 1.5) * 3600e3).toISOString(), exit, pnl,
+            close_reason: reason, plan: { reason: why, confidence: conf } });
+        };
+        mk(1, 50, 'SELL', 4128.4, 4134.4, 4119.4, 4119.4, 'tp', 'H4 ยังเป็นขาลง ราคาเด้งขึ้นมาชน EMA20 ของ H1 แล้วแท่ง M15 ปิดกลับลง เปิดขายที่ 4,128.40 SL 4,134.40 เหนือจุดสวิงล่าสุด เป้า 4,119.40 แถวจุดต่ำเมื่อเช้า', 62);
+        mk(2, 27, 'SELL', 4061.2, 4067.0, 4052.5, 4067.0, 'sl', 'หลังข่าว CPI ราคาลงแรง รอเด้งแล้วขายตามเทรนด์ SL 4,067.00 เหนือแท่งข่าว เป้า 4,052.50', 55);
+        mk(3, 1, 'BUY', 4046.3, 4041.0, 4054.3, null, null, 'ราคากลับขึ้นเหนือ VWAP และ RSI H1 ออกจากโซนขายมากเกิน เปิดซื้อ SL ใต้จุดต่ำของวัน (ห่าง 5.30) เป้าห่าง 8.00 ประมาณ 1.5 เท่าของ SL', 51);
+        const o = trades[trades.length - 1];
+        scans.push({ id: 1, bot_id: bot.id, ts: new Date(now - 1.1 * 3600e3).toISOString(), action: 'open', side: 'BUY', entry: o.entry, sl: o.sl, tp: o.tp, confidence: 51, reason: o.plan.reason, valid: true, details: { rr: 1.51 }, trade_id: 3, cost_usd: 0.05 },
+          { id: 2, bot_id: bot.id, ts: new Date(now - 1.6 * 3600e3).toISOString(), action: 'wait', confidence: 30, reason: 'ราคายังแกว่งอยู่ใต้ VWAP ยังไม่มีสัญญาณกลับตัวชัด และข่าว Jobless Claims จะออกใน 40 นาที รอดูก่อน', valid: true, details: {}, trade_id: null, cost_usd: 0.04 });
+      }
+      this.db.aiTrader = { trades, scans };
+    }
+    return this.db.aiTrader;
+  }
+  async aiTrades(botId) {
+    await this.wait(60); this.readBot(botId);
+    return clone(this.aiTraderDb().trades.filter((t) => t.bot_id === botId).sort((a, b) => b.opened_at.localeCompare(a.opened_at)));
+  }
+  async aiScans(botId) {
+    await this.wait(60); this.readBot(botId);
+    return clone(this.aiTraderDb().scans.filter((s) => s.bot_id === botId).sort((a, b) => b.ts.localeCompare(a.ts)));
   }
   async retireLesson(botId, id) {
     await this.wait(); this.readBot(botId);

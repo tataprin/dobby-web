@@ -51,6 +51,9 @@ export const ERRORS: Record<string, [number, string]> = {
   not_authenticated: [401, "กรุณาเข้าสู่ระบบอีกครั้ง"],
   not_approved: [403, "บัญชียังไม่ได้รับอนุมัติ หรือถูกปิดการใช้งาน"],
   shadow_disabled: [403, "ผู้ดูแลยังไม่ได้เปิด AI เงา"],
+  ai_trader_disabled: [403, "ผู้ดูแลยังไม่ได้เปิดให้ AI เทรดเอง"],
+  ai_trade_open: [409, "AI มีไม้ของตัวเองเปิดอยู่แล้ว"],
+  ai_trade_not_found: [404, "ไม่พบไม้ของ AI"],
   bot_not_found: [404, "ไม่พบบอทนี้ในบัญชีของคุณ"],
   method_not_allowed: [405, "ใช้ได้เฉพาะ POST"],
   shadow_too_soon: [429, "ถามเรื่องไม้นี้ไปแล้วเมื่อสักครู่"],
@@ -60,7 +63,8 @@ export const ERRORS: Record<string, [number, string]> = {
   internal: [500, "เกิดข้อผิดพลาด"],
   ai_not_configured: [503, "ยังไม่ได้ตั้งค่า AI ใน Supabase"],
 };
-const RPC_CODES = ["not_approved", "bot_not_found", "shadow_disabled", "shadow_budget", "shadow_too_soon", "review_done", "review_nothing"];
+const RPC_CODES = ["not_approved", "bot_not_found", "shadow_disabled", "shadow_budget", "shadow_too_soon", "review_done", "review_nothing",
+  "ai_trader_disabled", "ai_trade_open", "ai_trade_not_found"];
 
 // ------------------------------------------------------------------ prompt
 export const SYSTEM_PROMPT = `You are the shadow AI of Dobby, a MetaTrader 5 robot that trades gold (XAUUSD) on M15 with fixed rules. A Dobby trade is open right now. Decide what YOU would do with it at this moment. Your answer is only logged for a forward test that compares your decisions with the fixed rules; it is never executed, so be honest and calibrated, not cautious for show.
@@ -441,6 +445,61 @@ export const REVIEW_TOOL = {
   },
 };
 
+// ------------------------------------------------------------------ AI trader: its own paper trades (SPEC 10.8)
+export const AI_TICKET_BASE = 900000000000;
+export const SCAN_PROMPT = `You are the AI trader of Dobby's owner. Next to the Dobby robot (which trades gold XAUUSD on M15 with fixed rules) you run YOUR OWN paper account: you decide alone when to open a trade, which side, and where its stop and target are. One trade at a time, fixed lots given in the snapshot. Paper only: nothing reaches the broker, but every trade is scored on real prices, reviewed after it closes, and your lessons are kept, so trade as if it were real money.
+
+How your trade works after you open it:
+- It fills at the ask for a BUY and at the bid for a SELL (spread about 0.10-0.20 $ is a real cost).
+- It closes at its stop or its target on the live price. Every few minutes you are asked again what to do with it (hold / close / tighten the stop / reverse), so you can manage it.
+- It is closed on Friday after 22:00 server time and after 24 hours at the latest.
+
+Be selective: waiting is a good answer when there is no clear edge. Historical tests on 2026 data found that most simple rules (RSI / Bollinger / VWAP fades, opening-range breakouts, FVG bounces with small targets, early exits, stop-and-reverse) lose after costs; what worked was trading WITH the H4 trend after a pullback, with a stop of about 1-1.5 ATR and a target of about 1-1.5 times the stop. Avoid opening just before a high-impact USD release. Use the data tools when the snapshot is not enough.
+
+Finish by calling the tool trade with action "open" (side, exact stop and target prices) or "wait". confidence = how sure you are that this trade reaches its target before its stop (0-100). reason: 2 to 4 short sentences in Thai with the facts, the entry idea and why that stop and that target.`;
+
+export const TRADE_TOOL = {
+  name: "trade",
+  description: "Open your own paper trade now, or wait.",
+  input_schema: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["open", "wait"] },
+      side: { type: ["string", "null"], enum: ["BUY", "SELL", null] },
+      sl: { type: ["number", "null"], description: "open only: the stop price" },
+      tp: { type: ["number", "null"], description: "open only: the target price" },
+      confidence: { type: "integer", minimum: 0, maximum: 100 },
+      reason: { type: "string", description: "Thai, 2-4 sentences" },
+    },
+    required: ["action", "side", "sl", "tp", "confidence", "reason"],
+    additionalProperties: false,
+  },
+};
+
+/** Validates an "open" against the market: entry at the ask (BUY) / bid (SELL), stop and target on their sides,
+ *  stop 1..30 $ and target 1..60 $ away. Returns the row for ai_scan_record. */
+export function checkOpen(input: Json, market: Json, lots: number): Json {
+  const action = input?.action === "open" ? "open" : "wait";
+  const reason = clip(input?.reason, 1200).trim();
+  const c = num(input?.confidence);
+  const conf = c === null ? null : Math.max(0, Math.min(100, Math.round(c)));
+  if (action === "wait") return { action, valid: input?.action === "wait", reason, confidence: conf, details: {} };
+  const side = input?.side === "BUY" || input?.side === "SELL" ? input.side : null;
+  const entry = side === "BUY" ? num(market?.ask) : side === "SELL" ? num(market?.bid) : null;
+  const sl = px2(input?.sl), tp = px2(input?.tp);
+  let valid = !!side && entry !== null && sl !== null && tp !== null;
+  const details: Json = {};
+  if (valid) {
+    const buy = side === "BUY";
+    const slD = r2(buy ? (entry as number) - (sl as number) : (sl as number) - (entry as number));
+    const tpD = r2(buy ? (tp as number) - (entry as number) : (entry as number) - (tp as number));
+    valid = slD >= 1 && slD <= 30 && tpD >= 1 && tpD <= 60;
+    const mult = lots * 100;
+    Object.assign(details, { entry, sl_dist: slD, tp_dist: tpD, risk: r2(-Math.abs(slD) * mult), reward: r2(Math.abs(tpD) * mult), rr: slD > 0 ? r2(tpD / slD) : null });
+  }
+  return { action, side, entry, sl, tp, lots, valid, reason, confidence: conf, details };
+}
+
 // ------------------------------------------------------------------ Supabase helpers
 interface Sb { url: string; apikey: string; token: string; serviceKey: string; fetch: typeof fetch }
 class SbError extends Error {
@@ -597,6 +656,8 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
     }
     const botId = body && typeof body.bot_id === "string" && UUID_RE.test(body.bot_id) ? body.bot_id : null;
     if (body && body.mode === "review") return await handleReview(sb, user, botId, body);
+    if (body && body.mode === "scan") return await handleScan(sb, user, botId, body);
+    if (body && body.mode === "ai_trade_event") return await handleTradeEvent(sb, user, botId, body);
     const snapshot = body && body.snapshot && typeof body.snapshot === "object" && !Array.isArray(body.snapshot) ? body.snapshot : null;
     const pos = snapshot ? readPosition(snapshot) : null;
     if (!botId || !pos) return jsonError("bad_request");
@@ -617,36 +678,13 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
 
     // the decision: up to MAX_ROUNDS rounds of data tools, then `decide` is forced
     let decision: Decision = { action: "error", new_sl: null, confidence: null, reason: "", valid: false, details: {} };
-    const usage: Json = {};
-    const used: string[] = [];
-    const cache: Json = {};
-    try {
-      const client = makeClient(anthropicKey);
-      const messages: Json[] = [{ role: "user", content: userMessage(snapshot) }];
-      for (let round = 0; round < MAX_ROUNDS; round++) {
-        const last = round === MAX_ROUNDS - 1;
-        const msg: Json = await client.messages.create({
-          model, max_tokens: MAX_TOKENS, system: SYSTEM_PROMPT + memoryPrompt(memory.lessons, memory.reviews, memory.total),
-          tools: [...DATA_TOOLS, DECIDE_TOOL] as Json, tool_choice: last ? { type: "tool", name: "decide" } : { type: "any" },
-          messages,
-        } as Json);
-        addUsage(usage, msg?.usage);
-        const blocks: Json[] = Array.isArray(msg?.content) ? msg.content : [];
-        const dec = blocks.find((b) => b && b.type === "tool_use" && b.name === "decide");
-        if (dec) { decision = checkDecision(dec.input, pos); break; }
-        const calls = blocks.filter((b) => b && b.type === "tool_use");
-        if (!calls.length) { decision = { ...decision, reason: clip(`no decision (stop_reason ${msg?.stop_reason ?? "?"})`, 200) }; break; }
-        messages.push({ role: "assistant", content: blocks });
-        const results: Json[] = [];
-        for (const c of calls) {
-          used.push(`${c.name}${c.input?.timeframe ? `:${c.input.timeframe}` : ""}`);
-          results.push({ type: "tool_result", tool_use_id: c.id, content: clip(JSON.stringify(await runDataTool(sb, botId, c.name, c.input, cache)), 12000) });
-        }
-        messages.push({ role: "user", content: results });
-      }
-    } catch (e) {
-      decision = { ...decision, reason: clip(`AI call failed: ${(e as Error)?.message ?? e}`, 300) };
-    }
+    const ownTrade = pos.module === "AI" && pos.ticket > AI_TICKET_BASE;     // SPEC 10.8: the AI manages its own paper trade
+    const loop = await toolLoop(makeClient(anthropicKey), model, SYSTEM_PROMPT + memoryPrompt(memory.lessons, memory.reviews, memory.total) +
+      (ownTrade ? "\n\nThis open trade is YOUR OWN paper trade (module AI): your answer IS applied to it (close, new stop or reverse)." : ""),
+      userMessage(snapshot), DECIDE_TOOL, sb, botId);
+    const usage = loop.usage, used = loop.used;
+    if (loop.block) decision = checkDecision(loop.block.input, pos);
+    else decision = { ...decision, reason: loop.error };
     if (used.length) decision.details = { ...decision.details, data_used: used.slice(0, 12) };
 
     const cost = costOf(model, usage);
@@ -664,11 +702,104 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
       return jsonError(rpcErrorCode(e));
     }
     if (decision.action === "error") return new Response(JSON.stringify({ ok: false, id, error: "ai_failed", message: decision.reason, next_after_s: interval }), { status: 200, headers: JSON_HEADERS });
+    // SPEC 10.8: on its own paper trade the decision is applied
+    let aiTrade: Json = null;
+    if (ownTrade && decision.valid && decision.action !== "hold") {
+      const d = decision.details || {};
+      const op = decision.action === "tighten" ? { op: "sl", sl: decision.new_sl }
+        : decision.action === "close" ? { op: "close", price: d.close_price, reason: "ai_close" }
+        : d.reverse ? { op: "reverse", price: d.close_price, entry: d.reverse.entry, sl: d.reverse.sl, tp: d.reverse.tp, reason_text: decision.reason } : null;
+      if (op) {
+        try { aiTrade = await rpc(sb, "ai_trade_apply", { p_user: user.id, p_bot: botId, p_trade: pos.ticket - AI_TICKET_BASE, p_op: op }); }
+        catch (e) { aiTrade = { error: rpcErrorCode(e) }; }
+      }
+    }
     return new Response(JSON.stringify({
       ok: true, id,
       decision: { action: decision.action, new_sl: decision.new_sl, confidence: decision.confidence, reason: decision.reason, details: decision.details },
-      valid: decision.valid, next_after_s: interval, model, cost_usd: cost, memory_rev: Number(start?.memory_rev) || 0,
+      valid: decision.valid, next_after_s: interval, model, cost_usd: cost, memory_rev: Number(start?.memory_rev) || 0, ai_trade: aiTrade,
     }), { status: 200, headers: JSON_HEADERS });
+  }
+
+  /** Data-tool rounds, then `finalTool` is forced on the last round. Never throws. */
+  async function toolLoop(client: Anthropic, model: string, system: string, first: string, finalTool: Json, sb: Sb, botId: string):
+    Promise<{ block: Json; usage: Json; used: string[]; error: string }> {
+    const usage: Json = {}, used: string[] = [], cache: Json = {};
+    try {
+      const messages: Json[] = [{ role: "user", content: first }];
+      for (let round = 0; round < MAX_ROUNDS; round++) {
+        const last = round === MAX_ROUNDS - 1;
+        const msg: Json = await client.messages.create({
+          model, max_tokens: MAX_TOKENS, system, tools: [...DATA_TOOLS, finalTool] as Json,
+          tool_choice: last ? { type: "tool", name: finalTool.name } : { type: "any" }, messages,
+        } as Json);
+        addUsage(usage, msg?.usage);
+        const blocks: Json[] = Array.isArray(msg?.content) ? msg.content : [];
+        const fin = blocks.find((b) => b && b.type === "tool_use" && b.name === finalTool.name);
+        if (fin) return { block: fin, usage, used, error: "" };
+        const calls = blocks.filter((b) => b && b.type === "tool_use");
+        if (!calls.length) return { block: null, usage, used, error: clip(`no decision (stop_reason ${msg?.stop_reason ?? "?"})`, 200) };
+        messages.push({ role: "assistant", content: blocks });
+        const results: Json[] = [];
+        for (const c of calls) {
+          used.push(`${c.name}${c.input?.timeframe ? `:${c.input.timeframe}` : ""}`);
+          results.push({ type: "tool_result", tool_use_id: c.id, content: clip(JSON.stringify(await runDataTool(sb, botId, c.name, c.input, cache)), 12000) });
+        }
+        messages.push({ role: "user", content: results });
+      }
+      return { block: null, usage, used, error: "no decision after the last round" };
+    } catch (e) {
+      return { block: null, usage, used, error: clip(`AI call failed: ${(e as Error)?.message ?? e}`, 300) };
+    }
+  }
+
+  // SPEC 10.8: POST {mode: "scan", bot_id, snapshot (market, bars, news, the bot's own positions)} -> open or wait
+  async function handleScan(sb: Sb, user: Json, botId: string | null, body: Json): Promise<Response> {
+    const snapshot = body?.snapshot && typeof body.snapshot === "object" && !Array.isArray(body.snapshot) ? body.snapshot : null;
+    const market = snapshot?.market;
+    if (!botId || !snapshot || num(market?.bid) === null || num(market?.ask) === null) return jsonError("bad_request");
+    const anthropicKey = env("ANTHROPIC_API_KEY");
+    sb.serviceKey = serviceKeyOf(env);
+    if (!anthropicKey || !sb.serviceKey) return jsonError("ai_not_configured");
+    let start: Json;
+    try {
+      start = await rpc(sb, "ai_scan_start", { p_user: user.id, p_bot: botId });
+    } catch (e) {
+      return jsonError(rpcErrorCode(e));
+    }
+    const model = String(start?.model || "claude-opus-5-5"), interval = Number(start?.interval_s) || 1800, lots = Number(start?.lots) || 0.2;
+    const memory = await loadMemory(sb, botId);
+    const loop = await toolLoop(makeClient(anthropicKey), model, SCAN_PROMPT + memoryPrompt(memory.lessons, memory.reviews, memory.total),
+      `Your lots: ${lots}. Market snapshot (JSON; *_utc = UTC, server_time = broker server time):\n${JSON.stringify(snapshot)}`, TRADE_TOOL, sb, botId);
+    const row: Json = loop.block ? checkOpen(loop.block.input, market, lots) : { action: "error", valid: false, reason: loop.error, details: {} };
+    if (loop.used.length) row.details = { ...row.details, data_used: loop.used.slice(0, 12) };
+    const cost = costOf(model, loop.usage);
+    let res: Json;
+    try {
+      res = await rpc(sb, "ai_scan_record", { p_user: user.id, p_bot: botId, p_row: { ...row, model, cost_usd: cost, memory_rev: Number(start?.memory_rev) || 0,
+        input_tokens: loop.usage.input_tokens || 0, output_tokens: loop.usage.output_tokens || 0 } });
+    } catch (e) {
+      return jsonError(rpcErrorCode(e));
+    }
+    return new Response(JSON.stringify({ ok: row.action !== "error", action: row.action, valid: row.valid, side: row.side ?? null, sl: row.sl ?? null, tp: row.tp ?? null,
+      confidence: row.confidence ?? null, reason: row.reason, details: row.details, trade: res?.trade ?? null, scan_id: res?.scan_id ?? null,
+      next_after_s: interval, model, cost_usd: cost }), { status: 200, headers: JSON_HEADERS });
+  }
+
+  // SPEC 10.8: POST {mode: "ai_trade_event", bot_id, trade_id, price, reason: sl|tp|time|stale} (the app saw the stop /
+  // target / time limit on the live price) -> the paper trade is closed
+  async function handleTradeEvent(sb: Sb, user: Json, botId: string | null, body: Json): Promise<Response> {
+    const tid = num(body?.trade_id), price = num(body?.price);
+    const reason = ["sl", "tp", "time", "stale"].includes(body?.reason) ? body.reason : null;
+    if (!botId || !tid || !Number.isInteger(tid) || price === null || price <= 0 || !reason) return jsonError("bad_request");
+    sb.serviceKey = serviceKeyOf(env);
+    if (!sb.serviceKey) return jsonError("ai_not_configured");
+    try {
+      const r = await rpc(sb, "ai_trade_apply", { p_user: user.id, p_bot: botId, p_trade: tid, p_op: { op: "close", price, reason } });
+      return new Response(JSON.stringify({ ok: true, trade: r?.trade ?? null, already_closed: !!r?.already_closed }), { status: 200, headers: JSON_HEADERS });
+    } catch (e) {
+      return jsonError(rpcErrorCode(e));
+    }
   }
 
   // SPEC 10.7: POST {mode: "review", bot_id, ticket, close: {ts_utc, ts_server, price, pnl, reason}, bars_m15: [{t_utc, close}]}
@@ -688,8 +819,14 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
     const model = String(start?.model || "claude-opus-5-5");
     const decisions = await sbGet(sb, "shadow_decisions",
       `bot_id=eq.${botId}&ticket=eq.${ticket}&select=ts,module,side,lots,open_price,sl,tp,bid,ask,profit,action,new_sl,confidence,reason,valid,details&order=ts.asc&limit=200`);
-    if (!decisions.length) return jsonError("review_nothing");
-    const d0 = decisions[0], buy = d0.side === "BUY";
+    // SPEC 10.8: an AI paper trade is reviewed with its opening plan (and even without any management decision)
+    let own: Json = null;
+    if (ticket > AI_TICKET_BASE) {
+      own = (await sbGet(sb, "ai_trades", `bot_id=eq.${botId}&ticket=eq.${ticket}&select=opened_at,side,lots,entry,first_sl,sl,tp,exit,pnl,close_reason,plan&limit=1`))[0] || null;
+    }
+    if (!decisions.length && !own) return jsonError("review_nothing");
+    const d0 = decisions[0] || { ts: own.opened_at, module: "AI", side: own.side, lots: own.lots, open_price: own.entry, sl: own.first_sl, tp: own.tp };
+    const buy = d0.side === "BUY";
     const closeOut = { ts_utc: typeof close.ts_utc === "string" ? clip(close.ts_utc, 30) : null, ts_server: clip(close.ts_server, 30),
       price: num(close.price), pnl: num(close.pnl), reason: clip(close.reason, 20) };
     const path: [number, number][] = [];
@@ -705,6 +842,8 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
     const memory = await loadMemory(sb, botId);
     const input = {
       trade: { ticket, strategy: d0.module, side: d0.side, lots: Number(d0.lots), entry: Number(d0.open_price), first_sl: Number(d0.sl), broker_tp: Number(d0.tp) },
+      your_own_trade: own ? { note: "YOU opened this paper trade yourself: review the entry idea too (was it a good place to open, were the stop and target well placed?)",
+        opened_at: own.opened_at, open_plan: own.plan, stop: Number(own.first_sl), target: Number(own.tp), exit: Number(own.exit), close_reason: own.close_reason } : undefined,
       real_result: closeOut,
       your_decisions: decisions.map((d) => ({ ts: d.ts, action: d.action, confidence: d.confidence, valid: d.valid, pnl_then: d.profit, details: d.details, reason: d.reason })),
       checks: outcome.checks, best_pnl_during: outcome.mfe, worst_pnl_during: outcome.mae,

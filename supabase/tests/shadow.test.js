@@ -163,6 +163,63 @@ test('review cost counts toward the shadow budget', async () => {
   await setConfig({ shadow_budget_usd: 1000 });
 });
 
+// ------------------------------------------------------------------------------------------- AI trader (SPEC 10.8)
+const scanStart = async (user, bot) => (await ctx.asService(`select public.ai_scan_start($1::uuid, $2::uuid) as r`, [user, bot]))[0].r;
+const scanRecord = async (user, bot, row) =>
+  (await ctx.asService(`select public.ai_scan_record($1::uuid, $2::uuid, $3::jsonb) as r`, [user, bot, JSON.stringify(row)]))[0].r;
+const apply = async (user, bot, trade, op) =>
+  (await ctx.asService(`select public.ai_trade_apply($1::uuid, $2::uuid, $3::bigint, $4::jsonb) as r`, [user, bot, trade, JSON.stringify(op)]))[0].r;
+
+test('AI trader: off by default, own switch, one open paper trade, interval between scans', async () => {
+  const [c] = await ctx.sql(`select ai_trader_enabled, ai_trader_interval_s, ai_trader_lots::float8 as lots from public.ai_config`);
+  assert.deepEqual(c, { ai_trader_enabled: false, ai_trader_interval_s: 1800, lots: 0.2 });
+  await setConfig({ shadow_enabled: true, shadow_budget_usd: 1000 });
+  await rejects(scanStart(bob, botB), 'ai_trader_disabled');
+  await setConfig({ ai_trader_enabled: true });
+  const s = await scanStart(bob, botB);
+  assert.equal(s.lots, 0.2);
+  const w = await scanRecord(bob, botB, { action: 'wait', reason: 'ยังไม่มีจังหวะ', valid: true, cost_usd: 0.02 });
+  assert.equal(w.trade, null);
+  await rejects(scanStart(bob, botB), 'shadow_too_soon');
+  await ctx.sql(`update public.ai_scans set ts = now() - interval '1 hour'`);
+  const o = await scanRecord(bob, botB, { action: 'open', valid: true, side: 'SELL', lots: 0.2, entry: 4050, sl: 4056, tp: 4041, confidence: 60, reason: 'ขาย' });
+  assert.equal(o.trade.status, 'open');
+  assert.equal(Number(o.trade.ticket), 900000000000 + Number(o.trade.id));
+  await rejects(scanStart(bob, botB), 'ai_trade_open');
+  // an invalid "open" is only a scan
+  const bad = await scanRecord(bob, botB, { action: 'open', valid: false, side: 'SELL', lots: 0.2, entry: 4050, sl: 4040, tp: 4041 });
+  assert.equal(bad.trade, null);
+});
+
+test('AI trader: tighten, reverse (close + opposite), close with P&L; review allowed for a closed AI trade', async () => {
+  const [t] = await ctx.sql(`select id, ticket from public.ai_trades where bot_id = $1 and status = 'open'`, [botB]);
+  const s1 = await apply(bob, botB, t.id, { op: 'sl', sl: 4052 });
+  assert.equal(Number(s1.trade.sl), 4052);
+  const r = await apply(bob, botB, t.id, { op: 'reverse', price: 4046.5, entry: 4046.34, sl: 4041, tp: 4055, reason_text: 'กลับตัว' });
+  assert.deepEqual([r.trade.status, Number(r.trade.pnl), r.trade.close_reason], ['closed', 70, 'reverse']);   // (4050 - 4046.5) x 20
+  assert.equal(r.new_trade.side, 'BUY');
+  assert.equal(Number(r.new_trade.parent_id), Number(t.id));
+  const c = await apply(bob, botB, r.new_trade.id, { op: 'close', price: 4041, reason: 'sl' });
+  assert.deepEqual([Number(c.trade.pnl), c.trade.close_reason], [-106.8, 'sl']);                              // (4041 - 4046.34) x 20
+  const again = await apply(bob, botB, r.new_trade.id, { op: 'close', price: 4050, reason: 'tp' });
+  assert.equal(again.already_closed, true);
+  assert.deepEqual(await reviewStart(bob, botB, Number(t.ticket)), { model: 'claude-opus-5-5' });
+  await rejects(apply(bob, botE, t.id, { op: 'close', price: 1 }), 'bot_not_found');
+  await rejects(apply(erin, botE, t.id, { op: 'close', price: 1 }), 'ai_trade_not_found');
+});
+
+test('AI trader: owner and admin read the paper trades and scans; no client writes; RPCs service only', async () => {
+  const n = async (who, table, bot) => (await ctx.as(who, `select count(*)::int as n from public.${table} where bot_id = $1`, [bot]))[0].n;
+  assert.ok(await n(bob, 'ai_trades', botB) >= 2);
+  assert.ok(await n(bob, 'ai_scans', botB) >= 2);
+  assert.equal(await n(erin, 'ai_trades', botB), 0);
+  assert.ok(await n(admin, 'ai_scans', botB) >= 2);
+  await rejects(ctx.as(bob, `insert into public.ai_trades (bot_id, user_id, side, lots, entry, sl, tp, first_sl) values ($1, $2, 'BUY', 1, 1, 1, 1, 1)`, [botB, bob]), 'permission denied');
+  await rejects(ctx.as(bob, `select public.ai_scan_start($1, $2)`, [bob, botB]), 'permission denied');
+  await rejects(ctx.as(bob, `select public.ai_trade_apply($1, $2, 1, '{}'::jsonb)`, [bob, botB]), 'permission denied');
+  await setConfig({ ai_trader_enabled: false });
+});
+
 test('admin can change the shadow settings; a member cannot', async () => {
   const upd = async (who) => (await ctx.as(who, `update public.ai_config set shadow_interval_s = 600 where id = 1 returning shadow_interval_s`)).length;
   assert.equal(await upd(bob), 0);

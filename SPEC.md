@@ -846,6 +846,34 @@ against what really happened and keeps a short list of lessons per bot that it r
   เลิกใช้ button) and under every reviewed trade the AI's review (summary, mistakes, verdict per decision, lesson changes).
 - Scorer: splits the scored trades into an earlier and a later half with the memory size of each.
 
+### 10.8 AI trader: the AI's own trades, PAPER ONLY (added 2026-11-11, owner's request)
+The AI decides on its own when to open a trade, which side, its stop and target, and manages it. Nothing ever reaches
+the EA or the broker: the trades live in the database and the Dobby app follows them on the EA's live bid / ask.
+Real-money trading by the AI is NOT built; it would need the owner's separate decision after the paper record.
+- `ai_config.ai_trader_enabled` (default false; also needs shadow_enabled), `ai_trader_interval_s` (300..14400,
+  default 1800: how often it looks for a trade while it has none), `ai_trader_lots` (0.01..5, default 0.20).
+- Tables `ai_trades` (one open per bot: unique partial index; side, lots, entry, sl, tp, first_sl, status, exit, pnl,
+  close_reason sl / tp / ai_close / reverse / time / stale, plan {reason, confidence, details}, parent_id for a reverse;
+  ticket = 900000000000 + id) and `ai_scans` (every open / wait answer with its reason and cost). Read: owner + admin.
+- RPCs (service only): `ai_scan_start(user, bot)` (not_approved, bot_not_found, shadow_disabled, ai_trader_disabled,
+  shadow_budget, ai_trade_open, shadow_too_soon) -> {model, interval_s, lots, memory_rev}; `ai_scan_record(user, bot,
+  row)` -> {scan_id, trade} (a valid open inserts the trade); `ai_trade_apply(user, bot, trade, op)` with op sl / close
+  {price, reason} / reverse {price, entry, sl, tp} -> {trade, new_trade} (P&L = price move x lots x 100).
+  The shadow budget counts scans too.
+- Edge Function `shadow`: mode `scan` (SCAN_PROMPT + memory + data tools, forced tool `trade` {action open / wait, side,
+  sl, tp, confidence, reason}; entry = ask for a BUY / bid for a SELL; stop 1..30 $, target 1..60 $ away or the open is
+  recorded as invalid and no trade is made); decide mode on a position with module "AI" applies the answer to the paper
+  trade (close / tighten / reverse via ai_trade_apply); mode `ai_trade_event` {trade_id, price, reason sl / tp / time /
+  stale} closes it. Reviews (10.7) cover AI trades too, with the opening plan, even without a management decision.
+- Agent 1.3.0: with no paper trade open, every next_after_s it posts a scan (market snapshot without a position, the
+  bot's open trades and recent journal) when the EA's price is younger than 120 s, outside the weekend, Friday after
+  21:00 and the 23:30-01:15 rollover (server time). The open paper trade is kept in shadow_state.json, checked every
+  cycle on the live bid / ask (BUY: bid <= sl or >= tp; SELL: ask >= sl or <= tp), closed after 24 h or on Friday from
+  22:00, and asked about every 5 min like the bot's trades (module AI). Config `"ai_trader": false` turns scans off on
+  that PC. agent_state.shadow adds ai_trade, last_scan, next_scan_utc.
+- Website: panel พอร์ตของ AI on the AI เงา page (closed trades, wins, total P&L, the open trade with its live P&L,
+  the last scan's answer); admin switch, interval (minutes) and lots on ผู้ใช้ > ผู้ช่วย AI.
+
 ## 11. EA v3.05: runner mode + daily-cap reset (2026-11-10)
 Contract fixed 2026-11-10 between the EA (`D:\Dobby\mt5\Dobby3_v305.mq5` = v3.04 + this), the agent / app
 (dobby_agent.py 1.2.1 inside DobbyApp 1.2.2) and the website. Research reference: r44 (PREREG I3, best cell

@@ -2,7 +2,7 @@
 // tighten check, cost, and that every answer (also a failed call) is recorded through shadow_record.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHandler, checkDecision, readPosition, costOf, SYSTEM_PROMPT, aggregate, ema, rsi, indicator, evaluate } from '../index.ts';
+import { createHandler, checkDecision, readPosition, costOf, SYSTEM_PROMPT, aggregate, ema, rsi, indicator, evaluate, checkOpen } from '../index.ts';
 
 const URL_ = 'https://proj.supabase.co';
 const USER = '11111111-1111-4111-8111-111111111111';
@@ -30,6 +30,9 @@ function fakeFetch({ user = { id: USER }, start = { model: 'claude-sonnet-5-5', 
     if (u.endsWith('/rpc/shadow_record')) return recordError ? new Response(JSON.stringify({ message: recordError }), { status: 400 }) : new Response('42', { status: 200 });
     if (u.endsWith('/rpc/shadow_review_start')) return startError ? new Response(JSON.stringify({ message: startError }), { status: 400 }) : new Response(JSON.stringify({ model: 'claude-opus-5-5' }), { status: 200 });
     if (u.endsWith('/rpc/shadow_review_record')) return new Response(JSON.stringify({ review_id: 7, applied: body.p_ops.map((o, i) => ({ ...o, id: o.id ?? 100 + i })) }), { status: 200 });
+    if (u.endsWith('/rpc/ai_scan_start')) return startError ? new Response(JSON.stringify({ message: startError }), { status: 400 }) : new Response(JSON.stringify({ model: 'claude-opus-5-5', interval_s: 1800, lots: 0.2, memory_rev: 2 }), { status: 200 });
+    if (u.endsWith('/rpc/ai_scan_record')) return new Response(JSON.stringify({ scan_id: 11, trade: body.p_row.action === 'open' && body.p_row.valid ? { id: 5, ticket: 900000000005, side: body.p_row.side, entry: body.p_row.entry, sl: body.p_row.sl, tp: body.p_row.tp, lots: 0.2, status: 'open' } : null }), { status: 200 });
+    if (u.endsWith('/rpc/ai_trade_apply')) return new Response(JSON.stringify({ trade: { id: body.p_trade, status: body.p_op.op === 'sl' ? 'open' : 'closed', ...body.p_op }, new_trade: body.p_op.op === 'reverse' ? { id: 6, ticket: 900000000006 } : null }), { status: 200 });
     const m = /\/rest\/v1\/(\w+)\?/.exec(u);
     if (m && data[m[1]]) return new Response(JSON.stringify(data[m[1]]), { status: 200 });
     return new Response('not found', { status: 404 });
@@ -255,6 +258,77 @@ test('review mode: bad input and RPC refusals', async () => {
   const h2 = createHandler({ env: ENV, fetch: fakeFetch({ startError: 'review_done' }), anthropic: fakeAnthropic(toolReply({})) });
   const r = await h2(post({ mode: 'review', bot_id: BOT, ticket: 5, close: { pnl: 1 } }));
   assert.equal(r.status, 409);
+});
+
+// ------------------------------------------------------------------ AI trader (SPEC 10.8)
+const scanReply = (input) => ({ content: [{ type: 'tool_use', name: 'trade', id: 't1', input }], usage: { input_tokens: 3000, output_tokens: 150 }, stop_reason: 'tool_use' });
+const MARKET_SNAP = { server_time: '2026.11.11 15:00:00', market: { bid: 4050.0, ask: 4050.16 }, bars_m15: [] };
+
+test('scan: the AI opens its own paper trade at the ask with its stop and target; the money is computed', async () => {
+  const f = fakeFetch();
+  const an = fakeAnthropic(scanReply({ action: 'open', side: 'BUY', sl: 4044.16, tp: 4059.16, confidence: 58, reason: 'ซื้อตามเทรนด์' }));
+  const out = await (await createHandler({ env: ENV, fetch: f, anthropic: an })(post({ mode: 'scan', bot_id: BOT, snapshot: MARKET_SNAP }))).json();
+  assert.equal(out.action, 'open');
+  assert.equal(out.trade.ticket, 900000000005);
+  assert.deepEqual(out.details, { entry: 4050.16, sl_dist: 6, tp_dist: 9, risk: -120, reward: 180, rr: 1.5 });
+  assert.equal(an.seen[0].tools.at(-1).name, 'trade');
+  assert.ok(an.seen[0].system.includes('YOUR OWN paper account'));
+  const rec = f.calls.find((c) => c.url.endsWith('/rpc/ai_scan_record'));
+  assert.equal(rec.body.p_row.entry, 4050.16);
+  assert.equal(rec.body.p_row.lots, 0.2);
+  assert.equal(rec.body.p_row.memory_rev, 2);
+});
+
+test('scan: wait, a stop on the wrong side (recorded as invalid, no trade) and the refusals', async () => {
+  const wait = await (await createHandler({ env: ENV, fetch: fakeFetch(), anthropic: fakeAnthropic(scanReply({ action: 'wait', side: null, sl: null, tp: null, confidence: 20, reason: 'รอ' })) })(post({ mode: 'scan', bot_id: BOT, snapshot: MARKET_SNAP }))).json();
+  assert.deepEqual([wait.action, wait.trade, wait.next_after_s], ['wait', null, 1800]);
+  const bad = await (await createHandler({ env: ENV, fetch: fakeFetch(), anthropic: fakeAnthropic(scanReply({ action: 'open', side: 'SELL', sl: 4040, tp: 4041, confidence: 50, reason: 'x' })) })(post({ mode: 'scan', bot_id: BOT, snapshot: MARKET_SNAP }))).json();
+  assert.deepEqual([bad.action, bad.valid, bad.trade], ['open', false, null]);
+  for (const [code, status] of [['ai_trader_disabled', 403], ['ai_trade_open', 409], ['shadow_too_soon', 429]]) {
+    const r = await createHandler({ env: ENV, fetch: fakeFetch({ startError: code }), anthropic: fakeAnthropic(toolReply({})) })(post({ mode: 'scan', bot_id: BOT, snapshot: MARKET_SNAP }));
+    assert.equal(r.status, status, code);
+  }
+  assert.equal((await createHandler({ env: ENV, fetch: fakeFetch(), anthropic: fakeAnthropic(toolReply({})) })(post({ mode: 'scan', bot_id: BOT, snapshot: { market: {} } }))).status, 400);
+  assert.equal(checkOpen({ action: 'open', side: 'BUY', sl: 4049.5, tp: 4060, confidence: 1, reason: '' }, MARKET_SNAP.market, 0.2).valid, false);   // stop under 1 $
+});
+
+test('own trade: the decision is applied to the paper trade (close / tighten / reverse); the bot\'s trades are never touched', async () => {
+  const own = { ...SNAP, position: { ...SNAP.position, module: 'AI', ticket: 900000000005 } };
+  for (const [reply, op] of [
+    [{ action: 'close', confidence: 60, reason: 'x' }, 'close'],
+    [{ action: 'tighten', new_sl: 4047, confidence: 60, reason: 'x' }, 'sl'],
+    [{ action: 'reverse', reverse_sl: 4056.5, reverse_tp: 4042.5, confidence: 60, reason: 'x' }, 'reverse'],
+  ]) {
+    const f = fakeFetch();
+    const out = await (await createHandler({ env: ENV, fetch: f, anthropic: fakeAnthropic(toolReply(reply)) })(post({ bot_id: BOT, snapshot: own }))).json();
+    const ap = f.calls.find((c) => c.url.endsWith('/rpc/ai_trade_apply'));
+    assert.equal(ap.body.p_trade, 5, op);
+    assert.equal(ap.body.p_op.op, op);
+    assert.ok(out.ai_trade, op);
+  }
+  const f2 = fakeFetch();
+  await createHandler({ env: ENV, fetch: f2, anthropic: fakeAnthropic(toolReply({ action: 'close', confidence: 60, reason: 'x' })) })(post({ bot_id: BOT, snapshot: SNAP }));
+  assert.equal(f2.calls.filter((c) => c.url.endsWith('/rpc/ai_trade_apply')).length, 0);       // a Dobby trade: log only
+});
+
+test('ai_trade_event: the app reports a stop / target hit', async () => {
+  const f = fakeFetch();
+  const out = await (await createHandler({ env: ENV, fetch: f, anthropic: fakeAnthropic(toolReply({})) })(post({ mode: 'ai_trade_event', bot_id: BOT, trade_id: 5, price: 4044.1, reason: 'sl' }))).json();
+  assert.equal(out.ok, true);
+  assert.deepEqual(f.calls.find((c) => c.url.endsWith('/rpc/ai_trade_apply')).body.p_op, { op: 'close', price: 4044.1, reason: 'sl' });
+  assert.equal((await createHandler({ env: ENV, fetch: fakeFetch(), anthropic: fakeAnthropic(toolReply({})) })(post({ mode: 'ai_trade_event', bot_id: BOT, trade_id: 5, price: 1, reason: 'boom' }))).status, 400);
+});
+
+test('review of an AI paper trade without any management decision uses its opening plan', async () => {
+  const trade = { opened_at: '2026-11-11T13:00:00Z', side: 'BUY', lots: 0.2, entry: 4050.16, first_sl: 4044.16, sl: 4044.16, tp: 4059.16, exit: 4044.16, pnl: -120, close_reason: 'sl', plan: { reason: 'ซื้อตามเทรนด์', confidence: 58 } };
+  const f = fakeFetch({ tables: { ai_trades: [trade] } });
+  const an = fakeAnthropic({ content: [{ type: 'tool_use', name: 'review', id: 'r', input: { summary: 's', mistakes: 'm', lessons: [] } }], usage: {}, stop_reason: 'tool_use' });
+  const out = await (await createHandler({ env: ENV, fetch: f, anthropic: an })(post({ mode: 'review', bot_id: BOT, ticket: 900000000005,
+    close: { ts_utc: '2026-11-11T13:40:00Z', price: 4044.16, pnl: -120, reason: 'sl' }, bars_m15: [] }))).json();
+  assert.equal(out.ok, true);
+  const sent = JSON.parse(an.seen[0].messages[0].content.split('\n').slice(1).join('\n'));
+  assert.equal(sent.your_own_trade.open_plan.reason, 'ซื้อตามเทรนด์');
+  assert.equal(sent.trade.strategy, 'AI');
 });
 
 test('costOf uses the model prices and never under-counts an unknown model', () => {

@@ -111,6 +111,11 @@ SHADOW_PAUSE_S = {"shadow_disabled": 1800, "ai_not_configured": 1800, "shadow_bu
                   "bot_not_found": 3600}
 SHADOW_RETRY_S = 120                # network error / 5xx
 SHADOW_STATE_NAME = "shadow_state.json"
+# SPEC 10.8 AI trader (paper only: never an order, never an EA file)
+AI_TICKET_BASE = 900000000000
+AI_SCAN_RETRY_S = 300
+AI_MAX_HOLD_S = 24 * 3600
+AI_HEARTBEAT_MAX_S = 120            # the live price must be this fresh to open / close a paper trade
 SHADOW_REVIEW_WAIT_S = 1800         # wait this long for the trade's CLOSE row before giving up its review
 SHADOW_REVIEW_TIMEOUT_S = 120
 AUTO_HORIZON_S = 7 * 86400          # automatic blackouts: the next 7 days
@@ -2323,20 +2328,227 @@ class ShadowWatcher(object):
         # SPEC 10.7: trades asked about -> review once they are closed (kept across restarts in shadow_state.json)
         self.state_path = os.path.join(agent.agent_dir, SHADOW_STATE_NAME)
         self.asked, self.pending, self.reviews = {}, {}, 0
+        self.ai_trade, self.next_scan_at, self.ai_recover = None, 0.0, False   # SPEC 10.8
+        self.last_scan = None
         try:
             with open(self.state_path, "rb") as f:
                 st = json.loads(f.read().decode("utf-8"))
             self.asked = dict((int(k), v) for k, v in (st.get("asked") or {}).items())
             self.pending = dict((int(k), v) for k, v in (st.get("pending") or {}).items())
-        except (OSError, ValueError, AttributeError):
+            self.ai_trade = st.get("ai_trade") if isinstance(st.get("ai_trade"), dict) else None
+            self.next_scan_at = float(st.get("next_scan_at") or 0)
+        except (OSError, ValueError, AttributeError, TypeError):
             pass
 
     def _save(self):
         try:
             write_json_atomic(self.state_path, {"asked": dict((str(k), v) for k, v in self.asked.items()),
-                                                "pending": dict((str(k), v) for k, v in self.pending.items())})
+                                                "pending": dict((str(k), v) for k, v in self.pending.items()),
+                                                "ai_trade": self.ai_trade, "next_scan_at": self.next_scan_at})
         except OSError as e:
             LOG.warning("cannot save %s: %s", SHADOW_STATE_NAME, e)
+
+    # ---------------------------------------------------------------- SPEC 10.8 AI trader (paper)
+    def ai_enabled(self):
+        return bool(self.agent.config.get("ai_trader", True))
+
+    def _fresh_market(self, status, now):
+        """(bid, ask) when the EA's price is fresh enough to act on, else None."""
+        st = status or {}
+        hb = to_num(st.get("heartbeat_gmt_unix"))
+        m = st.get("market") or {}
+        bid, ask = to_num(m.get("bid")), to_num(m.get("ask"))
+        if hb is None or now - hb > AI_HEARTBEAT_MAX_S or not bid or not ask:
+            return None
+        return bid, ask
+
+    def ai_position(self, status):
+        """The AI's paper trade in the EA's position format (module AI), for the management questions."""
+        t = self.ai_trade
+        m = (status or {}).get("market") or {}
+        buy = t["side"] == "BUY"
+        px = to_num(m.get("bid") if buy else m.get("ask"))
+        entry, lots = float(t["entry"]), float(t["lots"])
+        profit = round(((px - entry) if buy else (entry - px)) * lots * 100, 2) if px else None
+        sl_d, tp_d = abs(entry - float(t["first_sl"] if t.get("first_sl") else t["sl"])), abs(float(t["tp"]) - entry)
+        return {"open": True, "module": "AI", "ticket": int(t["ticket"]), "side": t["side"], "lots": lots,
+                "open_price": entry, "sl": float(t["sl"]), "tp": float(t["tp"]), "profit": profit,
+                "open_time": t.get("opened_at"), "comment": "AI paper d%.2f t%.2f" % (sl_d, tp_d),
+                "note": "your own paper trade: its stop and target are real exits"}
+
+    def _ai_closed(self, trade, now):
+        """The paper trade is closed on the server: forget it locally and queue its review with its close."""
+        tk = int(trade.get("ticket") or 0)
+        with self.lock:
+            if self.ai_trade and int(self.ai_trade.get("ticket") or 0) == tk:
+                self.ai_trade = None
+            first = (self.asked.pop(tk, None) or {}).get("first_utc") or trade.get("opened_at")
+            if tk and tk not in self.pending:
+                self.pending[tk] = {"module": "AI", "side": trade.get("side"), "first_utc": first, "since": now,
+                                    "close": {"ts_utc": trade.get("closed_at") or iso_z(now), "ts_server": None,
+                                              "price": to_num(trade.get("exit")), "pnl": to_num(trade.get("pnl")),
+                                              "reason": trade.get("close_reason")}}
+            self.next_scan_at = max(self.next_scan_at, now + 60)
+            self._save()
+        LOG.info("AI paper trade #%s closed: %s %s", tk, trade.get("close_reason"), trade.get("pnl"))
+
+    def _apply_server_trade(self, res, now):
+        """A server answer about the paper trade ({trade, new_trade}) -> local state."""
+        if not isinstance(res, dict):
+            return
+        tr, new = res.get("trade"), res.get("new_trade")
+        if isinstance(tr, dict):
+            if tr.get("status") == "closed":
+                self._ai_closed(tr, now)
+            elif self.ai_trade and int(tr.get("id") or 0) == int(self.ai_trade.get("id") or 0):
+                with self.lock:
+                    self.ai_trade.update(dict((k, tr[k]) for k in ("sl", "tp") if tr.get(k) is not None))
+                    self._save()
+        if isinstance(new, dict) and new.get("status", "open") == "open":
+            with self.lock:
+                self.ai_trade = new
+                self._save()
+
+    def _ai_hits(self, status, now):
+        """Stop / target / time limit of the paper trade on the live bid / ask (main thread, every cycle)."""
+        t = self.ai_trade
+        if not t or ("ai_hit" in self.busy):
+            return
+        mk = self._fresh_market(status, now)
+        if mk is None:
+            return
+        bid, ask = mk
+        buy = t["side"] == "BUY"
+        px = bid if buy else ask
+        sl, tp = float(t["sl"]), float(t["tp"])
+        reason = None
+        if (buy and bid <= sl) or (not buy and ask >= sl):
+            reason = "sl"
+        elif (buy and bid >= tp) or (not buy and ask <= tp):
+            reason = "tp"
+        else:
+            opened = parse_utc(t.get("opened_at"))
+            dt = parse_server_dt((status or {}).get("server_time") or "")
+            if (opened and now - opened > AI_MAX_HOLD_S) or (dt is not None and dt.weekday() == 4 and dt.hour >= 22):
+                reason = "time"
+        if reason is None:
+            return
+        body = {"mode": "ai_trade_event", "bot_id": self.agent.config.get("bot_id"), "trade_id": int(t["id"]),
+                "price": round(px, 2), "reason": reason}
+        self._post_async("ai_hit", body, self._hit_done)
+
+    def _hit_done(self, status, data, now):
+        if status == 200 and isinstance(data, dict) and data.get("ok"):
+            self._apply_server_trade({"trade": data.get("trade")}, now)
+        elif isinstance(data, dict) and data.get("error") == "ai_trade_not_found":
+            with self.lock:
+                self.ai_trade = None
+                self._save()
+
+    def scan_snapshot(self, status, now):
+        """The market for a new-trade decision: the decision snapshot without a position, plus the bot's open trades."""
+        st = status or {}
+        snap = self.snapshot(st, {"module": "NONE"}, now)
+        snap.pop("position", None)
+        snap.pop("module_today", None)
+        snap.pop("journal_this_module", None)
+        snap["dobby_open_trades"] = [dict((k, p.get(k)) for k in ("module", "side", "lots", "open_price", "sl", "profit"))
+                                     for p in self.open_positions(st)]
+        snap["dobby_journal"] = [dict((k, r.get(k)) for k in ("ts_server", "event", "tag", "side", "price", "pnl"))
+                                 for r in self.journal if r.get("event") in ("OPEN", "CLOSE", "ORDER")][-10:]
+        return snap
+
+    def _ai_scan(self, status, now):
+        """No paper trade open: ask whether to open one, every next_after_s (default 30 min) while the market is live."""
+        if not self.ai_enabled() or self.ai_trade or now < self.next_scan_at or "ai_scan" in self.busy:
+            return
+        if self.ai_recover:                                   # the server says a trade is open that we do not know
+            self._recover_trade(now)
+            return
+        mk = self._fresh_market(status, now)
+        dt = parse_server_dt((status or {}).get("server_time") or "")
+        if mk is None or dt is None:
+            return
+        mins = dt.hour * 60 + dt.minute
+        if dt.weekday() >= 5 or (dt.weekday() == 4 and dt.hour >= 21) or mins >= 23 * 60 + 30 or mins < 75:
+            return                                            # weekend, Friday evening, the rollover hour
+        body = {"mode": "scan", "bot_id": self.agent.config.get("bot_id"), "snapshot": self.scan_snapshot(status, now)}
+        with self.lock:
+            self.next_scan_at = now + AI_SCAN_RETRY_S
+        self._post_async("ai_scan", body, self._scan_done)
+
+    def _scan_done(self, status, data, now):
+        data = data if isinstance(data, dict) else {}
+        nxt = AI_SCAN_RETRY_S
+        if status == 200:
+            nxt = to_num(data.get("next_after_s")) or 1800
+            self.last_scan = {"ts_utc": iso_z(now), "action": data.get("action"), "reason": clean_note(data.get("reason"), 300)}
+            if isinstance(data.get("trade"), dict):
+                with self.lock:
+                    self.ai_trade = data["trade"]
+                LOG.info("AI paper trade opened: %s at %s sl %s tp %s", data["trade"].get("side"), data["trade"].get("entry"),
+                         data["trade"].get("sl"), data["trade"].get("tp"))
+        else:
+            code = str(data.get("error") or "")
+            if code == "ai_trade_open":
+                self.ai_recover = True
+                nxt = 0
+            elif code in ("ai_trader_disabled", "shadow_disabled", "ai_not_configured"):
+                nxt = 1800
+            elif code in ("shadow_budget", "not_approved", "bot_not_found"):
+                nxt = 3600
+            elif code == "shadow_too_soon":
+                nxt = 120
+        with self.lock:
+            self.next_scan_at = now + nxt
+            self._save()
+
+    def _recover_trade(self, now):
+        """Read the open paper trade back from the server (state file lost); main thread, the agent's own client."""
+        self.ai_recover = False
+        try:
+            rows = self.agent.client.select("ai_trades", {"bot_id": "eq." + str(self.agent.config.get("bot_id")),
+                                                          "status": "eq.open", "select": "*", "limit": "1"})
+            if rows:
+                with self.lock:
+                    self.ai_trade = rows[0]
+                    self._save()
+        except Exception as e:
+            LOG.warning("AI paper trade could not be read back: %s", redact(str(e))[:200])
+
+    def _post_async(self, key, body, done):
+        """POST body to the shadow function in the background; done(status, data, now) runs in that thread."""
+        client = self.agent.client
+        token = getattr(client, "access_token", None)
+        if not token or getattr(client, "expires_at", 0) - self.clock() < SHADOW_TOKEN_LEFT_S:
+            return
+        headers = {"apikey": client.key, "Authorization": "Bearer " + token, "Content-Type": "application/json",
+                   "Accept": "application/json"}
+        with self.lock:
+            self.busy.add(key)
+
+        def run():
+            status, data = 0, None
+            try:
+                status, data = self.post(client.url + SHADOW_PATH, headers, body, SHADOW_TIMEOUT_S)
+            except Exception as e:
+                LOG.info("shadow AI %s failed: %s", key, redact(str(e))[:200])
+            try:
+                done(status, data, self.clock())
+            finally:
+                with self.lock:
+                    self.busy.discard(key)
+            try:
+                with open(self.log_path, "ab") as f:
+                    f.write((json.dumps({"type": key, "ts_utc": iso_z(self.clock()), "http": status,
+                                         "answer": data if isinstance(data, dict) else None},
+                                        ensure_ascii=False) + "\n").encode("utf-8"))
+            except OSError:
+                pass
+        if self.threaded:
+            threading.Thread(target=run, name="shadow-" + key, daemon=True).start()
+        else:
+            run()
 
     def find_close(self, ticket):
         """The journal CLOSE row of this position ("pos=<ticket>"), or None."""
@@ -2352,7 +2564,7 @@ class ShadowWatcher(object):
         for ticket, info in list(self.pending.items()):
             if ticket in self.busy or now < info.get("next_try", 0):
                 continue
-            row = self.find_close(ticket)
+            row = info.get("close") or self.find_close(ticket)      # an AI paper trade carries its own close
             if row is None:
                 if now - info.get("since", now) > SHADOW_REVIEW_WAIT_S:
                     del self.pending[ticket]
@@ -2365,7 +2577,9 @@ class ShadowWatcher(object):
             ts_utc = None
             # parse_journal_line keeps ts_server as YYYY-MM-DDTHH:MM:SS (server time)
             dt = parse_server_dt((row.get("ts_server") or "").replace("T", " ").replace("-", "."))
-            if dt is not None and off is not None:
+            if row.get("ts_utc"):
+                ts_utc = row["ts_utc"]
+            elif dt is not None and off is not None:
                 ts_utc = iso_z(naive_to_epoch(dt) - int(off) * 60)
             first = parse_utc(info.get("first_utc")) or now
             try:
@@ -2376,7 +2590,7 @@ class ShadowWatcher(object):
             reason = re.search(r"reason=(\w+)", row.get("detail") or "")
             body = {"mode": "review", "bot_id": self.agent.config.get("bot_id"), "ticket": ticket,
                     "close": {"ts_server": row.get("ts_server"), "ts_utc": ts_utc, "price": row.get("price"),
-                              "pnl": row.get("pnl"), "reason": reason.group(1) if reason else None},
+                              "pnl": row.get("pnl"), "reason": reason.group(1) if reason else row.get("reason")},
                     "bars_m15": [{"t_utc": b["t_utc"], "close": b["close"]} for b in bars]}
             headers = {"apikey": client.key, "Authorization": "Bearer " + token, "Content-Type": "application/json",
                        "Accept": "application/json"}
@@ -2494,7 +2708,10 @@ class ShadowWatcher(object):
     def _step(self, status, now):
         if not self.enabled():
             return
+        self._ai_hits(status, now)                           # SPEC 10.8: the AI's paper trade on the live price
         positions = self.open_positions(status)
+        if self.ai_trade:
+            positions.append(self.ai_position(status))
         open_tickets = set(int(to_num(p["ticket"])) for p in positions)
         with self.lock:
             for t in list(self.next_at):
@@ -2502,6 +2719,11 @@ class ShadowWatcher(object):
                     del self.next_at[t]
             moved = False
             for t in list(self.asked):                       # SPEC 10.7: a watched trade closed -> review it
+                if t >= AI_TICKET_BASE:                      # AI paper trades are queued with their close by _ai_closed
+                    if not self.ai_trade or int(self.ai_trade.get("ticket") or 0) != t:
+                        self.asked.pop(t, None)
+                        moved = True
+                    continue
                 if t not in open_tickets and t not in self.busy:
                     info = self.asked.pop(t)
                     info["since"] = now
@@ -2511,6 +2733,8 @@ class ShadowWatcher(object):
                 self._save()
         if self.pending and now >= self.paused_until:
             self._reviews_due(now)
+        if now >= self.paused_until:
+            self._ai_scan(status, now)
         if not positions or now < self.paused_until:
             return
         client = self.agent.client
@@ -2565,6 +2789,9 @@ class ShadowWatcher(object):
                 self.last_error = ""
                 LOG.info("shadow AI: %s #%s -> %s (%s%%) %s", pos.get("module"), ticket, d.get("action"),
                          d.get("confidence"), clean_note(d.get("reason"), 120))
+                if ticket >= AI_TICKET_BASE and isinstance(data.get("ai_trade"), dict):   # SPEC 10.8: applied to its own trade
+                    entry["ai_trade"] = data["ai_trade"]
+                    self._apply_server_trade(data["ai_trade"], self.clock())
             else:
                 code = str(data.get("error") or ("http_%d" % status))
                 entry.update({"error": code, "message": clean_note(data.get("message"), 200), "id": data.get("id")})
@@ -2602,7 +2829,11 @@ class ShadowWatcher(object):
             return {"calls": self.calls, "reviews": self.reviews, "pending_reviews": len(self.pending),
                     "last_at": iso_z(self.last_at) if self.last_at else None,
                     "last_error": self.last_error or None,
-                    "paused": self.pause_reason if self.clock() < self.paused_until else None}
+                    "paused": self.pause_reason if self.clock() < self.paused_until else None,
+                    "ai_trade": dict((k, self.ai_trade.get(k)) for k in ("id", "ticket", "side", "lots", "entry", "sl", "tp",
+                                                                         "opened_at")) if self.ai_trade else None,
+                    "last_scan": self.last_scan,
+                    "next_scan_utc": iso_z(self.next_scan_at) if self.next_scan_at and self.ai_enabled() else None}
 
 
 class Agent(object):

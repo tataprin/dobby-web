@@ -5,10 +5,10 @@ import { freshDb, SCHEMA_SQL, SEED_SQL, CODE_RE } from './helpers.js';
 
 const TABLES = ['profiles', 'invites', 'bots', 'bot_status', 'journal', 'bot_control', 'presets', 'audit',
   'news_events', 'bars', 'cash_flows', 'trade_notes', 'rounds', 'ai_config', 'ai_conversations', 'ai_messages', 'ai_usage',
-  'shadow_decisions', 'shadow_reviews', 'shadow_lessons'];
+  'shadow_decisions', 'shadow_reviews', 'shadow_lessons', 'ai_trades', 'ai_scans'];
 const SEQUENCES = ['journal_id_seq', 'audit_id_seq', 'news_events_id_seq', 'cash_flows_id_seq',
   'ai_messages_id_seq', 'ai_usage_id_seq', 'rounds_id_seq', 'shadow_decisions_id_seq',
-  'shadow_reviews_id_seq', 'shadow_lessons_id_seq'];
+  'shadow_reviews_id_seq', 'shadow_lessons_id_seq', 'ai_trades_id_seq', 'ai_scans_id_seq'];
 const RPCS = ['is_approved()', 'is_admin()', 'owns_bot(uuid)', 'live_gate_status()', 'redeem_invite(text)',
   'create_invite(text,integer,text)', 'revoke_invite(text)', 'admin_set_user(uuid,text,boolean,boolean)',
   'set_display_name(text)', 'admin_overview()', 'register_bot(text,jsonb)', 'ai_quota()'];
@@ -16,12 +16,13 @@ const RPCS = ['is_approved()', 'is_admin()', 'owns_bot(uuid)', 'live_gate_status
 const SERVICE_RPCS = ['ai_start_turn(uuid,uuid)',
   'ai_finish_turn(bigint,text,integer,integer,integer,integer,numeric,uuid)',
   'shadow_start(uuid,uuid,bigint)', 'shadow_record(uuid,uuid,jsonb)',
-  'shadow_review_start(uuid,uuid,bigint)', 'shadow_review_record(uuid,uuid,jsonb,jsonb)'];
+  'shadow_review_start(uuid,uuid,bigint)', 'shadow_review_record(uuid,uuid,jsonb,jsonb)',
+  'ai_scan_start(uuid,uuid)', 'ai_scan_record(uuid,uuid,jsonb)', 'ai_trade_apply(uuid,uuid,bigint,jsonb)'];
 const INTERNAL = ['gen_invite_code()', 'handle_new_user()', 'bot_control_before()', 'bot_control_audit()',
   'presets_before()', 'presets_audit()', 'bots_before()', 'bots_audit_delete()', 'bot_status_before()',
   'journal_skip_duplicate()', 'cash_flows_before()', 'cash_flows_audit()', 'trade_notes_before()',
   'rounds_before()', 'rounds_audit()',
-  'ai_used_today(uuid)', 'ai_month_cost()', 'shadow_month_cost()', 'ai_config_before()', 'ai_config_audit()',
+  'ai_used_today(uuid)', 'ai_month_cost()', 'shadow_month_cost()', 'ai_trade_pnl(text,numeric,numeric,numeric)', 'ai_config_before()', 'ai_config_audit()',
   'ai_messages_touch_conversation()'];
 
 let ctx;
@@ -70,7 +71,7 @@ test('authenticated gets exactly the intended table privileges (no TRUNCATE, no 
     ai_config: ['SELECT', 'UPDATE'],
     ai_conversations: ['SELECT', 'INSERT', 'DELETE'],        // + UPDATE on the title column only (below)
     ai_messages: ['SELECT', 'INSERT', 'DELETE'],
-    ai_usage: ['SELECT'], shadow_decisions: ['SELECT'], shadow_reviews: ['SELECT'], shadow_lessons: ['SELECT'],
+    ai_usage: ['SELECT'], shadow_decisions: ['SELECT'], shadow_reviews: ['SELECT'], shadow_lessons: ['SELECT'], ai_trades: ['SELECT'], ai_scans: ['SELECT'],
   };
   assert.deepEqual(Object.keys(expected).sort(), [...TABLES].sort(), 'every table has an expectation');
   for (const [t, privs] of Object.entries(expected)) {
