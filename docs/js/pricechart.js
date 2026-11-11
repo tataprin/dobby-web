@@ -5,7 +5,7 @@
 // Drawn as inline SVG at the container's pixel width, redrawn on resize. One orchestrated motion on first draw: the
 // line draws in and the marks stamp in where the line reaches them (off with prefers-reduced-motion).
 import { h, fmtNum, fmtSigned, fmtThai, thaiDayKey } from './util.js';
-import { REASON_LABELS } from './journal.js';
+import { REASON_LABELS, placeFills } from './journal.js';
 
 const DAY = 86400000, HOUR = 3600000;
 const reduced = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -91,7 +91,8 @@ export function priceChart() {
 
     // Dobby's trades inside the window
     const inWin = (t) => Number.isFinite(t) && t >= xa - bars.tf && t <= xb + 60000;
-    const trades = (data.trades || []).filter((t) => (inWin(t.openUtc) && t.openPrice > 0) || (!t.open && inWin(t.closeUtc) && t.closePrice > 0));
+    // NY: its entry where this price line went through the stop order (placeFills; the fill time is not logged)
+    const trades = placeFills(data.trades, xs, bars.c).filter((t) => (inWin(t.openUtc) && t.openPrice > 0) || (!t.open && inWin(t.closeUtc) && t.closePrice > 0));
 
     let lo = Infinity, hi = -Infinity;
     const see = (p) => { if (Number.isFinite(p) && p > 0) { lo = Math.min(lo, p); hi = Math.max(hi, p); } };
@@ -242,7 +243,7 @@ export function priceChart() {
   function tradeTip(t, touch = false) {
     const buy = t.side === 'BUY';
     const kids = [h('p', { class: 'pc-tip-title' }, h('span', { class: `side ${buy ? 'buy' : 'sell'}` }, buy ? '▲ ซื้อ' : '▼ ขาย'), ` ${t.module || ''} `, h('span', { class: 'num' }, fmtNum(t.lots)), ' ล็อต')];
-    if (t.openPrice > 0 && Number.isFinite(t.openUtc)) kids.push(h('p', null, `${t.openApprox ? 'ตั้งคำสั่ง' : 'เปิด'} ${when(t.openUtc)} ${t.openApprox ? 'เข้าที่' : 'ที่'} `, h('span', { class: 'num' }, fmtNum(t.openPrice))));
+    if (t.openPrice > 0 && Number.isFinite(t.openUtc)) kids.push(h('p', null, `${t.fillEstimated ? 'เปิดราว' : t.openApprox ? 'ตั้งคำสั่ง' : 'เปิด'} ${when(t.openUtc)} ${t.openApprox && !t.fillEstimated ? 'เข้าที่' : 'ที่'} `, h('span', { class: 'num' }, fmtNum(t.openPrice))));
     if (t.open) kids.push(h('p', { class: 'pc-tip-sub' }, 'ไม้นี้ยังเปิดอยู่'));
     else {
       kids.push(h('p', null, `ปิด ${when(t.closeUtc)} ที่ `, h('span', { class: 'num' }, fmtNum(t.closePrice))));

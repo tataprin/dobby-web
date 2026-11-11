@@ -49,11 +49,20 @@ export const tradeHref = (key) => `#/trade/${encodeURIComponent(key)}`;
 // openNow (optional): { <module>: { utc, price } } from the status' open positions: an order that filled and has no
 // lock row yet becomes an open trade with the exact fill time and price.
 const ORDER_MAX_MS = 12 * 3600e3; // a pending order older than this when the next row comes is not that trade's
+// EA v3.05 runner (SPEC 11): the order's TP is only a safety TP, SafetyTP x d beyond the real first target TP0
+// ("... d=8.00 ... (runner on: ..., safety TP +4.0 d)"). tp becomes TP0, safetyTp keeps the broker's.
+export function withRunnerTp(t) {
+  const s = String(t.openDetail || '');
+  const m = /runner on:[^)]*safety TP \+([\d.]+)\s*d/i.exec(s), d = /\bd=([\d.]+)/.exec(s);
+  if (!m || !d || !(t.tp > 0)) return t;
+  const side = t.side === 'BUY' ? 1 : -1;
+  return { ...t, safetyTp: t.tp, tp: Math.round((t.tp - side * Number(m[1]) * Number(d[1])) * 100) / 100 };
+}
 export function pairTrades(rows, { openNow = null } = {}) {
   const open = {};
   const pending = {};
   const trades = [];
-  const fromOrder = (mod, o, r) => ({
+  const fromOrder = (mod, o, r) => withRunnerTp({
     module: mod, side: o.side, lots: o.lots, openUtc: o.utc, openWall: o.wall, openPrice: o.price, sl: o.sl, tp: o.tp,
     step: o.step, openDetail: o.detail, events: [], lockSteps: [], openTs: o.ts_server, key: tradeKeyOf(mod, o.ts_server),
     viaOrder: true, openApprox: true, orderPrice: o.price, fillBy: r ? r.utc : null,
@@ -72,10 +81,10 @@ export function pairTrades(rows, { openNow = null } = {}) {
     } else if (r.event === 'OPEN') {
       pending[mod] = null;
       if (open[mod]) trades.push({ ...open[mod], open: true, orphan: true });
-      open[mod] = {
+      open[mod] = withRunnerTp({
         module: mod, side: r.side, lots: r.lots, openUtc: r.utc, openWall: r.wall, openPrice: r.price, sl: r.sl, tp: r.tp,
         step: r.step, openDetail: r.detail, events: [], lockSteps: [], openTs: r.ts_server, key: tradeKeyOf(mod, r.ts_server),
-      };
+      });
     } else if (r.event === 'CLOSE') {
       const t = open[mod] || takeOrder(mod, r);
       const base = t || { module: mod, side: r.side, lots: r.lots, openUtc: null, openWall: null, openPrice: null, sl: null, tp: null, step: r.step, events: [], lockSteps: [], key: '' };
@@ -113,6 +122,35 @@ export function pairTrades(rows, { openNow = null } = {}) {
     trades.push({ ...t, open: true });
   }
   return trades.sort((a, b) => (a.openWall ?? a.closeWall) - (b.openWall ?? b.closeWall));
+}
+
+// A filled stop order (viaOrder, fill not logged): the moment the drawn close series (ts = close times, cs = closes)
+// first goes through the order level between the order and fillBy, linear between two closes. A wick filled it when
+// the closes never get there: then the close nearest the level in that span. null without a close in the span.
+// placeFills: the trades with that estimate as openUtc (fillEstimated = true).
+export function fillFromBars(t, ts, cs) {
+  if (!t || !t.viaOrder || !t.openApprox || !(t.orderPrice > 0) || !ts || ts.length < 2) return null;
+  const a = t.openUtc, b = Number.isFinite(t.fillBy) ? t.fillBy : t.open ? Infinity : t.closeUtc;
+  if (!Number.isFinite(a)) return null;
+  const L = t.orderPrice, past = (p) => (t.side === 'SELL' ? p <= L : p >= L);
+  for (let i = 1; i < ts.length; i++) {
+    const t0 = ts[i - 1], t1 = ts[i], p0 = cs[i - 1], p1 = cs[i];
+    if (t1 <= a || t0 > b || !Number.isFinite(p0) || !Number.isFinite(p1)) continue;
+    if (!past(p0) && past(p1)) return Math.min(b, Math.max(a, t0 + ((t1 - t0) * (L - p0)) / (p1 - p0)));
+  }
+  let best = null, gap = Infinity;
+  for (let i = 0; i < ts.length; i++) {
+    if (ts[i] <= a || ts[i] > b || !Number.isFinite(cs[i])) continue;
+    const g = Math.abs(cs[i] - L);
+    if (g < gap) { gap = g; best = ts[i]; }
+  }
+  return best;
+}
+export function placeFills(trades, ts, cs) {
+  return (trades || []).map((t) => {
+    const est = fillFromBars(t, ts, cs);
+    return est === null ? t : { ...t, openUtc: est, fillEstimated: true };
+  });
 }
 
 // openNow for pairTrades from a status: the open positions' fill time (server time -> UTC) and price per module

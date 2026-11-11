@@ -8,7 +8,7 @@
 import { h, mount, icon, fmtNum, fmtSigned, fmtThai, thaiDayKey, isoUtc, errText } from './util.js';
 import { prefs } from './state.js';
 import { panel, segmented } from './views.js';
-import { REASON_LABELS } from './journal.js';
+import { REASON_LABELS, placeFills } from './journal.js';
 import { barsFromRows } from './tradechart.js';
 import { readBars } from './pricechart.js';
 
@@ -178,7 +178,8 @@ export function historyChart({ api, bot, offsetMin = 0, onTrade }) {
     };
     const endOf = (t) => (t.open ? now : t.closeUtc);
     const inWin = (T) => Number.isFinite(T) && T >= ws && T <= we;
-    const list = trades.filter((t) => {
+    // NY: its entry where this price line went through the stop order (placeFills; the fill time is not logged)
+    const list = placeFills(trades, bt.map((t) => t + TF), bc).filter((t) => {
       const a = Number.isFinite(t.openUtc) ? t.openUtc : t.closeUtc, b = endOf(t);
       return Number.isFinite(a) && Number.isFinite(b) && a <= we && b >= ws;
     });
@@ -339,7 +340,7 @@ export function historyChart({ api, bot, offsetMin = 0, onTrade }) {
   function tradeTip(t, touch) {
     const buy = t.side === 'BUY';
     const kids = [h('p', { class: 'pc-tip-title' }, h('span', { class: `side ${buy ? 'buy' : 'sell'}` }, buy ? '▲ ซื้อ' : '▼ ขาย'), ` ${t.module || ''} `, h('span', { class: 'num' }, fmtNum(t.lots)), ' ล็อต')];
-    if (t.openPrice > 0 && Number.isFinite(t.openUtc)) kids.push(h('p', null, `${t.openApprox ? 'ตั้งคำสั่ง' : 'เข้า'} ${when(t.openUtc)} ${t.openApprox ? 'เข้าที่' : 'ที่'} `, h('span', { class: 'num' }, fmtNum(t.openPrice))));
+    if (t.openPrice > 0 && Number.isFinite(t.openUtc)) kids.push(h('p', null, `${t.fillEstimated ? 'เข้าราว' : t.openApprox ? 'ตั้งคำสั่ง' : 'เข้า'} ${when(t.openUtc)} ${t.openApprox && !t.fillEstimated ? 'เข้าที่' : 'ที่'} `, h('span', { class: 'num' }, fmtNum(t.openPrice))));
     if (t.tp > 0 || t.sl > 0) kids.push(h('p', null, 'TP ', h('span', { class: 'num' }, t.tp > 0 ? fmtNum(t.tp) : '—'), ' SL ', h('span', { class: 'num' }, t.sl > 0 ? fmtNum(t.sl) : '—')));
     if ((t.lockSteps || []).length) kids.push(h('p', { class: 'pc-tip-sub' }, `เลื่อน SL ล็อกกำไร ${t.lockSteps.length} ครั้ง`));
     if (t.open) kids.push(h('p', { class: 'pc-tip-sub' }, 'ไม้นี้ยังเปิดอยู่'));

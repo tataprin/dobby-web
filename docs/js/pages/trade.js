@@ -4,7 +4,7 @@
 import { h, mount, icon, fmtNum, fmtThai, timeEl, money, duration, errorState, loadingState, emptyState, toast, errText, busy,
   callout, parseWall, wallString, isoUtc, thaiDayKey } from '../util.js';
 import { currentBot, ownsBot } from '../state.js';
-import { prepareRows, pairTrades, parseTradeKey, EVENT_LABELS, REASON_LABELS, SUGGESTED_TAGS, openNowOf } from '../journal.js';
+import { prepareRows, pairTrades, parseTradeKey, EVENT_LABELS, REASON_LABELS, SUGGESTED_TAGS, openNowOf, fillFromBars } from '../journal.js';
 import { modChip, sideEl, panel, pageHead, noBotState } from '../views.js';
 import { whyOpened, explainEvent, parseOpenDetail } from '../explain.js';
 import { tradeChart, barsFromRows } from '../tradechart.js';
@@ -69,14 +69,16 @@ export async function render(root, ctx) {
     trade.open ? h('span', { class: 'chip pending' }, 'ยังเปิดอยู่') : null,
   ];
   const chart = tradeChart();
+  // redrawn once the price line places an NY fill (fillFromBars)
+  let figsEl = figs(), legendEl = legend();
   const whyBox = panel('ทำไมบอทเปิดไม้นี้', { cls: 'why' });
   const noteBox = panel('บันทึกของไม้นี้', { cls: 'tnote', sub: ro ? 'ของเจ้าของบอท ดูอย่างเดียว' : 'จดไว้ดูย้อนหลัง แท็กใช้กรองในรายการเทรด' });
   mount(root, back,
     pageHead(title, h('span', { class: 'row gap wrap' }, chips),
       h('button', { class: 'btn small', type: 'button', onclick: () => openChat('ทำไมไม้นี้ถึงเปิด และเกิดอะไรขึ้นกับไม้นี้บ้าง', { trade_key: trade.key || undefined }) }, icon('chat'), 'ถาม AI เรื่องไม้นี้'),
       'history'),
-    figs(),
-    panel('ราคาช่วงที่ถือไม้', { sub: 'ช่วงที่ถือไม้แรเงาไว้ เส้นประจางคือ VWAP' }, chart, legend()),
+    figsEl,
+    panel('ราคาช่วงที่ถือไม้', { sub: 'ช่วงที่ถือไม้แรเงาไว้ เส้นประจางคือ VWAP' }, chart, legendEl),
     h('div', { class: 'dash-cols' }, whyBox, noteBox),
     timeline());
 
@@ -92,10 +94,13 @@ export async function render(root, ctx) {
       fig('ราคาเข้า', h('span', { class: 'num' }, fmtNum(trade.openPrice)),
         h('p', null, trade.open ? 'ยังไม่ออก' : ['ออกที่ ', h('span', { class: 'num' }, fmtNum(trade.closePrice))])),
       fig('ความเสี่ยงตอนเปิด', Number.isFinite(risk) ? money(risk, { signed: true, unit: cur }) : '—',
-        h('p', null, 'SL ', h('span', { class: 'num' }, fmtNum(trade.sl)), ' TP ', h('span', { class: 'num' }, fmtNum(trade.tp)))),
-      fig('ถือไว้', h('span', { class: 'fig-text' }, Number.isFinite(trade.openUtc) ? `${trade.openApprox ? 'ไม่เกิน ' : ''}${duration((trade.open ? Date.now() : trade.closeUtc) - trade.openUtc)}` : '—'),
+        h('p', null, 'SL ', h('span', { class: 'num' }, fmtNum(trade.sl)), ' TP ', h('span', { class: 'num' }, fmtNum(trade.tp)),
+          // runner: tp is the first target; the broker's TP is only a far safety TP
+          trade.safetyTp ? [' (TP กันพลาดของ runner ', h('span', { class: 'num' }, fmtNum(trade.safetyTp)), ')'] : null)),
+      fig('ถือไว้', h('span', { class: 'fig-text' }, Number.isFinite(trade.openUtc) ? `${trade.fillEstimated ? 'ประมาณ ' : trade.openApprox ? 'ไม่เกิน ' : ''}${duration((trade.open ? Date.now() : trade.closeUtc) - trade.openUtc)}` : '—'),
         trade.openApprox
-          ? h('p', null, `ตั้งคำสั่งรอ ${fmtThai(trade.openUtc, 'short')} น. ราคาแตะ `, h('span', { class: 'num' }, fmtNum(trade.orderPrice)), ' แล้วเข้าไม้ (บอทไม่ได้บันทึกเวลาที่เข้าจริง)',
+          ? h('p', null, `ตั้งคำสั่งรอ ${fmtThai(trade.orderUtc ?? trade.openUtc, 'short')} น. ราคาแตะ `, h('span', { class: 'num' }, fmtNum(trade.orderPrice)),
+            trade.fillEstimated ? ` ราว ${fmtThai(trade.openUtc, 'time')} น. (ประมาณจากกราฟราคา บอทไม่ได้บันทึกเวลาที่เข้าจริง)` : ' แล้วเข้าไม้ (บอทไม่ได้บันทึกเวลาที่เข้าจริง)',
             trade.open ? null : ` ปิด ${fmtThai(trade.closeUtc, sameDay ? 'time' : 'short')} น.`)
           : h('p', null, Number.isFinite(trade.openUtc) ? `${fmtThai(trade.openUtc, 'short')}${trade.open ? ' ถึงตอนนี้' : ` ถึง ${fmtThai(trade.closeUtc, sameDay ? 'time' : 'short')}`}` : '—')));
   }
@@ -103,8 +108,8 @@ export async function render(root, ctx) {
   function legend() {
     const it = (cls, text) => h('li', null, h('span', { class: `lg-key ${cls}`, 'aria-hidden': 'true' }), text);
     return h('ul', { class: 'tc-legend' },
-      it(buy ? 'entry-buy' : 'entry-sell', trade.openApprox ? 'ราคาเข้า (วางไว้ที่เวลาตั้งคำสั่ง)' : 'จุดเข้า'), trade.open ? null : it((trade.pnl ?? 0) >= 0 ? 'exit-win' : 'exit-loss', 'จุดออก'),
-      it('tp', 'TP'), it('sl', 'SL'), (trade.lockSteps || []).length ? it('lock', 'SL ที่เลื่อนมาล็อกกำไร') : null);
+      it(buy ? 'entry-buy' : 'entry-sell', trade.fillEstimated ? 'จุดเข้า (เวลาโดยประมาณ ตอนราคาผ่านจุดตั้งคำสั่ง)' : trade.openApprox ? 'ราคาเข้า (วางไว้ที่เวลาตั้งคำสั่ง)' : 'จุดเข้า'), trade.open ? null : it((trade.pnl ?? 0) >= 0 ? 'exit-win' : 'exit-loss', 'จุดออก'),
+      it('tp', trade.safetyTp ? 'TP (เป้าแรกของ runner)' : 'TP'), it('sl', 'SL'), (trade.lockSteps || []).length ? it('lock', 'SL ที่เลื่อนมาล็อกกำไร') : null);
   }
 
   // ---------------- why + timeline
@@ -146,6 +151,13 @@ export async function render(root, ctx) {
       }
     }
     if (!chart.isConnected) return;
+    // NY: put the entry where the price line went through the stop order (the fill time is not logged)
+    const est = bars ? fillFromBars(trade, bars.t.map((x) => x + bars.tf), bars.c) : null;
+    if (est !== null) {
+      trade.orderUtc = trade.openUtc; trade.openUtc = est; trade.fillEstimated = true;
+      const f = figs(), l = legend();
+      figsEl.replaceWith(f); legendEl.replaceWith(l); figsEl = f; legendEl = l;
+    }
     chart.update({ bars, trade, now: Date.now(), emptyText: empty });
   })();
 

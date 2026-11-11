@@ -66,7 +66,7 @@ function nyOrderJournal() {
     jr('2026-11-10T16:45:30', 'CANCEL', 'NY', { side: 'SELL', price: 4033.61, detail: 'volume 0.15 -> 0.20' }),
     jr('2026-11-10T16:45:31', 'ORDER', 'NY', { side: 'SELL', lots: 0.2, price: 4033.61, sl: 4041.61, tp: 3993.61, detail: 'sell stop at 4033.61 d=8.00' }),
     jr('2026-11-10T16:55:34', 'CLOSE', 'NY', { side: 'SELL', lots: 0.2, price: 4041.43, pnl: -160, v_balance: 1543.78, detail: 'reason=SL pos=431586312' }),
-    jr('2026-11-10T17:00:00', 'ORDER', 'NY', { side: 'SELL', lots: 0.3, price: 4033.61, sl: 4041.61, tp: 3993.61, step: 1, detail: 'sell stop at 4033.61 d=8.00 (attempt 2 of 4)' }),
+    jr('2026-11-10T17:00:00', 'ORDER', 'NY', { side: 'SELL', lots: 0.3, price: 4033.61, sl: 4041.61, tp: 3993.61, step: 1, detail: 'sell stop at 4033.61 d=8.00 (attempt 2 of 4) (runner on: keep 85%, step 0.50 d, max 0, safety TP +4.0 d)' }),
     jr('2026-11-10T18:21:16', 'NEAR1', 'NY', { side: 'SELL', lots: 0.3, price: 4025.8, sl: 4041.33, tp: 3993.33, detail: 'gain 7.53 = 94% of TP 8.00 (stage-1 lock ON)' }),
     jr('2026-11-10T18:21:16', 'LOCK1', 'NY', { side: 'SELL', lots: 0.3, price: 4033.33, sl: 4026.69, tp: 3993.33, detail: 'gain 7.53 >= 85% of TP 8.00 -> SL 4026.69' }),
     jr('2026-11-10T18:21:18', 'CLOSE', 'NY', { side: 'SELL', lots: 0.3, price: 4025.98, pnl: 220.5, v_balance: 1764.28, detail: 'reason=LOCK pos=431625774' }),
@@ -96,6 +96,16 @@ test('pairTrades: NY starts at its stop ORDER, the same in the function and docs
   assert.equal(lock.openPrice, 4033.33, 'entry from the LOCK1 row');
   assert.equal(lock.step, 1);
   assert.equal(lock.lockSteps.length, 1);
+  assert.equal(lock.tp, 4025.61, 'runner: TP0 = safety TP + 4 x d');
+  assert.equal(lock.safetyTp, 3993.61);
+  // the fill: closes 4037.01 at 18:15 and 4023.48 at 18:30 (server) cross 4033.61 at about 18:18:46
+  const S = (hm) => Date.UTC(2026, 10, 10, +hm.slice(0, 2), +hm.slice(3)) - OFFSET * 60000;
+  const ts = ['17:45', '18:00', '18:15', '18:30'].map(S), cs = [4045.84, 4042.25, 4037.01, 4023.48];
+  const est = fn.fillFromBars(lock, ts, cs);
+  assert.equal(est, webJournal.fillFromBars(lock, ts, cs));
+  assert.equal(Math.round((est - S('18:15')) / 1000), 226);
+  assert.equal(fn.fillFromBars(sl, ts, cs), null, 'no close inside the 10 minutes of the first try');
+  assert.equal(fn.fillFromBars(closed[0], [S('16:30'), S('16:50')], [4044, 4036]), webJournal.fillFromBars(closed[0], [S('16:30'), S('16:50')], [4044, 4036]));
   const withNow = fn.pairTrades(mine, { openNow: fn.openNowOf(status, OFFSET) });
   const live = withNow.find((t) => t.open);
   assert.equal(live.key, 'NY|2026-11-12 16:45:00');

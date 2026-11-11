@@ -339,7 +339,8 @@ export class BotSim {
       const r = this.rows[j];
       if (r.tag !== tag || !(r.price > 0)) continue;
       if (j > i && (r.event === 'OPEN' || r.event === 'ORDER')) break;
-      if (['OPEN', 'ORDER', 'NEAR1', 'NEARTP', 'RUN_ON', 'RUN_UP', 'CLOSE'].includes(r.event)) // LOCK rows hold the open price out.push({ w: Date.parse(r.ts_server + 'Z'), p: r.price });
+      // (LOCK rows hold the open price, not the market price)
+      if (['OPEN', 'ORDER', 'NEAR1', 'NEARTP', 'RUN_ON', 'RUN_UP', 'CLOSE'].includes(r.event)) out.push({ w: Date.parse(r.ts_server + 'Z'), p: r.price });
       if (r.event === 'CLOSE') break;
     }
     return out;

@@ -141,7 +141,7 @@ export function tradeChart() {
     if (best) {
       cross.setAttribute('visibility', 'hidden');
       const kids = best.kind === 'open'
-        ? [h('p', { class: 'pc-tip-sub' }, `${t.openApprox ? 'ตั้งคำสั่ง' : 'เปิด'} ${fmtThai(t.openUtc, 'short')} น.`), h('p', { class: 'pc-tip-price num' }, fmtNum(t.openPrice))]
+        ? [h('p', { class: 'pc-tip-sub' }, `${t.fillEstimated ? 'เปิดราว' : t.openApprox ? 'ตั้งคำสั่ง' : 'เปิด'} ${fmtThai(t.openUtc, 'short')} น.`), h('p', { class: 'pc-tip-price num' }, fmtNum(t.openPrice))]
         : [h('p', { class: 'pc-tip-sub' }, `ปิด ${fmtThai(t.closeUtc, 'short')} น. ${REASON_LABELS[t.reason] || t.reason || ''}`), h('p', { class: 'pc-tip-price num' }, fmtNum(t.closePrice)),
           h('p', null, h('span', { class: `num pnl ${t.pnl > 0 ? 'pos' : t.pnl < 0 ? 'neg' : 'zero'}` }, fmtSigned(t.pnl)))];
       show(kids, best.x, best.y);

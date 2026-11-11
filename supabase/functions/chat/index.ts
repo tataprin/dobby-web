@@ -308,11 +308,20 @@ export const tradeHref = (key: string) => `#/trade/${encodeURIComponent(key)}`;
 // entry price is the position's open price from its LOCK rows, else the one the CLOSE's P&L implies, else the order's.
 // openNow (optional): { <module>: { utc, price } } of the status' open positions (exact fill of an open NY trade).
 const ORDER_MAX_MS = 12 * 3600e3;
+// EA v3.05 runner: the order's TP is only a safety TP, SafetyTP x d beyond the real first target TP0. tp becomes TP0,
+// safetyTp keeps the broker's.
+export function withRunnerTp(t: Json): Json {
+  const s = String(t.openDetail || "");
+  const m = /runner on:[^)]*safety TP \+([\d.]+)\s*d/i.exec(s), d = /\bd=([\d.]+)/.exec(s);
+  if (!m || !d || !(t.tp > 0)) return t;
+  const side = t.side === "BUY" ? 1 : -1;
+  return { ...t, safetyTp: t.tp, tp: Math.round((t.tp - side * Number(m[1]) * Number(d[1])) * 100) / 100 };
+}
 export function pairTrades(rows: Json[], { openNow = null }: { openNow?: Json | null } = {}): Json[] {
   const open: Json = {};
   const pending: Json = {};
   const trades: Json[] = [];
-  const fromOrder = (mod: string, o: Json, r: Json | null) => ({
+  const fromOrder = (mod: string, o: Json, r: Json | null) => withRunnerTp({
     module: mod, side: o.side, lots: o.lots, openUtc: o.utc, openWall: o.wall, openPrice: o.price, sl: o.sl, tp: o.tp,
     step: o.step, openDetail: o.detail, events: [], lockSteps: [], openTs: o.ts_server, key: tradeKeyOf(mod, o.ts_server),
     viaOrder: true, openApprox: true, orderPrice: o.price, fillBy: r ? r.utc : null,
@@ -331,10 +340,10 @@ export function pairTrades(rows: Json[], { openNow = null }: { openNow?: Json | 
     } else if (r.event === "OPEN") {
       pending[mod] = null;
       if (open[mod]) trades.push({ ...open[mod], open: true, orphan: true });
-      open[mod] = {
+      open[mod] = withRunnerTp({
         module: mod, side: r.side, lots: r.lots, openUtc: r.utc, openWall: r.wall, openPrice: r.price, sl: r.sl, tp: r.tp,
         step: r.step, openDetail: r.detail, events: [], lockSteps: [], openTs: r.ts_server, key: tradeKeyOf(mod, r.ts_server),
-      };
+      });
     } else if (r.event === "CLOSE") {
       const t = open[mod] || takeOrder(mod, r);
       const base = t || { module: mod, side: r.side, lots: r.lots, openUtc: null, openWall: null, openPrice: null, sl: null, tp: null, step: r.step, events: [], lockSteps: [], key: "" };
@@ -372,6 +381,27 @@ export function pairTrades(rows: Json[], { openNow = null }: { openNow?: Json | 
     trades.push({ ...t, open: true });
   }
   return trades.sort((a, b) => (a.openWall ?? a.closeWall) - (b.openWall ?? b.closeWall));
+}
+
+// A filled stop order: when the close series (ts = close times) first went through the order level between the order
+// and fillBy (linear), else the close nearest the level in that span (a wick filled it); null without a close there.
+export function fillFromBars(t: Json, ts: number[], cs: number[]): number | null {
+  if (!t || !t.viaOrder || !t.openApprox || !(t.orderPrice > 0) || !ts || ts.length < 2) return null;
+  const a = t.openUtc, b = Number.isFinite(t.fillBy) ? t.fillBy : t.open ? Infinity : t.closeUtc;
+  if (!Number.isFinite(a)) return null;
+  const L = t.orderPrice, past = (p: number) => (t.side === "SELL" ? p <= L : p >= L);
+  for (let i = 1; i < ts.length; i++) {
+    const t0 = ts[i - 1], t1 = ts[i], p0 = cs[i - 1], p1 = cs[i];
+    if (t1 <= a || t0 > b || !Number.isFinite(p0) || !Number.isFinite(p1)) continue;
+    if (!past(p0) && past(p1)) return Math.min(b, Math.max(a, t0 + ((t1 - t0) * (L - p0)) / (p1 - p0)));
+  }
+  let best: number | null = null, gap = Infinity;
+  for (let i = 0; i < ts.length; i++) {
+    if (ts[i] <= a || ts[i] > b || !Number.isFinite(cs[i])) continue;
+    const g = Math.abs(cs[i] - L);
+    if (g < gap) { gap = g; best = ts[i]; }
+  }
+  return best;
 }
 
 // openNow for pairTrades from a status: the open positions' fill time (server time -> UTC) and price per module
@@ -1378,6 +1408,8 @@ function tradeOut(tr: Json): Json {
     step: tr.step ? tr.step : undefined,
     status: tr.open ? (tr.orphan ? "open row without a close row" : "open") : (tr.key ? "closed" : "closed (open row not found)"),
     open_th: thaiTime(tr.openUtc ?? NaN), open_server: serverWall(tr.openWall ?? NaN), open_price: nz(tr.openPrice), sl: tr.sl ? tr.sl : undefined, tp: tr.tp ? tr.tp : undefined,
+    // runner (EA v3.05): tp is the first target TP0; the broker TP is only a far safety TP
+    safety_tp: tr.safetyTp ? tr.safetyTp : undefined,
     // NY: no OPEN row; open_th is when its stop order was placed
     open_time_note: tr.openApprox ? `time the NY stop order was placed at ${tr.orderPrice}; the fill time is not logged${Number.isFinite(tr.fillBy) ? ` (it filled before ${thaiTime(tr.fillBy)})` : ""}` : undefined,
     close_th: tr.open ? undefined : thaiTime(tr.closeUtc), close_server: tr.open ? undefined : serverWall(tr.closeWall), close_price: tr.open ? undefined : nz(tr.closePrice),
@@ -1531,9 +1563,12 @@ async function toolTradeDetail(t: TurnCtx, input: Json): Promise<Json> {
   ]);
   const a = arm ? parseArm(arm.detail) : null;
   const note = notes[0];
+  // NY: where the price went through its stop order (bars are bar open times; a close belongs to t + 15 min)
+  const fillEst = fillFromBars(trade, bars.pts.map((p) => p[0] + 15 * MIN), bars.pts.map((p) => p[1]));
   return {
     bot: botBrief(t, b),
     trade: tradeOut(trade),
+    fill_estimate_th: fillEst !== null ? `${thaiTime(fillEst)} (estimated from the M15 closes; the EA does not log NY fills)` : undefined,
     open_detail: nz(trade.openDetail), close_detail: nz(trade.closeDetail),
     open_parsed: o.hasHead ? {
       sl_distance: o.d, tp_distance: Number.isFinite(o.tp) ? o.tp : undefined, atr: Number.isFinite(o.atr) ? o.atr : undefined, rsi: Number.isFinite(o.rsi) ? o.rsi : undefined,
