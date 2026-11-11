@@ -1844,3 +1844,11 @@ textarea.input.chat-input { flex: 1 1 auto; min-height: var(--h-input); max-heig
 .shadow-count { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; }
 .shadow-plan { min-width: 15rem; white-space: normal; }
 .shadow-plan-line { line-height: 1.5; }
+.shadow-review { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--well-strong); }
+.shadow-review-title { font-weight: 600; margin-bottom: 6px; }
+.shadow-checks { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.shadow-ops { margin: 6px 0 0 18px; }
+.shadow-lessons { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.shadow-lesson { display: flex; gap: 12px; align-items: flex-start; }
+.shadow-lesson.retired { opacity: .6; }
+.shadow-weight { font-weight: 600; white-space: nowrap; }

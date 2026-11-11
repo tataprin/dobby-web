@@ -447,6 +447,19 @@ export class SupabaseApi {
     return unwrap(await this.sb.from('shadow_decisions').select(SHADOW_COLS).eq('bot_id', botId)
       .order('ts', { ascending: false }).limit(limit));
   }
+  // SPEC 10.7: the AI's memory (lessons) and its reviews of closed trades; the owner may retire a lesson
+  async shadowLessons(botId) {
+    return unwrap(await this.sb.from('shadow_lessons').select('id,text,weight,status,tickets,created_at,updated_at').eq('bot_id', botId)
+      .order('status', { ascending: true }).order('weight', { ascending: false }).limit(200));
+  }
+  async shadowReviews(botId, { limit = 100 } = {}) {
+    return unwrap(await this.sb.from('shadow_reviews').select('id,ts,ticket,module,side,outcome,summary,mistakes,ops,cost_usd').eq('bot_id', botId)
+      .order('ts', { ascending: false }).limit(limit));
+  }
+  async retireLesson(botId, id) {
+    await this.assertOwn(botId);
+    return unwrap(await this.sb.from('shadow_lessons').update({ status: 'retired' }).eq('id', id).eq('bot_id', botId).select('id,status').single());
+  }
   async shadowMonthCost() {
     const d = new Date(Date.now() + 7 * 3600e3);
     const from = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) - 7 * 3600e3).toISOString();
@@ -1176,6 +1189,41 @@ export class DemoApi {
   async shadowDecisions(botId, { limit = 400 } = {}) {
     await this.wait(80); this.readBot(botId);
     return clone(this.shadowDb().filter((r) => r.bot_id === botId).sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, limit));
+  }
+  shadowMemoryDb() {
+    if (!this.db.shadowMem) {
+      const now = Date.now(), lessons = [], reviews = [];
+      for (const bot of this.db.bots) {
+        lessons.push(
+          { id: lessons.length + 1, bot_id: bot.id, text: 'ถ้าไม้ไปถึง 70 % ของเป้าแล้วราคายังอยู่เหนือ VWAP ให้ถือไปจนถึงจุดล็อก อย่าปิดก่อน', weight: 3, status: 'active', tickets: [900091, 900095, 900099], created_at: new Date(now - 5 * 86400e3).toISOString(), updated_at: new Date(now - 86400e3).toISOString() },
+          { id: lessons.length + 2, bot_id: bot.id, text: 'ข่าว USD ระดับ High จะออกภายใน 15 นาทีและไม้กำไรเกินครึ่งเป้า ให้เลื่อน SL มาเหนือทุนก่อนข่าว', weight: 2, status: 'active', tickets: [900093, 900102], created_at: new Date(now - 4 * 86400e3).toISOString(), updated_at: new Date(now - 26 * 3600e3).toISOString() },
+          { id: lessons.length + 3, bot_id: bot.id, text: 'แท่ง M15 ปิดต่ำกว่า VWAP หนึ่งแท่งยังไม่พอจะเปิดสวน ต้องดู H1 ด้วย', weight: 1, status: 'active', tickets: [900101], created_at: new Date(now - 2 * 3600e3).toISOString(), updated_at: new Date(now - 2 * 3600e3).toISOString() },
+          { id: lessons.length + 4, bot_id: bot.id, text: 'RSI M15 ต่ำกว่า 40 ให้ปิดไม้ซื้อทันที', weight: 0, status: 'retired', tickets: [900092, 900097], created_at: new Date(now - 6 * 86400e3).toISOString(), updated_at: new Date(now - 3 * 86400e3).toISOString() });
+        reviews.push({ id: reviews.length + 1, bot_id: bot.id, ts: new Date(now - 2 * 3600e3).toISOString(), ticket: 900101, module: 'C5G', side: 'BUY',
+          outcome: { close: { pnl: -111.6, reason: 'SL', price: 4044.05 }, better: 2, worse: 2, mfe: 131, mae: -111.6,
+            checks: [{ action: 'hold', delta: -143, verdict: 'worse' }, { action: 'hold', delta: -205, verdict: 'worse' }, { action: 'tighten', delta: 117, verdict: 'better' }, { action: 'reverse', delta: 239, verdict: 'better' }] },
+          summary: 'ไม้ซื้อ C5G เข้า 4,049.63 ขึ้นไปสูงสุด 4,056.17 (+131) แล้วกลับลงมาโดน SL ที่ 4,043.93 เสีย −111.60 การเลื่อน SL มาที่ 4,049.90 จะได้ +5.40 และการเปิดสวนจะได้ราว +127',
+          mistakes: 'สองครั้งแรกให้ถือต่อทั้งที่ RSI M15 เริ่มอ่อนตัวจาก 61 เหลือ 55 และราคาไม่ผ่านจุดสูงเดิม ควรขอดู H1 ก่อน การถือไม่ผิดตามหลักแต่ควรเลื่อน SL เร็วกว่านี้ 10 นาที',
+          ops: [{ op: 'add', id: lessons.length - 1, text: 'แท่ง M15 ปิดต่ำกว่า VWAP หนึ่งแท่งยังไม่พอจะเปิดสวน ต้องดู H1 ด้วย' }, { op: 'reinforce', id: lessons.length - 3 }], cost_usd: 0.04 });
+      }
+      this.db.shadowMem = { lessons, reviews };
+    }
+    return this.db.shadowMem;
+  }
+  async shadowLessons(botId) {
+    await this.wait(60); this.readBot(botId);
+    return clone(this.shadowMemoryDb().lessons.filter((l) => l.bot_id === botId).sort((a, b) => (a.status > b.status ? 1 : a.status < b.status ? -1 : b.weight - a.weight)));
+  }
+  async shadowReviews(botId) {
+    await this.wait(60); this.readBot(botId);
+    return clone(this.shadowMemoryDb().reviews.filter((r) => r.bot_id === botId));
+  }
+  async retireLesson(botId, id) {
+    await this.wait(); this.readBot(botId);
+    const l = this.shadowMemoryDb().lessons.find((x) => x.id === id && x.bot_id === botId);
+    if (!l) throw new ApiError('not_found');
+    l.status = 'retired';
+    return { id, status: 'retired' };
   }
   async shadowMonthCost() {
     await this.wait(60); this.approvedOrThrow();

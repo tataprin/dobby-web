@@ -2,7 +2,7 @@
 // tighten check, cost, and that every answer (also a failed call) is recorded through shadow_record.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHandler, checkDecision, readPosition, costOf, SYSTEM_PROMPT } from '../index.ts';
+import { createHandler, checkDecision, readPosition, costOf, SYSTEM_PROMPT, aggregate, ema, rsi, indicator, evaluate } from '../index.ts';
 
 const URL_ = 'https://proj.supabase.co';
 const USER = '11111111-1111-4111-8111-111111111111';
@@ -16,23 +16,37 @@ const SNAP = {
   bars_m15: [{ t_utc: '2026-11-11T11:30:00Z', close: 4051 }],
 };
 
-function fakeFetch({ user = { id: USER }, start = { model: 'claude-sonnet-5-5', interval_s: 300 }, startError = null, recordError = null } = {}) {
+const BARS = Array.from({ length: 200 }, (_, i) => ({ t: new Date(Date.UTC(2026, 10, 9, 0, 0) + i * 900e3).toISOString(), close: 4000 + i * 0.3 + (i % 7) - 3, vwap: 4020 }))
+  .reverse();   // the table answers newest first
+function fakeFetch({ user = { id: USER }, start = { model: 'claude-sonnet-5-5', interval_s: 300 }, startError = null, recordError = null, tables = {} } = {}) {
   const calls = [];
+  const data = { bars: BARS, shadow_lessons: [], shadow_reviews: [], journal: [], shadow_decisions: [], ...tables };
   const f = async (url, init = {}) => {
     const u = String(url);
     const body = init.body ? JSON.parse(init.body) : null;
-    calls.push({ url: u, headers: init.headers || {}, body });
+    calls.push({ url: u, headers: init.headers || {}, body, method: init.method || 'GET' });
     if (u.endsWith('/auth/v1/user')) return user ? new Response(JSON.stringify(user), { status: 200 }) : new Response('{}', { status: 401 });
     if (u.endsWith('/rpc/shadow_start')) return startError ? new Response(JSON.stringify({ message: startError }), { status: 400 }) : new Response(JSON.stringify(start), { status: 200 });
     if (u.endsWith('/rpc/shadow_record')) return recordError ? new Response(JSON.stringify({ message: recordError }), { status: 400 }) : new Response('42', { status: 200 });
+    if (u.endsWith('/rpc/shadow_review_start')) return startError ? new Response(JSON.stringify({ message: startError }), { status: 400 }) : new Response(JSON.stringify({ model: 'claude-opus-5-5' }), { status: 200 });
+    if (u.endsWith('/rpc/shadow_review_record')) return new Response(JSON.stringify({ review_id: 7, applied: body.p_ops.map((o, i) => ({ ...o, id: o.id ?? 100 + i })) }), { status: 200 });
+    const m = /\/rest\/v1\/(\w+)\?/.exec(u);
+    if (m && data[m[1]]) return new Response(JSON.stringify(data[m[1]]), { status: 200 });
     return new Response('not found', { status: 404 });
   };
   f.calls = calls;
   return f;
 }
+/** reply: one answer for every call, or an array = one answer per call in order. */
 function fakeAnthropic(reply) {
   const seen = [];
-  const make = () => ({ messages: { create: async (p) => { seen.push(p); if (reply instanceof Error) throw reply; return reply; } } });
+  let i = 0;
+  const make = () => ({ messages: { create: async (p) => {
+    seen.push(JSON.parse(JSON.stringify(p)));
+    const r = Array.isArray(reply) ? reply[Math.min(i++, reply.length - 1)] : reply;
+    if (r instanceof Error) throw r;
+    return r;
+  } } });
   make.seen = seen;
   return make;
 }
@@ -81,8 +95,10 @@ test('asks Claude with the forced decide tool and records the decision with cost
   assert.equal(out.next_after_s, 300);
   const p = an.seen[0];
   assert.equal(p.model, 'claude-sonnet-5-5');
-  assert.deepEqual(p.tool_choice, { type: 'tool', name: 'decide' });
-  assert.equal(p.system, SYSTEM_PROMPT);
+  assert.deepEqual(p.tool_choice, { type: 'any' });                  // data tools allowed in the first rounds
+  assert.ok(p.system.startsWith(SYSTEM_PROMPT));
+  assert.ok(p.system.includes('memory is empty'));
+  assert.deepEqual(p.tools.map((t) => t.name), ['get_indicators', 'get_price_history', 'get_trade_history', 'get_my_record', 'decide']);
   assert.ok(p.messages[0].content.includes('432543137'));
   const rec = f.calls.find((c) => c.url.endsWith('/rpc/shadow_record'));
   assert.equal(rec.body.p_user, USER);
@@ -145,6 +161,100 @@ test('details: close / reverse / hold turn the AI prices into money at the trade
 
 test('the prompt asks for prices with every action and the tool requires all of them', () => {
   for (const k of ['hold_target', 'hold_exit', 'reverse_sl', 'reverse_tp', 'new_sl']) assert.ok(SYSTEM_PROMPT.includes(k), k);
+});
+
+test('data tools: the AI asks for indicators, gets them, then decides; usage of both rounds is counted; lessons are in the prompt', async () => {
+  const lessons = [{ id: 3, text: 'อย่าปิดก่อนถึงจุดล็อกถ้ายังอยู่เหนือ VWAP', weight: 2 }];
+  const reviews = [{ ticket: 1, module: 'C5G', side: 'BUY', summary: 's', mistakes: 'ปิดเร็วเกินไป', outcome: { close: { pnl: 120 }, checks: [{ action: 'close', delta: -80, verdict: 'worse' }] } }];
+  const f = fakeFetch({ tables: { shadow_lessons: lessons, shadow_reviews: reviews }, start: { model: 'claude-opus-5-5', interval_s: 300, memory_rev: 1 } });
+  const an = fakeAnthropic([
+    { content: [{ type: 'tool_use', id: 'a', name: 'get_indicators', input: { timeframe: 'H1', specs: ['ema:20', 'rsi:14', 'macd', 'swings', 'levels'] } }], usage: { input_tokens: 1000, output_tokens: 50 }, stop_reason: 'tool_use' },
+    toolReply({ action: 'hold', hold_target: 4058.18, hold_exit: 4046, confidence: 40, reason: 'ถือ' }, { input_tokens: 2000, output_tokens: 100 }),
+  ]);
+  const out = await (await createHandler({ env: ENV, fetch: f, anthropic: an })(post({ bot_id: BOT, snapshot: SNAP }))).json();
+  assert.equal(out.decision.action, 'hold');
+  assert.equal(out.memory_rev, 1);
+  assert.deepEqual(out.decision.details.data_used, ['get_indicators:H1']);
+  assert.equal(an.seen.length, 2);
+  assert.ok(an.seen[0].system.includes('lesson #3, weight 2'));
+  assert.ok(an.seen[0].system.includes('close: 1 decision(s), better 0, worse 1'));
+  const result = JSON.parse(an.seen[1].messages[2].content[0].content);
+  assert.equal(result.timeframe, 'H1');
+  assert.ok(Number.isFinite(result['ema:20'].last) && Number.isFinite(result['rsi:14'].last) && 'hist' in result.macd);
+  assert.ok(Array.isArray(result.swings.highs) && result.levels.prev_day);
+  const rec = f.calls.find((c) => c.url.endsWith('/rpc/shadow_record'));
+  assert.equal(rec.body.p_row.input_tokens, 3000);
+  assert.equal(rec.body.p_row.memory_rev, 1);
+  assert.equal(rec.body.p_row.cost_usd, 0.015);                      // opus: 3000 x 4 + 150 x 20 per million
+});
+
+test('the last round forces decide (no endless tool use)', async () => {
+  const loop = { content: [{ type: 'tool_use', id: 'x', name: 'get_trade_history', input: { n: 5 } }], usage: {}, stop_reason: 'tool_use' };
+  const an = fakeAnthropic([loop, loop, loop, loop, toolReply({ action: 'close', confidence: 55, reason: 'x' })]);
+  const out = await (await createHandler({ env: ENV, fetch: fakeFetch(), anthropic: an })(post({ bot_id: BOT, snapshot: SNAP }))).json();
+  assert.equal(an.seen.length, 5);
+  assert.deepEqual(an.seen[4].tool_choice, { type: 'tool', name: 'decide' });
+  assert.equal(out.decision.action, 'close');
+});
+
+test('indicators: ema / rsi / aggregate on known numbers', () => {
+  const rows = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({ t: Date.UTC(2026, 0, 1, 0, i * 15), close: 100 + i, vwap: null }));
+  const h1 = aggregate(rows, 'H1');
+  assert.deepEqual(h1.map((b) => [b.o, b.h, b.l, b.c]), [[100, 103, 100, 103], [104, 107, 104, 107]]);
+  assert.equal(ema([1, 2, 3], 1).at(-1), 3);
+  assert.equal(rsi([1, 2, 3, 4, 5], 2).at(-1), 100);
+  assert.equal(indicator(h1, 'nonsense').error, 'unknown indicator nonsense');
+});
+
+test('evaluate: close / hold / tighten / reverse against the real result', () => {
+  const t0 = Date.UTC(2026, 10, 11, 12, 0);
+  const iso = (m) => new Date(t0 + m * 60e3).toISOString();
+  const close = { ts_utc: iso(60), pnl: -111.6, reason: 'SL' };
+  const path = [[t0 + 10 * 60e3, 4055], [t0 + 30 * 60e3, 4049], [t0 + 50 * 60e3, 4044]];
+  const decs = [
+    { ts: iso(5), action: 'hold', profit: 30, details: { pnl_now: 30, hold_target: 4058, target_pnl: 167.4, hold_exit: 4046, exit_pnl: -72.6 } },
+    { ts: iso(6), action: 'close', details: { pnl_now: 100, close_pnl: 100 } },
+    { ts: iso(12), action: 'tighten', new_sl: 4050, details: { pnl_now: 100, new_sl: 4050, locked_pnl: 7.4 } },
+    { ts: iso(20), action: 'reverse', details: { pnl_now: 60, close_pnl: 60, reverse: { side: 'SELL', entry: 4052.6, sl: 4057.6, tp: 4045, risk: -100, reward: 152 } } },
+    { ts: iso(21), action: 'close', valid: false, details: {} },
+  ];
+  const ev = evaluate(decs, close, path, 'BUY', 4049.63, 0.2);
+  assert.deepEqual(ev.checks.map((c) => [c.action, c.delta, c.verdict]), [
+    ['hold', -141.6, 'worse'], ['close', 211.6, 'better'], ['tighten', 119, 'better'], ['reverse', 323.6, 'better']]);
+  assert.equal(ev.checks[0].exit_touched, true);
+  assert.equal(ev.checks[0].target_reached, false);
+  assert.equal(ev.better, 3);
+});
+
+test('review mode: evaluates, asks Claude with the forced review tool, applies the lesson changes', async () => {
+  const decisions = [{ ts: '2026-11-11T11:50:00Z', module: 'C5G', side: 'BUY', lots: 0.2, open_price: 4049.63, sl: 4043.93, tp: 4080.98, bid: 4051.03, ask: 4051.19,
+    profit: 28, action: 'hold', confidence: 40, valid: true, reason: 'ถือ', details: { pnl_now: 28, hold_target: 4058.18, target_pnl: 171, hold_exit: 4046, exit_pnl: -72.6 } }];
+  const f = fakeFetch({ tables: { shadow_decisions: decisions, shadow_lessons: [{ id: 3, text: 'x', weight: 1 }] } });
+  const an = fakeAnthropic({ content: [{ type: 'tool_use', name: 'review', id: 'r', input: {
+    summary: 'ไม้นี้โดน SL', mistakes: 'ควรปิดตอนหลุด 4,046',
+    lessons: [{ op: 'add', id: null, text: 'ถ้าหลุดจุดออกที่ตั้งไว้ ให้ปิดทันที', why: 'w' }, { op: 'weaken', id: 3, text: null, why: 'w' }, { op: 'boom', id: 1, text: null, why: '' }] } }],
+    usage: { input_tokens: 5000, output_tokens: 400 }, stop_reason: 'tool_use' });
+  const body = { mode: 'review', bot_id: BOT, ticket: 432543137, close: { ts_utc: '2026-11-11T12:03:08Z', ts_server: '2026.11.11 14:03:08', price: 4044.05, pnl: -111.6, reason: 'SL' },
+    bars_m15: [{ t_utc: '2026-11-11T11:45:00Z', close: 4052 }, { t_utc: '2026-11-11T12:00:00Z', close: 4045.2 }] };
+  const out = await (await createHandler({ env: ENV, fetch: f, anthropic: an })(post(body))).json();
+  assert.equal(out.ok, true);
+  assert.equal(out.review_id, 7);
+  assert.equal(out.applied.length, 2);                                 // the unknown op was dropped
+  assert.deepEqual(an.seen[0].tool_choice, { type: 'tool', name: 'review' });
+  const sent = JSON.parse(an.seen[0].messages[0].content.split('\n').slice(1).join('\n'));
+  assert.equal(sent.checks[0].verdict, 'worse');                        // holding from +28 to -111.60
+  assert.equal(sent.your_lessons[0].id, 3);
+  const rec = f.calls.find((c) => c.url.endsWith('/rpc/shadow_review_record'));
+  assert.equal(rec.body.p_row.outcome.checks[0].exit_touched, true);
+  assert.equal(rec.body.p_row.cost_usd, 0.028);
+});
+
+test('review mode: bad input and RPC refusals', async () => {
+  const h = createHandler({ env: ENV, fetch: fakeFetch(), anthropic: fakeAnthropic(toolReply({})) });
+  assert.equal((await h(post({ mode: 'review', bot_id: BOT, ticket: 'x', close: { pnl: 1 } }))).status, 400);
+  const h2 = createHandler({ env: ENV, fetch: fakeFetch({ startError: 'review_done' }), anthropic: fakeAnthropic(toolReply({})) });
+  const r = await h2(post({ mode: 'review', bot_id: BOT, ticket: 5, close: { pnl: 1 } }));
+  assert.equal(r.status, 409);
 });
 
 test('costOf uses the model prices and never under-counts an unknown model', () => {

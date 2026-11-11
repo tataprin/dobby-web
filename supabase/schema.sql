@@ -282,7 +282,47 @@ create table if not exists public.shadow_decisions (
 -- "tp": .., "risk": .., "reward": ..}} / {"hold_target": .., "target_pnl": .., "hold_exit": .., "exit_pnl": ..}
 alter table public.shadow_decisions add column if not exists details jsonb not null default '{}'::jsonb
   check (jsonb_typeof(details) = 'object');
+-- how many reviews the AI's memory held when it decided (0 = before any learning): splits the forward test by stage
+alter table public.shadow_decisions add column if not exists memory_rev int not null default 0 check (memory_rev >= 0);
 create index if not exists shadow_decisions_bot_ts_idx on public.shadow_decisions (bot_id, ts desc);
+
+-- Shadow AI memory (SPEC 10.7, 2026-11-11): after every closed trade the AI reviews its own decisions against what
+-- really happened (shadow_reviews) and keeps a short list of lessons per bot (shadow_lessons) that it reads before every
+-- decision. weight = reviews that supported the lesson minus those that contradicted it; at 0 a lesson is retired.
+-- At most 20 active lessons per bot (the lowest weight, then the oldest, is retired first). Written only by the
+-- service_role RPC shadow_review_record; the owner and the admin read them; the owner may retire a lesson by hand.
+create table if not exists public.shadow_reviews (
+  id            bigserial primary key,
+  bot_id        uuid not null references public.bots(id) on delete cascade,
+  user_id       uuid not null references public.profiles(id) on delete cascade,
+  ts            timestamptz not null default now(),
+  ticket        bigint not null check (ticket > 0),
+  module        text,
+  side          text,
+  outcome       jsonb not null default '{}'::jsonb check (jsonb_typeof(outcome) = 'object'),   -- real result + per-decision checks
+  summary       text not null default '' check (char_length(summary) <= 3000),
+  mistakes      text not null default '' check (char_length(mistakes) <= 3000),
+  ops           jsonb not null default '[]'::jsonb check (jsonb_typeof(ops) = 'array'),          -- lesson changes applied
+  model         text,
+  input_tokens  int not null default 0 check (input_tokens >= 0),
+  output_tokens int not null default 0 check (output_tokens >= 0),
+  cost_usd      numeric(12, 6) not null default 0 check (cost_usd >= 0),
+  unique (bot_id, ticket)
+);
+create index if not exists shadow_reviews_bot_ts_idx on public.shadow_reviews (bot_id, ts desc);
+
+create table if not exists public.shadow_lessons (
+  id          bigserial primary key,
+  bot_id      uuid not null references public.bots(id) on delete cascade,
+  user_id     uuid not null references public.profiles(id) on delete cascade,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  text        text not null check (char_length(btrim(text)) between 1 and 400),
+  weight      int not null default 1,
+  status      text not null default 'active' check (status in ('active', 'retired')),
+  tickets     bigint[] not null default '{}'                    -- the trades whose reviews touched this lesson
+);
+create index if not exists shadow_lessons_bot_idx on public.shadow_lessons (bot_id, status, weight desc);
 create index if not exists shadow_decisions_ticket_idx on public.shadow_decisions (bot_id, ticket, ts);
 create index if not exists shadow_decisions_ts_idx on public.shadow_decisions (ts);
 
@@ -310,6 +350,8 @@ alter table public.ai_conversations   enable row level security;
 alter table public.ai_messages        enable row level security;
 alter table public.ai_usage           enable row level security;
 alter table public.shadow_decisions   enable row level security;
+alter table public.shadow_reviews     enable row level security;
+alter table public.shadow_lessons     enable row level security;
 
 
 -- -----------------------------------------------------------------------------------------------------
@@ -790,8 +832,10 @@ create or replace function public.shadow_month_cost()
 returns numeric
 language sql stable set search_path = public
 as $$
-  select coalesce(sum(d.cost_usd), 0) from public.shadow_decisions d
-  where d.ts >= (date_trunc('month', now() at time zone 'Asia/Bangkok') at time zone 'Asia/Bangkok');
+  select coalesce((select sum(d.cost_usd) from public.shadow_decisions d
+                   where d.ts >= (date_trunc('month', now() at time zone 'Asia/Bangkok') at time zone 'Asia/Bangkok')), 0)
+       + coalesce((select sum(r.cost_usd) from public.shadow_reviews r
+                   where r.ts >= (date_trunc('month', now() at time zone 'Asia/Bangkok') at time zone 'Asia/Bangkok')), 0);
 $$;
 
 -- SPEC 10.6: service_role ONLY (the Edge Function `shadow`). Checks in this order: not_approved, bot_not_found
@@ -824,7 +868,99 @@ begin
   if v_last is not null and v_last > now() - make_interval(secs => greatest(v_cfg.shadow_interval_s - 20, 30)) then
     raise exception 'shadow_too_soon';
   end if;
-  return jsonb_build_object('model', v_cfg.shadow_model, 'interval_s', v_cfg.shadow_interval_s);
+  return jsonb_build_object('model', v_cfg.shadow_model, 'interval_s', v_cfg.shadow_interval_s,
+                            'memory_rev', (select count(*)::int from public.shadow_reviews r where r.bot_id = p_bot));
+end;
+$$;
+
+-- SPEC 10.7: service_role ONLY. May the AI review this closed trade? not_approved, bot_not_found, shadow_disabled,
+-- shadow_budget, review_done (already reviewed), review_nothing (no decision was recorded for this ticket).
+create or replace function public.shadow_review_start(p_user uuid, p_bot uuid, p_ticket bigint)
+returns jsonb
+language plpgsql volatile security definer set search_path = public
+as $$
+declare
+  v_prof public.profiles%rowtype;
+  v_cfg  public.ai_config%rowtype;
+begin
+  select * into v_prof from public.profiles where id = p_user;
+  if not found or not v_prof.approved or v_prof.disabled then
+    raise exception 'not_approved';
+  end if;
+  if not exists (select 1 from public.bots b where b.id = p_bot and b.owner = p_user) then
+    raise exception 'bot_not_found';
+  end if;
+  select * into v_cfg from public.ai_config where id = 1 for update;
+  if not found or not v_cfg.shadow_enabled then
+    raise exception 'shadow_disabled';
+  end if;
+  if public.shadow_month_cost() >= v_cfg.shadow_budget_usd then
+    raise exception 'shadow_budget';
+  end if;
+  if exists (select 1 from public.shadow_reviews r where r.bot_id = p_bot and r.ticket = p_ticket) then
+    raise exception 'review_done';
+  end if;
+  if not exists (select 1 from public.shadow_decisions d where d.bot_id = p_bot and d.ticket = p_ticket) then
+    raise exception 'review_nothing';
+  end if;
+  return jsonb_build_object('model', v_cfg.shadow_model);
+end;
+$$;
+
+-- SPEC 10.7: service_role ONLY. Stores the review and applies its lesson changes in one transaction. p_ops items:
+-- {"op":"add","text":".."} | {"op":"reinforce"|"weaken"|"retire","id":<lesson id of this bot>}. Unknown ids / ops are
+-- skipped. Then at most 20 active lessons stay. Returns {review_id, applied: [...]}.
+create or replace function public.shadow_review_record(p_user uuid, p_bot uuid, p_row jsonb, p_ops jsonb)
+returns jsonb
+language plpgsql volatile security definer set search_path = public
+as $$
+declare
+  v_id      bigint;
+  v_ticket  bigint := (p_row->>'ticket')::bigint;
+  v_op      jsonb;
+  v_lesson  bigint;
+  v_applied jsonb := '[]'::jsonb;
+  v_text    text;
+begin
+  if not exists (select 1 from public.bots b where b.id = p_bot and b.owner = p_user) then
+    raise exception 'bot_not_found';
+  end if;
+  for v_op in select * from jsonb_array_elements(case when jsonb_typeof(p_ops) = 'array' then p_ops else '[]'::jsonb end)
+  loop
+    if v_op->>'op' = 'add' then
+      v_text := left(btrim(coalesce(v_op->>'text', '')), 400);
+      if v_text <> '' then
+        insert into public.shadow_lessons (bot_id, user_id, text, tickets) values (p_bot, p_user, v_text, array[v_ticket])
+          returning id into v_lesson;
+        v_applied := v_applied || jsonb_build_object('op', 'add', 'id', v_lesson, 'text', v_text, 'why', left(coalesce(v_op->>'why', ''), 400));
+      end if;
+    elsif v_op->>'op' in ('reinforce', 'weaken', 'retire') and (v_op->>'id') ~ '^\d+$' then
+      update public.shadow_lessons l
+         set weight = case v_op->>'op' when 'reinforce' then l.weight + 1 when 'weaken' then l.weight - 1 else l.weight end,
+             status = case when v_op->>'op' = 'retire' or (v_op->>'op' = 'weaken' and l.weight - 1 <= 0) then 'retired' else l.status end,
+             tickets = case when v_ticket = any(l.tickets) then l.tickets else (l.tickets || v_ticket)[greatest(1, cardinality(l.tickets) - 18):] end,
+             updated_at = now()
+       where l.id = (v_op->>'id')::bigint and l.bot_id = p_bot and l.status = 'active'
+       returning l.id into v_lesson;
+      if v_lesson is not null then
+        v_applied := v_applied || jsonb_build_object('op', v_op->>'op', 'id', v_lesson, 'why', left(coalesce(v_op->>'why', ''), 400));
+      end if;
+      v_lesson := null;
+    end if;
+  end loop;
+  -- keep at most 20 active lessons
+  update public.shadow_lessons set status = 'retired', updated_at = now()
+   where id in (select l.id from public.shadow_lessons l where l.bot_id = p_bot and l.status = 'active'
+                order by l.weight desc, l.updated_at desc offset 20);
+  insert into public.shadow_reviews (bot_id, user_id, ticket, module, side, outcome, summary, mistakes, ops, model,
+                                     input_tokens, output_tokens, cost_usd)
+  values (p_bot, p_user, v_ticket, p_row->>'module', p_row->>'side',
+          case when jsonb_typeof(p_row->'outcome') = 'object' then p_row->'outcome' else '{}'::jsonb end,
+          left(coalesce(p_row->>'summary', ''), 3000), left(coalesce(p_row->>'mistakes', ''), 3000), v_applied,
+          p_row->>'model', coalesce((p_row->>'input_tokens')::int, 0), coalesce((p_row->>'output_tokens')::int, 0),
+          coalesce((p_row->>'cost_usd')::numeric, 0))
+  returning id into v_id;
+  return jsonb_build_object('review_id', v_id, 'applied', v_applied);
 end;
 $$;
 
@@ -842,7 +978,7 @@ begin
   end if;
   insert into public.shadow_decisions (bot_id, user_id, ticket, module, side, lots, open_price, sl, tp, bid, ask, profit,
                                        server_time, action, new_sl, confidence, reason, valid, snapshot, details, model,
-                                       input_tokens, output_tokens, cost_usd)
+                                       input_tokens, output_tokens, cost_usd, memory_rev)
   values (p_bot, p_user, (p_row->>'ticket')::bigint, p_row->>'module', p_row->>'side',
           (p_row->>'lots')::numeric, (p_row->>'open_price')::numeric, (p_row->>'sl')::numeric, (p_row->>'tp')::numeric,
           (p_row->>'bid')::numeric, (p_row->>'ask')::numeric, (p_row->>'profit')::numeric, p_row->>'server_time',
@@ -850,7 +986,7 @@ begin
           coalesce((p_row->>'valid')::boolean, true), coalesce(p_row->'snapshot', '{}'::jsonb),
           case when jsonb_typeof(p_row->'details') = 'object' then p_row->'details' else '{}'::jsonb end, p_row->>'model',
           coalesce((p_row->>'input_tokens')::int, 0), coalesce((p_row->>'output_tokens')::int, 0),
-          coalesce((p_row->>'cost_usd')::numeric, 0))
+          coalesce((p_row->>'cost_usd')::numeric, 0), greatest(coalesce((p_row->>'memory_rev')::int, 0), 0))
   returning id into v_id;
   return v_id;
 end;
@@ -1237,11 +1373,12 @@ revoke all on table public.profiles, public.invites, public.bots, public.bot_sta
                     public.bot_control, public.presets, public.audit, public.news_events,
                     public.bars, public.cash_flows, public.trade_notes, public.rounds,
                     public.ai_config, public.ai_conversations, public.ai_messages, public.ai_usage,
-                    public.shadow_decisions
+                    public.shadow_decisions, public.shadow_reviews, public.shadow_lessons
   from anon, authenticated;
 revoke all on sequence public.journal_id_seq, public.audit_id_seq, public.news_events_id_seq,
                        public.cash_flows_id_seq, public.ai_messages_id_seq, public.ai_usage_id_seq,
-                       public.rounds_id_seq, public.shadow_decisions_id_seq
+                       public.rounds_id_seq, public.shadow_decisions_id_seq, public.shadow_reviews_id_seq,
+                       public.shadow_lessons_id_seq
   from anon, authenticated;
 
 grant select                         on table public.profiles, public.invites, public.audit to authenticated;
@@ -1257,6 +1394,9 @@ grant select, insert, delete         on table public.ai_conversations, public.ai
 grant update (title)                 on table public.ai_conversations to authenticated;  -- only the title changes
 grant select                         on table public.ai_usage to authenticated;     -- writes: service_role RPCs only
 grant select                         on table public.shadow_decisions to authenticated;  -- writes: shadow_record only
+grant select                         on table public.shadow_reviews to authenticated;    -- writes: shadow_review_record only
+grant select                         on table public.shadow_lessons to authenticated;
+grant update (status)                on table public.shadow_lessons to authenticated;    -- the owner retires a lesson by hand
 grant usage, select on sequence public.journal_id_seq, public.news_events_id_seq, public.cash_flows_id_seq,
                                 public.ai_messages_id_seq, public.rounds_id_seq
   to authenticated;
@@ -1302,6 +1442,10 @@ revoke execute on function public.shadow_record(uuid, uuid, jsonb)             f
 revoke execute on function public.shadow_month_cost()                          from public, anon, authenticated;
 grant execute on function public.shadow_start(uuid, uuid, bigint)              to service_role;
 grant execute on function public.shadow_record(uuid, uuid, jsonb)              to service_role;
+revoke execute on function public.shadow_review_start(uuid, uuid, bigint)      from public, anon, authenticated;
+revoke execute on function public.shadow_review_record(uuid, uuid, jsonb, jsonb) from public, anon, authenticated;
+grant execute on function public.shadow_review_start(uuid, uuid, bigint)       to service_role;
+grant execute on function public.shadow_review_record(uuid, uuid, jsonb, jsonb) to service_role;
 
 -- internal functions: nobody but the owner (triggers fire regardless of EXECUTE rights)
 revoke execute on function public.gen_invite_code()        from public, anon, authenticated;
@@ -1575,6 +1719,19 @@ create policy ai_usage_select on public.ai_usage for select to authenticated
 drop policy if exists shadow_decisions_select on public.shadow_decisions;
 create policy shadow_decisions_select on public.shadow_decisions for select to authenticated
   using (((select public.is_approved()) and (select public.owns_bot(bot_id))) or (select public.is_admin()));
+
+-- shadow_reviews / shadow_lessons (SPEC 10.7): the same readers; the owner may only retire an active lesson
+-- (column grant: status; the check keeps it to 'retired').
+drop policy if exists shadow_reviews_select on public.shadow_reviews;
+create policy shadow_reviews_select on public.shadow_reviews for select to authenticated
+  using (((select public.is_approved()) and (select public.owns_bot(bot_id))) or (select public.is_admin()));
+drop policy if exists shadow_lessons_select on public.shadow_lessons;
+create policy shadow_lessons_select on public.shadow_lessons for select to authenticated
+  using (((select public.is_approved()) and (select public.owns_bot(bot_id))) or (select public.is_admin()));
+drop policy if exists shadow_lessons_retire on public.shadow_lessons;
+create policy shadow_lessons_retire on public.shadow_lessons for update to authenticated
+  using ((select public.is_approved()) and (select public.owns_bot(bot_id)))
+  with check ((select public.is_approved()) and (select public.owns_bot(bot_id)) and status = 'retired');
 
 
 -- -----------------------------------------------------------------------------------------------------

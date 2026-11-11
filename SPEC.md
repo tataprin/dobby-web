@@ -815,6 +815,37 @@ closed trades the log is scored on real ticks against the real exits (research/s
   confidence, reason), the bot's real result (journal CLOSE with `pos=<ticket>`) and the immediate effect of the first
   non-hold decision; ผู้ใช้ > ผู้ช่วย AI has the admin's shadow switch, model, interval (minutes) and budget.
 
+### 10.7 Shadow AI memory: reviews, lessons, data tools (added 2026-11-11, owner's request)
+"Learning" here is in-context memory, not model training: after every closed trade the AI reviews its own decisions
+against what really happened and keeps a short list of lessons per bot that it reads before every next decision.
+- Tables `shadow_reviews` (bot_id, ticket unique per bot, outcome jsonb = {close, checks[], mfe, mae, better, worse},
+  summary, mistakes (Thai), ops jsonb = lesson changes applied, model, tokens, cost) and `shadow_lessons` (bot_id, text
+  <= 400, weight, status active/retired, tickets[]). Read: owner + admin. Writes: service RPC only, except the owner may
+  set an active lesson to `retired` (column grant `status`, policy check status = 'retired').
+- RPCs (service only): `shadow_review_start(user, bot, ticket)` -> {model}; raises not_approved, bot_not_found,
+  shadow_disabled, shadow_budget, review_done, review_nothing. `shadow_review_record(user, bot, row, ops)` stores the
+  review and applies ops in one transaction: add {text} (weight 1), reinforce {id} (+1), weaken {id} (-1, retired at 0),
+  retire {id}; ids of another bot are ignored; then at most 20 active lessons (lowest weight, then oldest, retired).
+  `shadow_month_cost()` = decisions + reviews. `shadow_start` also returns `memory_rev` (reviews so far), stored on
+  every decision (`shadow_decisions.memory_rev`) so the forward test can compare early and later decisions.
+- Edge Function `shadow`, decide mode: the system prompt gets the memory (active lessons by weight, the track record per
+  action from the reviews' checks, the last 3 reviews). Data tools in up to 5 rounds (`tool_choice: any`, the last
+  round forces `decide`): get_indicators (M15 / H1 / H4 / D1 from the bars table's M15 closes: ema, sma, rsi, macd,
+  bollinger, roc, zscore, atr_close, swings, levels, vwap), get_price_history, get_trade_history (journal CLOSE rows),
+  get_my_record (its reviews). Tools used are listed in details.data_used.
+- Review mode: POST {mode: "review", bot_id, ticket, close {ts_utc, ts_server, price, pnl, reason}, bars_m15}. The
+  function evaluates every decision (delta = USD the action would have made minus the real P&L; tighten / reverse /
+  hold-exit on M15 closes + the decisions' own prices + the real exit = approx), then one forced `review` call
+  (summary, mistakes, up to 6 lesson ops; the prompt asks to separate a bad decision from bad luck and to keep lessons
+  general) and `shadow_review_record`.
+- Agent 1.3.0: remembers the tickets it asked about (`shadow_state.json`); when one is no longer open and its journal
+  CLOSE row (`pos=<ticket>`) is there, it posts the review once (retries on network errors, at most 6 tries; gives up
+  after 30 min without a CLOSE row). Review answers are appended to shadow_decisions.jsonl as type "review".
+  agent_state.shadow adds reviews and pending_reviews.
+- Website AI เงา: panel ความจำของ AI (active lessons with weight and source trades, retired ones folded, the owner's
+  เลิกใช้ button) and under every reviewed trade the AI's review (summary, mistakes, verdict per decision, lesson changes).
+- Scorer: splits the scored trades into an earlier and a later half with the memory size of each.
+
 ## 11. EA v3.05: runner mode + daily-cap reset (2026-11-10)
 Contract fixed 2026-11-10 between the EA (`D:\Dobby\mt5\Dobby3_v305.mq5` = v3.04 + this), the agent / app
 (dobby_agent.py 1.2.1 inside DobbyApp 1.2.2) and the website. Research reference: r44 (PREREG I3, best cell

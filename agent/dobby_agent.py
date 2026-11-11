@@ -110,6 +110,9 @@ SHADOW_JOURNAL_ROWS = 12
 SHADOW_PAUSE_S = {"shadow_disabled": 1800, "ai_not_configured": 1800, "shadow_budget": 3600, "not_approved": 3600,
                   "bot_not_found": 3600}
 SHADOW_RETRY_S = 120                # network error / 5xx
+SHADOW_STATE_NAME = "shadow_state.json"
+SHADOW_REVIEW_WAIT_S = 1800         # wait this long for the trade's CLOSE row before giving up its review
+SHADOW_REVIEW_TIMEOUT_S = 120
 AUTO_HORIZON_S = 7 * 86400          # automatic blackouts: the next 7 days
 THAI_OFFSET_S = 7 * 3600            # schedule windows are Thai time (UTC+7, no DST)
 AUTO_NEWS_DEFAULTS = {"before_min": 30, "after_min": 60, "currencies": ["USD"], "impact": ["High"]}
@@ -2317,6 +2320,116 @@ class ShadowWatcher(object):
         self.last_at = None
         self.last_error = ""
         self.lock = threading.Lock()
+        # SPEC 10.7: trades asked about -> review once they are closed (kept across restarts in shadow_state.json)
+        self.state_path = os.path.join(agent.agent_dir, SHADOW_STATE_NAME)
+        self.asked, self.pending, self.reviews = {}, {}, 0
+        try:
+            with open(self.state_path, "rb") as f:
+                st = json.loads(f.read().decode("utf-8"))
+            self.asked = dict((int(k), v) for k, v in (st.get("asked") or {}).items())
+            self.pending = dict((int(k), v) for k, v in (st.get("pending") or {}).items())
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    def _save(self):
+        try:
+            write_json_atomic(self.state_path, {"asked": dict((str(k), v) for k, v in self.asked.items()),
+                                                "pending": dict((str(k), v) for k, v in self.pending.items())})
+        except OSError as e:
+            LOG.warning("cannot save %s: %s", SHADOW_STATE_NAME, e)
+
+    def find_close(self, ticket):
+        """The journal CLOSE row of this position ("pos=<ticket>"), or None."""
+        for r in reversed(self.journal):
+            if r.get("event") == "CLOSE" and re.search(r"\bpos=%d\b" % ticket, r.get("detail") or ""):
+                return r
+        return None
+
+    def _reviews_due(self, now):
+        """Queue the closed trades the AI watched; post a review for each one whose CLOSE row is in the journal."""
+        token, client = getattr(self.agent.client, "access_token", None), self.agent.client
+        changed = False
+        for ticket, info in list(self.pending.items()):
+            if ticket in self.busy or now < info.get("next_try", 0):
+                continue
+            row = self.find_close(ticket)
+            if row is None:
+                if now - info.get("since", now) > SHADOW_REVIEW_WAIT_S:
+                    del self.pending[ticket]
+                    changed = True
+                    LOG.info("shadow AI: no CLOSE row for #%s after %d min, review skipped", ticket, SHADOW_REVIEW_WAIT_S // 60)
+                continue
+            if not token or getattr(client, "expires_at", 0) - now < SHADOW_TOKEN_LEFT_S:
+                return
+            off, _ = self.agent.effective_offset()
+            ts_utc = None
+            # parse_journal_line keeps ts_server as YYYY-MM-DDTHH:MM:SS (server time)
+            dt = parse_server_dt((row.get("ts_server") or "").replace("T", " ").replace("-", "."))
+            if dt is not None and off is not None:
+                ts_utc = iso_z(naive_to_epoch(dt) - int(off) * 60)
+            first = parse_utc(info.get("first_utc")) or now
+            try:
+                bars = [b for b in shadow_bar_rows(read_text(self.agent.bars_path, sleep=self.agent.sleep), off, keep=400)
+                        if (parse_utc(b["t_utc"]) or 0) >= first - 3600]
+            except Exception:
+                bars = []
+            reason = re.search(r"reason=(\w+)", row.get("detail") or "")
+            body = {"mode": "review", "bot_id": self.agent.config.get("bot_id"), "ticket": ticket,
+                    "close": {"ts_server": row.get("ts_server"), "ts_utc": ts_utc, "price": row.get("price"),
+                              "pnl": row.get("pnl"), "reason": reason.group(1) if reason else None},
+                    "bars_m15": [{"t_utc": b["t_utc"], "close": b["close"]} for b in bars]}
+            headers = {"apikey": client.key, "Authorization": "Bearer " + token, "Content-Type": "application/json",
+                       "Accept": "application/json"}
+            with self.lock:
+                self.busy.add(ticket)
+            args = (client.url + SHADOW_PATH, headers, body, ticket)
+            if self.threaded:
+                threading.Thread(target=self._review, args=args, name="shadow-review-%d" % ticket, daemon=True).start()
+            else:
+                self._review(*args)
+        if changed:
+            self._save()
+
+    def _review(self, url, headers, body, ticket):
+        entry = {"type": "review", "ts_utc": iso_z(self.clock()), "ticket": ticket, "close": body.get("close")}
+        done, retry = False, SHADOW_RETRY_S
+        try:
+            status, data = self.post(url, headers, body, SHADOW_REVIEW_TIMEOUT_S)
+            data = data if isinstance(data, dict) else {}
+            entry["http"] = status
+            if status == 200 and data.get("ok"):
+                done = True
+                entry.update({"review_id": data.get("review_id"), "summary": data.get("summary"),
+                              "mistakes": data.get("mistakes"), "applied": data.get("applied"),
+                              "better": data.get("better"), "worse": data.get("worse"), "cost_usd": data.get("cost_usd")})
+                LOG.info("shadow AI review #%s: %s", ticket, clean_note(data.get("mistakes") or data.get("summary"), 160))
+            else:
+                code = str(data.get("error") or ("http_%d" % status))
+                entry["error"] = code
+                if code in ("review_done", "review_nothing", "bad_request"):
+                    done = True
+                elif code in SHADOW_PAUSE_S:
+                    retry = SHADOW_PAUSE_S[code]
+        except Exception as e:
+            entry["error"] = "network"
+            entry["message"] = clean_note(redact(str(e)), 200)
+        with self.lock:
+            self.busy.discard(ticket)
+            if done:
+                self.pending.pop(ticket, None)
+                self.reviews += 1 if entry.get("review_id") else 0
+            elif ticket in self.pending:
+                p = self.pending[ticket]
+                p["tries"] = p.get("tries", 0) + 1
+                p["next_try"] = self.clock() + retry
+                if p["tries"] >= 6:
+                    self.pending.pop(ticket, None)
+            self._save()
+            try:
+                with open(self.log_path, "ab") as f:
+                    f.write((json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
+            except OSError as e:
+                LOG.warning("cannot write %s: %s", SHADOW_LOG_NAME, e)
 
     def enabled(self):
         return bool(self.agent.config.get("shadow", True)) and not self.agent.dry_run
@@ -2387,6 +2500,17 @@ class ShadowWatcher(object):
             for t in list(self.next_at):
                 if t not in open_tickets and t not in self.busy:
                     del self.next_at[t]
+            moved = False
+            for t in list(self.asked):                       # SPEC 10.7: a watched trade closed -> review it
+                if t not in open_tickets and t not in self.busy:
+                    info = self.asked.pop(t)
+                    info["since"] = now
+                    self.pending[t] = info
+                    moved = True
+            if moved:
+                self._save()
+        if self.pending and now >= self.paused_until:
+            self._reviews_due(now)
         if not positions or now < self.paused_until:
             return
         client = self.agent.client
@@ -2405,6 +2529,9 @@ class ShadowWatcher(object):
                     continue
                 self.busy.add(ticket)
                 self.next_at[ticket] = now + SHADOW_INTERVAL_S
+                if ticket not in self.asked:
+                    self.asked[ticket] = {"module": p.get("module"), "side": p.get("side"), "first_utc": iso_z(now)}
+                    self._save()
             body = {"bot_id": bot_id, "snapshot": self.snapshot(status, p, now)}
             headers = {"apikey": client.key, "Authorization": "Bearer " + token, "Content-Type": "application/json",
                        "Accept": "application/json"}
@@ -2432,6 +2559,7 @@ class ShadowWatcher(object):
                 entry.update({"id": data.get("id"), "action": d.get("action"), "new_sl": d.get("new_sl"),
                               "confidence": d.get("confidence"), "reason": d.get("reason"), "valid": data.get("valid"),
                               "details": d.get("details") if isinstance(d.get("details"), dict) else {},
+                              "memory_rev": data.get("memory_rev"),
                               "model": data.get("model"), "cost_usd": data.get("cost_usd")})
                 nxt = to_num(data.get("next_after_s")) or SHADOW_INTERVAL_S
                 self.last_error = ""
@@ -2471,7 +2599,8 @@ class ShadowWatcher(object):
         if not self.enabled():
             return None
         with self.lock:
-            return {"calls": self.calls, "last_at": iso_z(self.last_at) if self.last_at else None,
+            return {"calls": self.calls, "reviews": self.reviews, "pending_reviews": len(self.pending),
+                    "last_at": iso_z(self.last_at) if self.last_at else None,
                     "last_error": self.last_error or None,
                     "paused": self.pause_reason if self.clock() < self.paused_until else None}
 

@@ -2,8 +2,8 @@
 // next to what really happened (the journal's CLOSE row of the same ticket: "pos=<ticket>"). Log only: nothing here
 // changes the bot. The full scoring (tighten / reverse on real prices) is the offline report
 // (research/strategies/shadow_score).
-import { h, mount, fmtThai, fmtNum, pnl, errorState, loadingState, emptyState, callout } from '../util.js';
-import { myBot, isAdmin } from '../state.js';
+import { h, mount, fmtThai, fmtNum, pnl, errorState, loadingState, emptyState, callout, confirmDialog, toast, errText } from '../util.js';
+import { myBot, isAdmin, ownsBot } from '../state.js';
 import { panel, pageHead, modChip, sideEl, noBotState } from '../views.js';
 
 const ACTION = {
@@ -88,7 +88,41 @@ function actionChip(r) {
     label, r.valid === false ? ' (ใช้ไม่ได้)' : '');
 }
 
-function tradePanel(t, close) {
+const OP = { add: 'จดบทเรียนใหม่', reinforce: 'ยืนยันบทเรียน', weaken: 'ลดน้ำหนักบทเรียน', retire: 'เลิกใช้บทเรียน' };
+const VERDICT = { better: ['ดีกว่าบอท', 'good'], worse: ['แย่กว่าบอท', 'bad'], same: ['เท่ากัน', 'off'] };
+
+/** SPEC 10.7: the AI's own review of a closed trade. */
+function reviewBlock(rv, lessonsById) {
+  const checks = (rv.outcome && rv.outcome.checks) || [];
+  return h('div', { class: 'shadow-review' },
+    h('p', { class: 'shadow-review-title' }, 'AI ทบทวนไม้นี้หลังปิด'),
+    rv.summary ? h('p', null, rv.summary) : null,
+    rv.mistakes ? h('p', null, h('strong', null, 'ผิดตรงไหน: '), rv.mistakes) : null,
+    checks.length ? h('div', { class: 'shadow-checks' }, checks.map((c) => {
+      const [label, tone] = VERDICT[c.verdict] || [c.verdict, 'off'];
+      return h('span', { class: `chip ${tone}` }, `${(ACTION[c.action] || [c.action])[0]}: ${label} `, pnl(c.delta));
+    })) : null,
+    (rv.ops || []).length ? h('ul', { class: 'shadow-ops' }, rv.ops.map((o) => {
+      const l = lessonsById.get(Number(o.id));
+      return h('li', null, h('strong', null, `${OP[o.op] || o.op} #${o.id}`), ` ${o.text || (l && l.text) || ''}`, o.why ? h('span', { class: 'muted small' }, ` (${o.why})`) : null);
+    })) : null);
+}
+
+/** SPEC 10.7: the lessons the AI reads before every decision; the owner may retire one. */
+function memoryPanel(lessons, reviews, onRetire, canEdit) {
+  const active = lessons.filter((l) => l.status === 'active'), retired = lessons.filter((l) => l.status !== 'active');
+  const row = (l) => h('li', { class: `shadow-lesson ${l.status}` },
+    h('div', { class: 'grow' }, h('span', { class: 'shadow-weight', title: 'น้ำหนัก = จำนวนไม้ที่ยืนยันบทเรียนนี้ ลบจำนวนไม้ที่ค้าน' }, `#${l.id} น้ำหนัก ${l.weight}`), ' ', l.text,
+      h('div', { class: 'muted small' }, `จากไม้ ${(l.tickets || []).slice(-5).join(', ') || '—'} · แก้ล่าสุด ${fmtThai(Date.parse(l.updated_at), 'datetime')}`)),
+    canEdit && l.status === 'active' ? h('button', { class: 'btn ghost small', type: 'button', onclick: () => onRetire(l) }, 'เลิกใช้') : null);
+  return panel('ความจำของ AI', { sub: `AI อ่านบทเรียนเหล่านี้ทุกครั้งก่อนตัดสินใจ ทบทวนแล้ว ${reviews.length} ไม้ บทเรียนที่ใช้อยู่ ${active.length} ข้อ (สูงสุด 20)` },
+    active.length ? h('ul', { class: 'shadow-lessons' }, active.map(row))
+      : h('p', { class: 'muted' }, 'ยังไม่มีบทเรียน หลังไม้แรกที่ AI ดูปิดลง AI จะทบทวนแล้วจดบทเรียนเอง'),
+    retired.length ? h('details', null, h('summary', null, `บทเรียนที่เลิกใช้แล้ว ${retired.length} ข้อ`), h('ul', { class: 'shadow-lessons' }, retired.map(row))) : null,
+    h('p', { class: 'muted small' }, 'AI เรียนจากผลจริงของไม้ที่ปิดแล้ว ไม้เดียวอาจเป็นแค่โชค บทเรียนที่น้ำหนักสูงจึงน่าเชื่อกว่า บทเรียนที่ถูกค้านจนน้ำหนักเหลือ 0 จะถูกเลิกใช้เอง'));
+}
+
+function tradePanel(t, close, review, lessonsById) {
   const mv = firstMove(t);
   const real = close ? [pnl(close.pnl), h('span', { class: 'muted small' }, ` ${close.reason || ''}`)] : h('span', { class: 'muted' }, 'ยังเปิดอยู่ หรือยังไม่เห็นผลในประวัติล่าสุด');
   let follow = h('span', { class: 'muted' }, 'AI ให้ถือต่อทุกครั้ง ผลเท่ากับบอท');
@@ -113,7 +147,8 @@ function tradePanel(t, close) {
         h('td', { 'data-label': 'AI ว่า' }, actionChip(r)),
         h('td', { 'data-label': 'แผนและตัวเลข', class: 'shadow-plan' }, ...planLines(r)),
         h('td', { 'data-label': 'มั่นใจ', class: 'num' }, r.confidence === null || r.confidence === undefined ? '—' : `${r.confidence} %`),
-        h('td', { 'data-label': 'เหตุผล', class: 'shadow-reason' }, r.reason || '—')))))));
+        h('td', { 'data-label': 'เหตุผล', class: 'shadow-reason' }, r.reason || '—')))))),
+    review ? reviewBlock(review, lessonsById) : null);
 }
 
 export async function render(root, ctx) {
@@ -124,12 +159,14 @@ export async function render(root, ctx) {
   root.append(box);
   box.append(loadingState());
 
-  let rows = [], journal = [], cost = null;
+  let rows = [], journal = [], cost = null, lessons = [], reviews = [];
   try {
-    [rows, journal, cost] = await Promise.all([
+    [rows, journal, cost, lessons, reviews] = await Promise.all([
       ctx.api.shadowDecisions(bot.id, { limit: 400 }),
       ctx.api.journalTail(bot.id, 400).catch(() => []),
       isAdmin() ? ctx.api.shadowMonthCost().catch(() => null) : null,
+      ctx.api.shadowLessons(bot.id).catch(() => []),          // SPEC 10.7 (schema.sql older than the memory: none)
+      ctx.api.shadowReviews(bot.id).catch(() => []),
     ]);
   } catch (e) {
     if (e && e.code === 'not_deployed') {
@@ -163,5 +200,12 @@ export async function render(root, ctx) {
       cost !== null ? [h('dt', null, 'ค่าใช้จ่ายเดือนนี้'), h('dd', null, `${fmtNum(cost, 2)} USD`)] : null)
       : emptyState('ยังไม่มีคำตอบจาก AI เงา', 'คำตอบแรกจะขึ้นเมื่อบอทเปิดไม้ครั้งถัดไป'));
 
-  mount(box, intro, ...status, summary, ...trades.map((t) => tradePanel(t, closes.get(t.ticket))));
+  const lessonsById = new Map(lessons.map((l) => [Number(l.id), l]));
+  const reviewByTicket = new Map(reviews.map((r) => [Number(r.ticket), r]));
+  const retire = async (l) => {
+    if (!(await confirmDialog(`เลิกใช้บทเรียน #${l.id}`, `${l.text} — AI จะไม่อ่านบทเรียนนี้อีก`, { ok: 'เลิกใช้', danger: true }))) return;
+    try { await ctx.api.retireLesson(bot.id, l.id); toast('เลิกใช้บทเรียนแล้ว AI จะไม่อ่านบทเรียนนี้อีก', 'good'); ctx.route(); } catch (e) { toast(errText(e), 'bad'); }
+  };
+  mount(box, intro, ...status, summary, memoryPanel(lessons, reviews, retire, ownsBot(bot)),
+    ...trades.map((t) => tradePanel(t, closes.get(t.ticket), reviewByTicket.get(t.ticket), lessonsById)));
 }

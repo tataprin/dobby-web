@@ -174,6 +174,71 @@ def test_closed_trade_is_forgotten(env):
     assert a.shadow.next_at == {}
 
 
+def close_trade(env, pnl="-111.60"):
+    """The EA closes the C5G position: a CLOSE row with pos=<ticket> and no open position any more."""
+    line = "%s,CLOSE,C5G,BUY,0.20,4044.05,,,%s,1543.78,1,reason=SL pos=432543137\n" % (server_time_str(env.clock()), pnl)
+    with open(env.path("dobby2_journal.csv"), "a", encoding="utf-8") as f:
+        f.write(line)
+    env.tick(5, positions=[{"open": False, "module": m} for m in ("A_new", "NY", "C5G", "ASIA16")])
+
+
+def test_closed_trade_is_reviewed_once_with_its_close_and_bars(env):
+    write_bars(env)
+    open_status(env)
+    a, fake = make(env)
+    a.cycle()                                              # one decision
+    close_trade(env)
+    fake.answers = [(200, {"ok": True, "review_id": 7, "summary": "s", "mistakes": "ควรปิดก่อน",
+                           "applied": [{"op": "add", "id": 1}], "better": 1, "worse": 0, "cost_usd": 0.03})]
+    a.cycle()
+    rv = [c for c in fake.calls if c["body"].get("mode") == "review"]
+    assert len(rv) == 1
+    b = rv[0]["body"]
+    assert b["ticket"] == 432543137 and b["bot_id"] == BOT
+    assert b["close"]["pnl"] == -111.6 and b["close"]["reason"] == "SL" and b["close"]["price"] == 4044.05
+    assert b["close"]["ts_utc"].endswith("Z")
+    assert len(b["bars_m15"]) > 0
+    for _ in range(3):
+        env.tick(400, positions=env.status["positions"])
+        a.cycle()
+    assert len([c for c in fake.calls if c["body"].get("mode") == "review"]) == 1     # never twice
+    review_lines = [x for x in log_lines(env) if x.get("type") == "review"]
+    assert review_lines[0]["mistakes"] == "ควรปิดก่อน"
+    st = a.agent_state(env.clock())["shadow"]
+    assert st["reviews"] == 1 and st["pending_reviews"] == 0
+
+
+def test_review_survives_a_restart_and_retries_after_network_error(env):
+    open_status(env)
+    a, fake = make(env)
+    a.cycle()
+    close_trade(env)
+    fake.answers = [da.NetworkError("down")]
+    a.cycle()
+    assert a.shadow.pending                                   # kept for a retry
+    b = env.agent()                                           # the app restarts
+    fake2 = FakePost([(200, {"ok": True, "review_id": 9})])
+    b.shadow.post, b.shadow.threaded = fake2, False
+    b.shadow.feed_journal(a.shadow.journal)                   # the journal tail is read again after a restart
+    env.tick(130, positions=env.status["positions"])
+    b.cycle()
+    assert [c["body"]["ticket"] for c in fake2.calls if c["body"].get("mode") == "review"] == [432543137]
+    assert b.shadow.pending == {}
+
+
+def test_no_close_row_gives_up_after_30_minutes(env):
+    open_status(env)
+    a, fake = make(env)
+    a.cycle()
+    env.tick(5, positions=[{"open": False, "module": m} for m in ("A_new", "NY", "C5G", "ASIA16")])
+    a.cycle()
+    assert 432543137 in a.shadow.pending
+    env.tick(1900, positions=env.status["positions"])
+    a.cycle()
+    assert a.shadow.pending == {}
+    assert not [c for c in fake.calls if c["body"].get("mode") == "review"]
+
+
 def test_shadow_bar_rows_needs_the_offset():
     assert da.shadow_bar_rows("h\n2026.11.11 13:45:00,x,4044.39,39.2,5.4,6,4050,4055,4055,-1", None) == []
     rows = da.shadow_bar_rows("h\n2026.11.11 13:45:00,x,4044.39,39.2,5.4,6,4050,4055,4055,-1", 120)
