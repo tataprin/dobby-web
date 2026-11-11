@@ -777,6 +777,8 @@ where the daily-cap reset button sends a fresh token after its own confirm dialo
 below 3.05 are refused by the Edge Function and ignored by the website.
 
 ### 10.6 Shadow AI "AI เงา" — forward test, log only (added 2026-11-11)
+**Admin only (site owner, 2026-11-11):** shadow_start, shadow_review_start and ai_scan_start raise `shadow_admin_only`
+for a member (the function answers 403, the app pauses 6 h); the AI เงา page and menu are admin routes.
 Goal: test the owner's idea "let an AI watch every open trade and decide what to do" without risking money. While a
 Dobby trade is open, Claude is asked every `shadow_interval_s` (default 300 s) what it would do: `hold`, `close`,
 `tighten` (new stop strictly between the current stop and the price) or `reverse`. **The answer is only recorded.**

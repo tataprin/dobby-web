@@ -70,7 +70,7 @@ export const NAV = [
   { name: 'news', title: 'ข่าว', icon: 'news' },
   { name: 'machines', title: 'เครื่องของฉัน', short: 'เครื่อง', icon: 'monitor', tab: true },
   { name: 'guide', title: 'วิธีใช้', icon: 'book' },
-  { name: 'shadow', title: 'AI เงา', icon: 'eye', more: true },
+  { name: 'shadow', title: 'AI เงา', icon: 'eye', admin: true, more: true },   // 2026-11-11: admin only
   { name: 'presets', title: 'พรีเซ็ตที่บันทึกไว้', icon: 'doc', more: true },
   { name: 'downloads', title: 'ดาวน์โหลดแอป', icon: 'download', more: true },
   { name: 'users', title: 'ผู้ใช้', icon: 'users', admin: true, more: true },
@@ -89,7 +89,7 @@ const ROUTES = {
   history: { load: P.history },
   trade: { load: P.trade, nav: 'history', title: 'รายละเอียดไม้' },
   news: { load: P.news },
-  shadow: { load: P.shadow },
+  shadow: { load: P.shadow, admin: true },
   machines: { load: P.machines },
   guide: { load: P.guide },
   presets: { load: P.presets, nav: 'presets' },

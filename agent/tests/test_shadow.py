@@ -361,3 +361,14 @@ def test_shadow_bar_rows_needs_the_offset():
     rows = da.shadow_bar_rows("h\n2026.11.11 13:45:00,x,4044.39,39.2,5.4,6,4050,4055,4055,-1", 120)
     assert rows == [{"t_utc": "2026-11-11T11:45:00Z", "close": 4044.39, "rsi": 39.2, "atr": 5.4, "h4_close": 4050.0,
                      "h4_ema": 4055.0, "trend": -1.0, "vwap": None}]
+
+
+def test_member_bot_is_refused_and_paused_for_hours(env):
+    open_status(env)
+    a, fake = make(env, answers=[(403, {"error": "shadow_admin_only", "message": "admin only"})])
+    a.cycle()
+    assert len(fake.calls) == 1
+    env.tick(3 * 3600, positions=env.status["positions"])
+    a.cycle()
+    assert len(fake.calls) == 1                                  # 6 h pause
+    assert a.agent_state(env.clock())["shadow"]["paused"] == "shadow_admin_only"

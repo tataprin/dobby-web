@@ -15,6 +15,7 @@ const ACTION = {
 };
 const PAUSE = {
   shadow_disabled: 'ผู้ดูแลยังไม่ได้เปิด AI เงา (ผู้ใช้ > ผู้ช่วย AI)',
+  shadow_admin_only: 'AI เงาใช้ได้เฉพาะบอทของผู้ดูแล',
   shadow_budget: 'งบ AI เงาของเดือนนี้หมดแล้ว',
   ai_not_configured: 'ยังไม่ได้ตั้งค่า function shadow หรือ API key ใน Supabase',
   not_approved: 'บัญชียังไม่ได้รับอนุมัติ',

@@ -922,6 +922,9 @@ begin
   if not found or not v_prof.approved or v_prof.disabled then
     raise exception 'not_approved';
   end if;
+  if v_prof.role <> 'admin' then                        -- 2026-11-11 site owner: the shadow AI is for the admin only
+    raise exception 'shadow_admin_only';
+  end if;
   if not exists (select 1 from public.bots b where b.id = p_bot and b.owner = p_user) then
     raise exception 'bot_not_found';
   end if;
@@ -1048,6 +1051,9 @@ begin
   if not found or not v_prof.approved or v_prof.disabled then
     raise exception 'not_approved';
   end if;
+  if v_prof.role <> 'admin' then                        -- 2026-11-11 site owner: the shadow AI is for the admin only
+    raise exception 'shadow_admin_only';
+  end if;
   if not exists (select 1 from public.bots b where b.id = p_bot and b.owner = p_user) then
     raise exception 'bot_not_found';
   end if;
@@ -1080,6 +1086,9 @@ begin
   select * into v_prof from public.profiles where id = p_user;
   if not found or not v_prof.approved or v_prof.disabled then
     raise exception 'not_approved';
+  end if;
+  if v_prof.role <> 'admin' then                        -- 2026-11-11 site owner: the shadow AI is for the admin only
+    raise exception 'shadow_admin_only';
   end if;
   if not exists (select 1 from public.bots b where b.id = p_bot and b.owner = p_user) then
     raise exception 'bot_not_found';

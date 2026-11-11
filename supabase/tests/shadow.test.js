@@ -28,7 +28,7 @@ const rejects = async (p, code) => {
 before(async () => {
   ctx = await freshDb({ runs: 2 });
   admin = await ctx.approvedUser('admin@example.test', 'admin');
-  bob = await ctx.approvedUser('bob@example.test');
+  bob = await ctx.approvedUser('bob@example.test', 'admin');   // the shadow AI is admin only (2026-11-11): bob is a second admin
   erin = await ctx.approvedUser('erin@example.test');
   carol = await ctx.createUser('carol@example.test');   // never approved
   botB = (await ctx.as(bob, `insert into public.bots (name) values ('Bob PC') returning id`))[0].id;
@@ -49,6 +49,14 @@ test('shadow_start: refuses while off, for unapproved users and for someone else
   await rejects(start(bob, botE, 1), 'bot_not_found');
   const r = await start(bob, botB, 1);
   assert.deepEqual(r, { model: 'claude-opus-5-5', interval_s: 300, memory_rev: 0 });
+});
+
+test('the shadow AI is for the admin only: a member is refused by every start RPC', async () => {
+  await setConfig({ shadow_enabled: true, ai_trader_enabled: true });
+  await rejects(start(erin, botE, 1), 'shadow_admin_only');
+  await rejects(ctx.asService(`select public.shadow_review_start($1::uuid, $2::uuid, 1)`, [erin, botE]), 'shadow_admin_only');
+  await rejects(ctx.asService(`select public.ai_scan_start($1::uuid, $2::uuid)`, [erin, botE]), 'shadow_admin_only');
+  await setConfig({ ai_trader_enabled: false });
 });
 
 test('shadow_record + shadow_start: one question per trade per interval; other trades are not blocked', async () => {
@@ -81,7 +89,7 @@ test('shadow_decisions: owner and admin read, others do not; no client writes; R
   await record(erin, botE, row({ ticket: 5 }));
   const n = async (who, bot) => (await ctx.as(who, `select count(*)::int as n from public.shadow_decisions where bot_id = $1`, [bot]))[0].n;
   assert.ok(await n(bob, botB) >= 1);
-  assert.equal(await n(bob, botE), 0);
+  assert.equal(await n(erin, botB), 0);
   assert.equal(await n(erin, botE), 1);
   assert.equal(await n(carol, botB), 0);
   assert.ok(await n(admin, botB) >= 1);
@@ -222,6 +230,6 @@ test('AI trader: owner and admin read the paper trades and scans; no client writ
 
 test('admin can change the shadow settings; a member cannot', async () => {
   const upd = async (who) => (await ctx.as(who, `update public.ai_config set shadow_interval_s = 600 where id = 1 returning shadow_interval_s`)).length;
-  assert.equal(await upd(bob), 0);
+  assert.equal(await upd(erin), 0);
   assert.equal(await upd(admin), 1);
 });

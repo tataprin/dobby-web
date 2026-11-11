@@ -108,7 +108,7 @@ SHADOW_TOKEN_LEFT_S = 150           # the call uses the current access token onl
 SHADOW_BARS = 32                    # 8 h of M15 bars in the snapshot
 SHADOW_JOURNAL_ROWS = 12
 SHADOW_PAUSE_S = {"shadow_disabled": 1800, "ai_not_configured": 1800, "shadow_budget": 3600, "not_approved": 3600,
-                  "bot_not_found": 3600}
+                  "bot_not_found": 3600, "shadow_admin_only": 6 * 3600}
 SHADOW_RETRY_S = 120                # network error / 5xx
 SHADOW_STATE_NAME = "shadow_state.json"
 # SPEC 10.8 AI trader (paper only: never an order, never an EA file)
@@ -2495,6 +2495,8 @@ class ShadowWatcher(object):
                 nxt = 0
             elif code in ("ai_trader_disabled", "shadow_disabled", "ai_not_configured"):
                 nxt = 1800
+            elif code == "shadow_admin_only":
+                nxt = 6 * 3600
             elif code in ("shadow_budget", "not_approved", "bot_not_found"):
                 nxt = 3600
             elif code == "shadow_too_soon":

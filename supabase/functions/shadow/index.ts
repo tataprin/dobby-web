@@ -51,6 +51,7 @@ export const ERRORS: Record<string, [number, string]> = {
   not_authenticated: [401, "กรุณาเข้าสู่ระบบอีกครั้ง"],
   not_approved: [403, "บัญชียังไม่ได้รับอนุมัติ หรือถูกปิดการใช้งาน"],
   shadow_disabled: [403, "ผู้ดูแลยังไม่ได้เปิด AI เงา"],
+  shadow_admin_only: [403, "AI เงาใช้ได้เฉพาะผู้ดูแล"],
   ai_trader_disabled: [403, "ผู้ดูแลยังไม่ได้เปิดให้ AI เทรดเอง"],
   ai_trade_open: [409, "AI มีไม้ของตัวเองเปิดอยู่แล้ว"],
   ai_trade_not_found: [404, "ไม่พบไม้ของ AI"],
@@ -64,7 +65,7 @@ export const ERRORS: Record<string, [number, string]> = {
   ai_not_configured: [503, "ยังไม่ได้ตั้งค่า AI ใน Supabase"],
 };
 const RPC_CODES = ["not_approved", "bot_not_found", "shadow_disabled", "shadow_budget", "shadow_too_soon", "review_done", "review_nothing",
-  "ai_trader_disabled", "ai_trade_open", "ai_trade_not_found"];
+  "ai_trader_disabled", "ai_trade_open", "ai_trade_not_found", "shadow_admin_only"];
 
 // ------------------------------------------------------------------ prompt
 export const SYSTEM_PROMPT = `You are the shadow AI of Dobby, a MetaTrader 5 robot that trades gold (XAUUSD) on M15 with fixed rules. A Dobby trade is open right now. Decide what YOU would do with it at this moment. Your answer is only logged for a forward test that compares your decisions with the fixed rules; it is never executed, so be honest and calibrated, not cautious for show.
