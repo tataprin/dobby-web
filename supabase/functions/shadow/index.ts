@@ -64,6 +64,7 @@ export const ERRORS: Record<string, [number, string]> = {
   review_done: [409, "ทบทวนไม้นี้ไปแล้ว"],
   review_nothing: [404, "AI เงาไม่ได้ดูไม้นี้"],
   internal: [500, "เกิดข้อผิดพลาด"],
+  ai_failed: [502, "AI ตอบไม่สำเร็จ แอปจะลองใหม่"],
   ai_not_configured: [503, "ยังไม่ได้ตั้งค่า AI ใน Supabase"],
 };
 const RPC_CODES = ["not_approved", "bot_not_found", "shadow_disabled", "shadow_budget", "shadow_too_soon", "review_done", "review_nothing",
@@ -889,8 +890,11 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
         }
       }
     } catch (e) {
-      rev = { summary: "", mistakes: clip(`AI review failed: ${(e as Error)?.message ?? e}`, 300), lessons: [] };
+      console.error("shadow review failed", String((e as Error)?.message ?? e).slice(0, 300));
+      rev = null;
     }
+    // a failed review is NOT stored (it would use up the trade's only review): the app tries again later
+    if (!rev || typeof rev !== "object") return jsonError("ai_failed");
     const ops = (Array.isArray(rev?.lessons) ? rev.lessons : []).slice(0, 6).map((l: Json) => ({
       op: l?.op, id: num(l?.id), text: l?.op === "add" ? clip(l?.text, 300) : null, why: clip(l?.why, 300),
     })).filter((l: Json) => ["add", "reinforce", "weaken", "retire"].includes(l.op));

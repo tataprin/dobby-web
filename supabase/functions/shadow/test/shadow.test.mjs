@@ -278,6 +278,18 @@ test('review mode: evaluates, asks Claude with the forced review tool, applies t
   assert.equal(rec.body.p_row.cost_usd, 0.028);
 });
 
+test('review mode: a failed AI call is not stored (the trade keeps its review for a retry)', async () => {
+  const decisions = [{ ts: '2026-11-11T11:50:00Z', module: 'NY', side: 'SELL', lots: 0.2, open_price: 4010, sl: 4018, tp: 3978, bid: 4009.9, ask: 4010.1, profit: -4.6, action: 'hold', valid: true, details: {} }];
+  for (const reply of [new Error('400 tool_choice'), { content: [{ type: 'text', text: 'hmm' }], usage: {}, stop_reason: 'end_turn' }]) {
+    const f = fakeFetch({ tables: { shadow_decisions: decisions } });
+    const r = await createHandler({ env: ENV, fetch: f, anthropic: fakeAnthropic(reply) })(post({ mode: 'review', bot_id: BOT, ticket: 432908888,
+      close: { ts_utc: '2026-11-11T15:31:41Z', price: 4002.4, pnl: 148.8, reason: 'LOCK' }, bars_m15: [] }));
+    assert.equal(r.status, 502);
+    assert.equal((await r.json()).error, 'ai_failed');
+    assert.equal(f.calls.filter((c) => c.url.endsWith('/rpc/shadow_review_record')).length, 0);
+  }
+});
+
 test('review mode: bad input and RPC refusals', async () => {
   const h = createHandler({ env: ENV, fetch: fakeFetch(), anthropic: fakeAnthropic(toolReply({})) });
   assert.equal((await h(post({ mode: 'review', bot_id: BOT, ticket: 'x', close: { pnl: 1 } }))).status, 400);
