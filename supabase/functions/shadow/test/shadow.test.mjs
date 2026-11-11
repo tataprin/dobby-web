@@ -98,7 +98,8 @@ test('asks Claude with the forced decide tool and records the decision with cost
   assert.equal(out.next_after_s, 300);
   const p = an.seen[0];
   assert.equal(p.model, 'claude-sonnet-5-5');
-  assert.deepEqual(p.tool_choice, { type: 'any' });                  // data tools allowed in the first rounds
+  assert.equal('tool_choice' in p, false);                           // Opus 5.5 / Sonnet 5.5 refuse a forced tool choice (400)
+  assert.equal(p.max_tokens, 8000);                                  // room for the always-on thinking
   assert.ok(p.system.startsWith(SYSTEM_PROMPT));
   assert.ok(p.system.includes('memory is empty'));
   assert.deepEqual(p.tools.map((t) => t.name), ['get_indicators', 'get_price_history', 'get_trade_history', 'get_my_record', 'decide']);
@@ -196,8 +197,33 @@ test('the last round forces decide (no endless tool use)', async () => {
   const an = fakeAnthropic([loop, loop, loop, loop, toolReply({ action: 'close', confidence: 55, reason: 'x' })]);
   const out = await (await createHandler({ env: ENV, fetch: fakeFetch(), anthropic: an })(post({ bot_id: BOT, snapshot: SNAP }))).json();
   assert.equal(an.seen.length, 5);
-  assert.deepEqual(an.seen[4].tool_choice, { type: 'tool', name: 'decide' });
+  assert.ok(an.seen.every((p) => !('tool_choice' in p)));
+  const nudge = an.seen[4].messages.at(-1).content.at(-1);
+  assert.equal(nudge.type, 'text');
+  assert.ok(nudge.text.includes('call the tool decide now'));
   assert.equal(out.decision.action, 'close');
+});
+
+test('a text-only answer (thinking out loud) is nudged once, then the decision is taken', async () => {
+  const text = { content: [{ type: 'thinking', thinking: '...', signature: 'sig' }, { type: 'text', text: 'ผมคิดว่าควรถือ' }], usage: { input_tokens: 100, output_tokens: 10 }, stop_reason: 'end_turn' };
+  const an = fakeAnthropic([text, toolReply({ action: 'hold', confidence: 40, reason: 'ถือ' })]);
+  const out = await (await createHandler({ env: ENV, fetch: fakeFetch(), anthropic: an })(post({ bot_id: BOT, snapshot: SNAP }))).json();
+  assert.equal(out.decision.action, 'hold');
+  const second = an.seen[1].messages;
+  assert.deepEqual(second[1].content, text.content);                 // the assistant turn goes back unchanged (preserved thinking)
+  assert.ok(second[2].content.includes('call the tool decide'));
+});
+
+test('time budget: after 70 s of data rounds the next round is the last one', async () => {
+  let t = 0;
+  const loop = { content: [{ type: 'tool_use', id: 'x', name: 'get_trade_history', input: { n: 5 } }], usage: {}, stop_reason: 'tool_use' };
+  const an = fakeAnthropic([loop, toolReply({ action: 'hold', confidence: 40, reason: 'x' })]);
+  const fetchSlow = fakeFetch();
+  const h = createHandler({ env: ENV, fetch: fetchSlow, anthropic: () => ({ messages: { create: async (p) => { t += 80_000; return an().messages.create(p); } } }), now: () => t });
+  const out = await (await h(post({ bot_id: BOT, snapshot: SNAP }))).json();
+  assert.equal(out.decision.action, 'hold');
+  assert.equal(an.seen.length, 2);
+  assert.ok(an.seen[1].messages.at(-1).content.at(-1).text.includes('No more data'));
 });
 
 test('indicators: ema / rsi / aggregate on known numbers', () => {
@@ -243,7 +269,7 @@ test('review mode: evaluates, asks Claude with the forced review tool, applies t
   assert.equal(out.ok, true);
   assert.equal(out.review_id, 7);
   assert.equal(out.applied.length, 2);                                 // the unknown op was dropped
-  assert.deepEqual(an.seen[0].tool_choice, { type: 'tool', name: 'review' });
+  assert.equal('tool_choice' in an.seen[0], false);
   const sent = JSON.parse(an.seen[0].messages[0].content.split('\n').slice(1).join('\n'));
   assert.equal(sent.checks[0].verdict, 'worse');                        // holding from +28 to -111.60
   assert.equal(sent.your_lessons[0].id, 3);

@@ -33,8 +33,10 @@ export interface ShadowDeps {
 }
 
 export const MAX_BODY_CHARS = 64_000;
-export const MAX_TOKENS = 1600;
+export const MAX_TOKENS = 8000;            // thinking is always on for Opus 5.5 / Sonnet 5.5 and counts here
+export const REVIEW_MAX_TOKENS = 12000;
 const CALL_TIMEOUT_MS = 60_000;
+const DATA_BUDGET_MS = 70_000;
 export const ACTIONS = ["hold", "close", "tighten", "reverse"] as const;
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -626,6 +628,7 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
   const env = (k: string) => String((typeof deps.env === "function" ? deps.env(k) : deps.env?.[k]) ?? "").trim();
   const doFetch: typeof fetch = deps.fetch ?? ((input, init) => fetch(input, init));
   const makeClient = deps.anthropic ?? ((apiKey: string) => new Anthropic({ apiKey, maxRetries: 1, timeout: CALL_TIMEOUT_MS }));
+  const now = deps.now ?? (() => Date.now());
 
   return async function handle(req: Request): Promise<Response> {
     if (req.method !== "POST") return jsonError("method_not_allowed");
@@ -726,25 +729,42 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
   async function toolLoop(client: Anthropic, model: string, system: string, first: string, finalTool: Json, sb: Sb, botId: string):
     Promise<{ block: Json; usage: Json; used: string[]; error: string }> {
     const usage: Json = {}, used: string[] = [], cache: Json = {};
+    const t0 = now();
+    let lastRound = MAX_ROUNDS - 1;                                   // moved earlier when time runs short
     try {
       const messages: Json[] = [{ role: "user", content: first }];
       for (let round = 0; round < MAX_ROUNDS; round++) {
-        const last = round === MAX_ROUNDS - 1;
+        const last = round >= lastRound;
+        // Opus 5.5 / Sonnet 5.5 refuse a forced tool_choice (400): tool_choice stays "auto" (the default) and the prompt
+        // names the final tool; a text-only answer is nudged once per round. Thinking is always on for these models,
+        // so max_tokens leaves room for it, and the assistant turns go back unchanged (preserved thinking).
         const msg: Json = await client.messages.create({
-          model, max_tokens: MAX_TOKENS, system, tools: [...DATA_TOOLS, finalTool] as Json,
-          tool_choice: last ? { type: "tool", name: finalTool.name } : { type: "any" }, messages,
+          model, max_tokens: MAX_TOKENS, system, tools: [...DATA_TOOLS, finalTool] as Json, messages,
         } as Json);
         addUsage(usage, msg?.usage);
         const blocks: Json[] = Array.isArray(msg?.content) ? msg.content : [];
         const fin = blocks.find((b) => b && b.type === "tool_use" && b.name === finalTool.name);
         if (fin) return { block: fin, usage, used, error: "" };
         const calls = blocks.filter((b) => b && b.type === "tool_use");
-        if (!calls.length) return { block: null, usage, used, error: clip(`no decision (stop_reason ${msg?.stop_reason ?? "?"})`, 200) };
+        if (!calls.length) {
+          if (last || msg?.stop_reason === "max_tokens" || msg?.stop_reason === "refusal") {
+            return { block: null, usage, used, error: clip(`no decision (stop_reason ${msg?.stop_reason ?? "?"})`, 200) };
+          }
+          messages.push({ role: "assistant", content: blocks.length ? blocks : [{ type: "text", text: "(no answer)" }] });
+          messages.push({ role: "user", content: `Now call the tool ${finalTool.name} with your final answer.${last ? "" : " Do not call any other tool."}` });
+          continue;
+        }
+        if (last) return { block: null, usage, used, error: "no decision after the last round" };
         messages.push({ role: "assistant", content: blocks });
         const results: Json[] = [];
         for (const c of calls) {
           used.push(`${c.name}${c.input?.timeframe ? `:${c.input.timeframe}` : ""}`);
           results.push({ type: "tool_result", tool_use_id: c.id, content: clip(JSON.stringify(await runDataTool(sb, botId, c.name, c.input, cache)), 12000) });
+        }
+        // Supabase stops a function at 150 s: after DATA_BUDGET_MS the next round is the last one
+        if (round === lastRound - 1 || now() - t0 > DATA_BUDGET_MS) {
+          lastRound = Math.min(lastRound, round + 1);
+          results.push({ type: "text", text: `No more data: call the tool ${finalTool.name} now with your final answer.` });
         }
         messages.push({ role: "user", content: results });
       }
@@ -855,12 +875,19 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
     let rev: Json = null;
     const usage: Json = {};
     try {
-      const msg: Json = await makeClient(anthropicKey).messages.create({
-        model, max_tokens: 3000, system: REVIEW_PROMPT, tools: [REVIEW_TOOL] as Json, tool_choice: { type: "tool", name: "review" },
-        messages: [{ role: "user", content: `The closed trade and your decisions (JSON):\n${JSON.stringify(input)}` }],
-      } as Json);
-      addUsage(usage, msg?.usage);
-      rev = (Array.isArray(msg?.content) ? msg.content : []).find((b: Json) => b && b.type === "tool_use" && b.name === "review")?.input || null;
+      // tool_choice "auto" (Opus 5.5 refuses a forced one); one nudge when the answer came back as text only
+      const client = makeClient(anthropicKey);
+      const messages: Json[] = [{ role: "user", content: `The closed trade and your decisions (JSON):\n${JSON.stringify(input)}` }];
+      for (let attempt = 0; attempt < 2 && !rev; attempt++) {
+        const msg: Json = await client.messages.create({ model, max_tokens: REVIEW_MAX_TOKENS, system: REVIEW_PROMPT, tools: [REVIEW_TOOL] as Json, messages } as Json);
+        addUsage(usage, msg?.usage);
+        const blocks: Json[] = Array.isArray(msg?.content) ? msg.content : [];
+        rev = blocks.find((b: Json) => b && b.type === "tool_use" && b.name === "review")?.input || null;
+        if (!rev) {
+          messages.push({ role: "assistant", content: blocks.length ? blocks : [{ type: "text", text: "(no answer)" }] });
+          messages.push({ role: "user", content: "Now call the tool review with your review." });
+        }
+      }
     } catch (e) {
       rev = { summary: "", mistakes: clip(`AI review failed: ${(e as Error)?.message ?? e}`, 300), lessons: [] };
     }
