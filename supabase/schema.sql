@@ -239,10 +239,14 @@ create index if not exists ai_usage_ts_idx on public.ai_usage (ts);
 -- model, monthly budget and interval (separate from the assistant's budget). Rows are written only by the
 -- service_role RPC shadow_record; the owner (and the admin) read them.
 alter table public.ai_config add column if not exists shadow_enabled boolean not null default false;
-alter table public.ai_config add column if not exists shadow_model text not null default 'claude-sonnet-5-5'
+alter table public.ai_config add column if not exists shadow_model text not null default 'claude-opus-5-5'
   check (shadow_model in ('claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'));
-alter table public.ai_config add column if not exists shadow_budget_usd numeric not null default 15
+alter table public.ai_config add column if not exists shadow_budget_usd numeric not null default 30
   check (shadow_budget_usd between 0 and 10000);
+-- 2026-11-11 (site owner): Opus 5.5 and 30 USD are the defaults. A row made by the first version of this block keeps
+-- the admin's values; the admin changes them on ผู้ใช้ > ผู้ช่วย AI.
+alter table public.ai_config alter column shadow_model set default 'claude-opus-5-5';
+alter table public.ai_config alter column shadow_budget_usd set default 30;
 alter table public.ai_config add column if not exists shadow_interval_s int not null default 300
   check (shadow_interval_s between 60 and 3600);
 
@@ -273,6 +277,11 @@ create table if not exists public.shadow_decisions (
   output_tokens int not null default 0 check (output_tokens >= 0),
   cost_usd      numeric(12, 6) not null default 0 check (cost_usd >= 0)
 );
+-- the numbers behind each action (SPEC 10.6): prices the AI chose and the money they mean at this trade's lots, e.g.
+-- {"close_pnl": 55.4} / {"new_sl": 4049.9, "locked_pnl": 5.4} / {"reverse": {"side": "SELL", "entry": .., "sl": ..,
+-- "tp": .., "risk": .., "reward": ..}} / {"hold_target": .., "target_pnl": .., "hold_exit": .., "exit_pnl": ..}
+alter table public.shadow_decisions add column if not exists details jsonb not null default '{}'::jsonb
+  check (jsonb_typeof(details) = 'object');
 create index if not exists shadow_decisions_bot_ts_idx on public.shadow_decisions (bot_id, ts desc);
 create index if not exists shadow_decisions_ticket_idx on public.shadow_decisions (bot_id, ticket, ts);
 create index if not exists shadow_decisions_ts_idx on public.shadow_decisions (ts);
@@ -832,13 +841,14 @@ begin
     raise exception 'bot_not_found';
   end if;
   insert into public.shadow_decisions (bot_id, user_id, ticket, module, side, lots, open_price, sl, tp, bid, ask, profit,
-                                       server_time, action, new_sl, confidence, reason, valid, snapshot, model,
+                                       server_time, action, new_sl, confidence, reason, valid, snapshot, details, model,
                                        input_tokens, output_tokens, cost_usd)
   values (p_bot, p_user, (p_row->>'ticket')::bigint, p_row->>'module', p_row->>'side',
           (p_row->>'lots')::numeric, (p_row->>'open_price')::numeric, (p_row->>'sl')::numeric, (p_row->>'tp')::numeric,
           (p_row->>'bid')::numeric, (p_row->>'ask')::numeric, (p_row->>'profit')::numeric, p_row->>'server_time',
           p_row->>'action', (p_row->>'new_sl')::numeric, (p_row->>'confidence')::int, coalesce(p_row->>'reason', ''),
-          coalesce((p_row->>'valid')::boolean, true), coalesce(p_row->'snapshot', '{}'::jsonb), p_row->>'model',
+          coalesce((p_row->>'valid')::boolean, true), coalesce(p_row->'snapshot', '{}'::jsonb),
+          case when jsonb_typeof(p_row->'details') = 'object' then p_row->'details' else '{}'::jsonb end, p_row->>'model',
           coalesce((p_row->>'input_tokens')::int, 0), coalesce((p_row->>'output_tokens')::int, 0),
           coalesce((p_row->>'cost_usd')::numeric, 0))
   returning id into v_id;

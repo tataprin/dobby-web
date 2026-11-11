@@ -2431,6 +2431,7 @@ class ShadowWatcher(object):
                 d = data.get("decision") or {}
                 entry.update({"id": data.get("id"), "action": d.get("action"), "new_sl": d.get("new_sl"),
                               "confidence": d.get("confidence"), "reason": d.get("reason"), "valid": data.get("valid"),
+                              "details": d.get("details") if isinstance(d.get("details"), dict) else {},
                               "model": data.get("model"), "cost_usd": data.get("cost_usd")})
                 nxt = to_num(data.get("next_after_s")) or SHADOW_INTERVAL_S
                 self.last_error = ""

@@ -75,7 +75,8 @@ test('asks Claude with the forced decide tool and records the decision with cost
   const r = await h(post({ bot_id: BOT, snapshot: SNAP }));
   assert.equal(r.status, 200);
   const out = await r.json();
-  assert.deepEqual(out.decision, { action: 'tighten', new_sl: 4047.5, confidence: 64, reason: 'ราคาย่อ' });
+  assert.deepEqual(out.decision, { action: 'tighten', new_sl: 4047.5, confidence: 64, reason: 'ราคาย่อ',
+    details: { price_now: 4051.03, pnl_now: 28, new_sl: 4047.5, locked_pnl: -42.6, old_sl: 4043.93 } });
   assert.equal(out.valid, true);
   assert.equal(out.next_after_s, 300);
   const p = an.seen[0];
@@ -89,6 +90,7 @@ test('asks Claude with the forced decide tool and records the decision with cost
   assert.equal(rec.body.p_row.action, 'tighten');
   assert.equal(rec.body.p_row.ticket, 432543137);
   assert.equal(rec.body.p_row.cost_usd, 0.0075);   // 3000 x 2 + 150 x 10 per million
+  assert.equal(rec.body.p_row.details.locked_pnl, -42.6);
   assert.equal(rec.headers.apikey, 'a.b.c');          // service key only on the RPCs
   const auth = f.calls.find((c) => c.url.endsWith('/auth/v1/user'));
   assert.equal(auth.headers.Authorization, 'Bearer tok');
@@ -117,6 +119,32 @@ test('checkDecision: tighten must sit between the stop and the price; unknown ac
   const odd = checkDecision({ action: 'buy_more', confidence: 300, reason: 'x' }, buy);
   assert.deepEqual([odd.action, odd.valid, odd.confidence], ['hold', false, 100]);
   assert.equal(checkDecision({ action: 'close', new_sl: 1, confidence: 70, reason: 'x' }, buy).new_sl, null);
+});
+
+test('details: close / reverse / hold turn the AI prices into money at the trade lots (0.20 lot = 20 USD per 1 $)', () => {
+  const buy = readPosition(SNAP);   // BUY 0.2 from 4049.63, bid 4051.03, ask 4051.19
+  const c = checkDecision({ action: 'close', confidence: 60, reason: 'x' }, buy);
+  assert.deepEqual(c.details, { price_now: 4051.03, pnl_now: 28, close_price: 4051.03, close_pnl: 28 });
+  const r = checkDecision({ action: 'reverse', reverse_sl: 4056.5, reverse_tp: 4042.5, confidence: 55, reason: 'x' }, buy);
+  assert.equal(r.valid, true);
+  assert.deepEqual(r.details.reverse, { side: 'SELL', lots: 0.2, entry: 4051.03, sl: 4056.5, tp: 4042.5, risk: -109.4, reward: 170.6, sl_dist: 5.47, tp_dist: 8.53 });
+  assert.equal(r.details.total_if_tp, 198.6);
+  assert.equal(r.details.total_if_sl, -81.4);
+  assert.equal(checkDecision({ action: 'reverse', reverse_sl: 4045, reverse_tp: 4042.5, confidence: 55, reason: 'x' }, buy).valid, false); // stop below a SELL entry
+  assert.equal(checkDecision({ action: 'reverse', reverse_sl: null, reverse_tp: 4042.5, confidence: 55, reason: 'x' }, buy).valid, false);
+  const h = checkDecision({ action: 'hold', hold_target: 4058.18, hold_exit: 4046, confidence: 40, reason: 'x' }, buy);
+  assert.deepEqual(h.details, { price_now: 4051.03, pnl_now: 28, hold_target: 4058.18, target_pnl: 171, hold_exit: 4046, exit_pnl: -72.6 });
+  const wrong = checkDecision({ action: 'hold', hold_target: 4040, hold_exit: 4060, confidence: 40, reason: 'x' }, buy);
+  assert.deepEqual(wrong.details, { price_now: 4051.03, pnl_now: 28 });   // prices on the wrong side are dropped
+  const sell = readPosition({ ...SNAP, position: { ...SNAP.position, side: 'SELL', open_price: 4060 } });
+  const rs = checkDecision({ action: 'reverse', reverse_sl: 4046, reverse_tp: 4060, confidence: 55, reason: 'x' }, sell);
+  assert.equal(rs.details.reverse.side, 'BUY');
+  assert.equal(rs.details.reverse.entry, 4051.19);                       // a new BUY fills at the ask
+  assert.equal(rs.details.close_pnl, 176.2);                              // a SELL closes at the ask: (4060 - 4051.19) x 20
+});
+
+test('the prompt asks for prices with every action and the tool requires all of them', () => {
+  for (const k of ['hold_target', 'hold_exit', 'reverse_sl', 'reverse_tp', 'new_sl']) assert.ok(SYSTEM_PROMPT.includes(k), k);
 });
 
 test('costOf uses the model prices and never under-counts an unknown model', () => {

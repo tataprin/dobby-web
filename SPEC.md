@@ -782,12 +782,19 @@ Dobby trade is open, Claude is asked every `shadow_interval_s` (default 300 s) w
 `tighten` (new stop strictly between the current stop and the price) or `reverse`. **The answer is only recorded.**
 Nothing is written to any EA file, no order is touched; the bot keeps trading on its fixed rules. After about 60-100
 closed trades the log is scored on real ticks against the real exits (research/strategies/shadow_score/score.py).
-- `ai_config` gains `shadow_enabled` (default **false**), `shadow_model` (default `claude-sonnet-5-5`, same allowed list),
-  `shadow_budget_usd` (default 15, 0..10000, its own monthly budget, separate from the assistant's),
+- `ai_config` gains `shadow_enabled` (default **false**), `shadow_model` (default `claude-opus-5-5`, same allowed list),
+  `shadow_budget_usd` (default 30, 0..10000, its own monthly budget, separate from the assistant's),
   `shadow_interval_s` (60..3600, default 300). Admin update through the existing `ai_config_update` policy.
 - Table `shadow_decisions` (bot_id, user_id, ts, ticket, module, side, lots, open_price, sl, tp, bid, ask, profit,
   server_time, action in hold/close/tighten/reverse/error, new_sl, confidence 0..100, reason <= 2000 chars, valid,
-  snapshot jsonb, model, tokens, cost_usd). RLS select: the bot owner (approved) and the admin. No client writes.
+  snapshot jsonb, details jsonb, model, tokens, cost_usd). RLS select: the bot owner (approved) and the admin. No client writes.
+- Every action carries its prices (owner's request 2026-11-11): the tool `decide` requires new_sl (tighten),
+  reverse_sl / reverse_tp (reverse), hold_target / hold_exit (hold), each null when not used. The function turns them into
+  money at the trade's lots in `details`: price_now, pnl_now; close: close_price, close_pnl; tighten: new_sl, old_sl,
+  locked_pnl; reverse: close_price, close_pnl, reverse {side, lots, entry (bid for a new SELL, ask for a new BUY), sl,
+  tp, sl_dist, tp_dist, risk, reward}, total_if_tp, total_if_sl; hold: hold_target, target_pnl, hold_exit, exit_pnl
+  (a price on the wrong side is dropped; a reverse with a stop / target on the wrong side is valid = false).
+  The reason is 2-4 Thai sentences with the plan and its prices.
 - RPCs, service_role only: `shadow_start(p_user, p_bot, p_ticket)` -> {model, interval_s}; raises not_approved,
   bot_not_found (not the user's bot), shadow_disabled, shadow_budget (this Thai month's shadow cost >= budget),
   shadow_too_soon (a decision for this ticket within interval - 20 s). `shadow_record(p_user, p_bot, p_row jsonb)` -> id.

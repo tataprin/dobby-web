@@ -1842,3 +1842,5 @@ textarea.input.chat-input { flex: 1 1 auto; min-height: var(--h-input); max-heig
 .shadow-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 10px; }
 .shadow-reason { min-width: 16rem; max-width: 34rem; white-space: normal; }
 .shadow-count { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; }
+.shadow-plan { min-width: 15rem; white-space: normal; }
+.shadow-plan-line { line-height: 1.5; }

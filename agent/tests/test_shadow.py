@@ -26,7 +26,8 @@ class FakePost(object):
                 raise a
             return a
         return 200, {"ok": True, "id": len(self.calls), "decision": {"action": "hold", "new_sl": None, "confidence": 40,
-                                                                      "reason": "ถือต่อ"},
+                                                                      "reason": "ถือต่อ",
+                                                                      "details": {"hold_target": 4058.18, "target_pnl": 171.0}},
                      "valid": True, "next_after_s": 300, "model": "claude-sonnet-5-5", "cost_usd": 0.008}
 
 
@@ -93,6 +94,8 @@ def test_open_position_one_call_per_interval_and_log(env):
     assert snap["server_utc_offset_min"] == OFFSET
     lines = log_lines(env)
     assert len(lines) == 1 and lines[0]["action"] == "hold" and lines[0]["ticket"] == 432543137
+    assert lines[0]["details"] == {"hold_target": 4058.18, "target_pnl": 171.0}
+    assert lines[0]["comment"] == "D3 C5 d5.70 t8.55"
     for _ in range(10):          # 50 s later: still inside the 300 s interval
         env.tick(5, positions=env.status["positions"])
         a.cycle()

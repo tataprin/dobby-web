@@ -30,7 +30,7 @@ export interface ShadowDeps {
 }
 
 export const MAX_BODY_CHARS = 64_000;
-export const MAX_TOKENS = 1024;
+export const MAX_TOKENS = 1600;
 const CALL_TIMEOUT_MS = 60_000;
 export const ACTIONS = ["hold", "close", "tighten", "reverse"] as const;
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -68,26 +68,31 @@ How the open trade is managed by the fixed rules (all prices in USD per ounce):
 - Strategies: A_new = RSI divergence with the H4 EMA50 trend; NY = breakout of the first M15 bar after the New York open; C5G = VWAP touch with an RSI hook.
 - Historical tests on 2026 data found that closing early on pullbacks, trailing stops and stop-and-reverse rules all LOST money against these fixed rules, because most pullbacks are noise and the trade still reaches TP0. Only deviate from "hold" when the snapshot gives you a concrete reason (for example a scheduled high-impact USD release in the next minutes, a structural break against the trade, or momentum that has clearly failed).
 
-Your options:
-- hold: leave the trade to the fixed rules.
-- close: close the whole trade now at market.
-- tighten: move the stop to new_sl. new_sl must be strictly between the current stop and the current price (bid for a BUY, ask for a SELL); never widen the stop.
-- reverse: close now and open the opposite trade with the same lots.
+Your options, and the exact prices you MUST give with each (2 decimals, real prices, not distances):
+- hold: leave the trade to the fixed rules. Give hold_target = the price you expect this trade to reach (usually TP0, or further when you expect the runner to carry it) and hold_exit = the price at which you would stop holding and close it (between the current stop and the current price). Both on the correct sides of the current price.
+- close: close the whole trade now at market (bid for a BUY, ask for a SELL). No extra prices.
+- tighten: move the stop to new_sl, strictly between the current stop and the current price; never widen the stop.
+- reverse: close now and open the opposite trade with the same lots. Give reverse_sl and reverse_tp for the new trade: for a new SELL (entered at the bid) the stop above and the target below; for a new BUY (entered at the ask) the stop below and the target above. Size them from the chart (recent swing, ATR); a stop tighter than 0.5 x ATR is noise.
+Set every field that does not belong to your action to null. The system turns your prices into money at this trade's lots (1.00 $ of price = lots x 100 USD).
 
-Answer ONLY by calling the tool decide. confidence = how sure you are that your action beats "hold" for this trade (0-100; use 50 or less when it is a coin flip). reason: at most 2 short sentences in Thai, naming the facts from the snapshot that drove the decision.`;
+Answer ONLY by calling the tool decide. confidence = how sure you are that your action beats "hold" for this trade (0-100; use 50 or less when it is a coin flip). reason: 2 to 4 short sentences in Thai that name the facts from the snapshot behind the decision AND the plan with its prices (for hold: where you expect it to go and where you would get out; for close: why now; for tighten: why that stop level; for reverse: why the other way and why that stop and target).`;
 
 export const DECIDE_TOOL = {
   name: "decide",
-  description: "Record your decision for the open Dobby trade.",
+  description: "Record your decision for the open Dobby trade, with the exact prices of the plan.",
   input_schema: {
     type: "object",
     properties: {
       action: { type: "string", enum: [...ACTIONS] },
-      new_sl: { type: ["number", "null"], description: "Only for tighten: the new stop price. Otherwise null." },
+      new_sl: { type: ["number", "null"], description: "tighten only: the new stop price. Otherwise null." },
+      reverse_sl: { type: ["number", "null"], description: "reverse only: the stop price of the new opposite trade. Otherwise null." },
+      reverse_tp: { type: ["number", "null"], description: "reverse only: the target price of the new opposite trade. Otherwise null." },
+      hold_target: { type: ["number", "null"], description: "hold only: the price you expect the trade to reach. Otherwise null." },
+      hold_exit: { type: ["number", "null"], description: "hold only: the price at which you would close instead of holding. Otherwise null." },
       confidence: { type: "integer", minimum: 0, maximum: 100 },
-      reason: { type: "string", description: "At most 2 short sentences in Thai." },
+      reason: { type: "string", description: "2 to 4 short sentences in Thai: the facts and the plan with its prices." },
     },
-    required: ["action", "new_sl", "confidence", "reason"],
+    required: ["action", "new_sl", "reverse_sl", "reverse_tp", "hold_target", "hold_exit", "confidence", "reason"],
     additionalProperties: false,
   },
 };
@@ -114,20 +119,57 @@ export function readPosition(snapshot: Json): Json | null {
   };
 }
 
-/** Normalises the tool input; `valid` is false when the action cannot be applied as given. */
-export function checkDecision(input: Json, pos: Json): { action: string; new_sl: number | null; confidence: number | null; reason: string; valid: boolean } {
+const r2 = (x: number) => Math.round(x * 100) / 100;
+const px2 = (v: unknown) => { const n = num(v); return n === null ? null : r2(n); };
+
+export interface Decision {
+  action: string; new_sl: number | null; confidence: number | null; reason: string; valid: boolean; details: Json;
+}
+
+/** Normalises the tool input and turns the AI's prices into money at this trade's lots (`details`, SPEC 10.6).
+ *  `valid` is false when the action cannot be applied as given (a stop or target on the wrong side, a missing price). */
+export function checkDecision(input: Json, pos: Json): Decision {
   const action = ACTIONS.includes(input?.action) ? input.action : "hold";
   let valid = ACTIONS.includes(input?.action);
-  let newSl = action === "tighten" ? num(input?.new_sl) : null;
+  const buy = pos.side === "BUY";
+  const px = buy ? pos.bid : pos.ask;                       // where this trade closes now
+  const mult = (pos.lots || 0) * 100;                       // USD per 1.00 $ of price
+  const pnlAt = (p: number) => r2((buy ? p - pos.open_price : pos.open_price - p) * mult);
+  const ok = px !== null && pos.open_price !== null && mult > 0;
+  const details: Json = {};
+  if (ok) { details.price_now = px; details.pnl_now = pnlAt(px); }
+  let newSl: number | null = null;
   if (action === "tighten") {
-    const px = pos.side === "BUY" ? pos.bid : pos.ask;
+    newSl = px2(input?.new_sl);
     if (newSl === null || px === null) valid = false;
-    else if (pos.side === "BUY") valid = valid && newSl < px && (pos.sl === null || pos.sl <= 0 || newSl > pos.sl);
+    else if (buy) valid = valid && newSl < px && (pos.sl === null || pos.sl <= 0 || newSl > pos.sl);
     else valid = valid && newSl > px && (pos.sl === null || pos.sl <= 0 || newSl < pos.sl);
-    if (newSl !== null) newSl = Math.round(newSl * 100) / 100;
+    if (ok && newSl !== null) { details.new_sl = newSl; details.locked_pnl = pnlAt(newSl); details.old_sl = pos.sl; }
+  } else if (action === "close") {
+    if (ok) { details.close_price = px; details.close_pnl = pnlAt(px); }
+    else valid = false;
+  } else if (action === "reverse") {
+    const sl = px2(input?.reverse_sl), tp = px2(input?.reverse_tp);
+    const side = buy ? "SELL" : "BUY";
+    const entry = side === "SELL" ? pos.bid : pos.ask;        // the new trade's own fill
+    if (!ok || entry === null || sl === null || tp === null) valid = false;
+    else {
+      const sides = side === "SELL" ? sl > entry && tp < entry : sl < entry && tp > entry;
+      valid = valid && sides;
+      const risk = r2(Math.abs(entry - sl) * mult), reward = r2(Math.abs(tp - entry) * mult);
+      details.close_price = px;
+      details.close_pnl = pnlAt(px);
+      details.reverse = { side, lots: pos.lots, entry, sl, tp, risk: -risk, reward, sl_dist: r2(Math.abs(entry - sl)), tp_dist: r2(Math.abs(tp - entry)) };
+      details.total_if_tp = r2(details.close_pnl + reward);
+      details.total_if_sl = r2(details.close_pnl - risk);
+    }
+  } else if (ok) {                                           // hold: where it should go, where the AI would get out
+    const target = px2(input?.hold_target), exit = px2(input?.hold_exit);
+    if (target !== null && (buy ? target > px : target < px)) { details.hold_target = target; details.target_pnl = pnlAt(target); }
+    if (exit !== null && (buy ? exit < px : exit > px)) { details.hold_exit = exit; details.exit_pnl = pnlAt(exit); }
   }
   const c = num(input?.confidence);
-  return { action, new_sl: newSl, confidence: c === null ? null : Math.max(0, Math.min(100, Math.round(c))), reason: clip(input?.reason, 600).trim(), valid };
+  return { action, new_sl: newSl, confidence: c === null ? null : Math.max(0, Math.min(100, Math.round(c))), reason: clip(input?.reason, 1200).trim(), valid, details };
 }
 
 export function costOf(model: string, u: Json): number {
@@ -237,10 +279,10 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
     } catch (e) {
       return jsonError(rpcErrorCode(e));
     }
-    const model = String(start?.model || "claude-sonnet-5-5");
+    const model = String(start?.model || "claude-opus-5-5");
     const interval = Number(start?.interval_s) || 300;
 
-    let decision = { action: "error", new_sl: null as number | null, confidence: null as number | null, reason: "", valid: false };
+    let decision: Decision = { action: "error", new_sl: null, confidence: null, reason: "", valid: false, details: {} };
     let usage: Json = {};
     try {
       const msg: Json = await makeClient(anthropicKey).messages.create({
@@ -263,7 +305,7 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
         p_user: user.id, p_bot: botId,
         p_row: {
           ...pos, action: decision.action, new_sl: decision.new_sl, confidence: decision.confidence, reason: decision.reason,
-          valid: decision.valid, snapshot, model, input_tokens: usage.input_tokens || 0, output_tokens: usage.output_tokens || 0,
+          valid: decision.valid, snapshot, details: decision.details, model, input_tokens: usage.input_tokens || 0, output_tokens: usage.output_tokens || 0,
           cost_usd: cost,
         },
       });
@@ -273,7 +315,7 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
     if (decision.action === "error") return new Response(JSON.stringify({ ok: false, id, error: "ai_failed", message: decision.reason, next_after_s: interval }), { status: 200, headers: JSON_HEADERS });
     return new Response(JSON.stringify({
       ok: true, id,
-      decision: { action: decision.action, new_sl: decision.new_sl, confidence: decision.confidence, reason: decision.reason },
+      decision: { action: decision.action, new_sl: decision.new_sl, confidence: decision.confidence, reason: decision.reason, details: decision.details },
       valid: decision.valid, next_after_s: interval, model, cost_usd: cost,
     }), { status: 200, headers: JSON_HEADERS });
   }

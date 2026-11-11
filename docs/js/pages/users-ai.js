@@ -111,8 +111,8 @@ export async function renderAi(root, ctx) {
   // ---------------- shadow AI (SPEC 10.6): its own switch, model, budget and interval
   const hasShadow = 'shadow_enabled' in cfg;
   const shOn = h('input', { type: 'checkbox', class: 'toggle', role: 'switch', checked: !!cfg.shadow_enabled, 'aria-label': 'เปิด AI เงา' });
-  const shModel = h('select', { class: 'input select' }, MODELS.map((m) => h('option', { value: m.id, selected: m.id === (cfg.shadow_model || 'claude-sonnet-5-5') }, m.label)));
-  const shBudget = h('input', { class: 'input', type: 'number', min: '0', max: '10000', step: '1', inputmode: 'decimal', value: String(Number(cfg.shadow_budget_usd ?? 15)) });
+  const shModel = h('select', { class: 'input select' }, MODELS.map((m) => h('option', { value: m.id, selected: m.id === (cfg.shadow_model || 'claude-opus-5-5') }, m.label)));
+  const shBudget = h('input', { class: 'input', type: 'number', min: '0', max: '10000', step: '1', inputmode: 'decimal', value: String(Number(cfg.shadow_budget_usd ?? 30)) });
   const shEvery = h('input', { class: 'input', type: 'number', min: '1', max: '60', step: '1', inputmode: 'numeric', value: String(Math.round(Number(cfg.shadow_interval_s ?? 300) / 60)) });
   const shErr = h('p', { class: 'field-error', role: 'alert' });
   const shSave = h('button', { class: 'btn primary', type: 'submit' }, icon('save'), 'บันทึก');
@@ -138,7 +138,7 @@ export async function renderAi(root, ctx) {
     h('div', { class: 'set-copy' }, h('p', { class: 'set-label' }, 'เปิด AI เงา'),
       h('p', { class: 'hint' }, 'ทุกครั้งที่บอทของสมาชิกมีไม้เปิด แอปที่เครื่องจะส่งไม้ให้ AI ดูแล้วบันทึกว่าจะทำอะไร บอทไม่ได้ทำตาม')), shOn)),
   h('div', { class: 'grid-2 ai-fields' },
-    field('รุ่น Claude ของ AI เงา', shModel, { hint: 'Sonnet พอสำหรับงานนี้ ราคาราวครึ่งหนึ่งของ Opus' }),
+    field('รุ่น Claude ของ AI เงา', shModel, { hint: 'ค่าเริ่มต้น Opus 5.5 คิดละเอียดที่สุด Sonnet ราคาราวครึ่งหนึ่ง' }),
     field('ถามทุกกี่นาที', shEvery, { hint: 'ต่อไม้ที่เปิดอยู่ 1 ไม้' }),
     field('งบ AI เงาต่อเดือน (USD)', shBudget, { hint: 'แยกจากงบผู้ช่วย ครบงบแล้วหยุดถามจนถึงต้นเดือนหน้า' })),
   shCost, shErr,

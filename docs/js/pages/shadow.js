@@ -53,6 +53,35 @@ export function firstMove(t) {
   return t.list.find((r) => r.valid !== false && r.action && r.action !== 'hold' && r.action !== 'error') || null;
 }
 
+const fin = (v) => v !== null && v !== undefined && Number.isFinite(Number(v));
+const sideTh = (s) => (s === 'BUY' ? 'ซื้อ' : 'ขาย');
+
+/** The plan behind one decision, in Thai, with the prices the AI gave and the money they mean (details, SPEC 10.6). */
+export function planLines(r) {
+  const d = (r && r.details) || {};
+  const L = (...kids) => h('div', { class: 'shadow-plan-line' }, ...kids);
+  const out = [];
+  if (r.action === 'hold') {
+    if (fin(d.hold_target)) out.push(L(`ถือไปหาเป้า ${fmtNum(d.hold_target)} ถ้าถึงได้ `, pnl(d.target_pnl)));
+    if (fin(d.hold_exit)) out.push(L(`ถ้าราคาไปถึง ${fmtNum(d.hold_exit)} จะปิด ผล `, pnl(d.exit_pnl)));
+    if (!out.length) out.push(L(h('span', { class: 'muted' }, 'ถือตามระบบของบอท')));
+  } else if (r.action === 'close') {
+    if (fin(d.close_pnl)) out.push(L(`ปิดทั้งไม้ที่ ${fmtNum(d.close_price)} ผล `, pnl(d.close_pnl)));
+  } else if (r.action === 'tighten') {
+    if (fin(d.new_sl)) out.push(L(`เลื่อน SL จาก ${fmtNum(d.old_sl)} ไป ${fmtNum(d.new_sl)} ถ้าโดน SL ใหม่ ผล `, pnl(d.locked_pnl)));
+  } else if (r.action === 'reverse' && d.reverse) {
+    const v = d.reverse;
+    out.push(L(`1. ปิดไม้เดิมที่ ${fmtNum(d.close_price)} ผล `, pnl(d.close_pnl)));
+    out.push(L(`2. เปิด${sideTh(v.side)} ${fmtNum(v.lots)} ล็อต ที่ ${fmtNum(v.entry)}`));
+    out.push(L(`SL ${fmtNum(v.sl)} (ห่าง ${fmtNum(v.sl_dist)}) ถ้าโดนเสีย `, pnl(v.risk)));
+    out.push(L(`TP ${fmtNum(v.tp)} (ห่าง ${fmtNum(v.tp_dist)}) ถ้าถึงได้ `, pnl(v.reward)));
+    out.push(L('รวมทั้งสองไม้: ถึง TP ', pnl(d.total_if_tp), ' / โดน SL ', pnl(d.total_if_sl)));
+  }
+  if (fin(d.pnl_now) && r.action !== 'close' && r.action !== 'reverse') out.push(L(h('span', { class: 'muted small' }, 'ตอนนั้นกำไร '), pnl(d.pnl_now)));
+  if (!out.length) out.push(L(h('span', { class: 'muted' }, r.action === 'tighten' && fin(r.new_sl) ? `SL ใหม่ ${fmtNum(r.new_sl)}` : '—')));
+  return out;
+}
+
 function actionChip(r) {
   const [label, tone] = ACTION[r.action] || [r.action, 'pending'];
   return h('span', { class: `chip ${tone}`, title: r.valid === false ? 'ทำตามไม่ได้ เช่น SL ใหม่ไม่อยู่ระหว่าง SL เดิมกับราคา' : null },
@@ -63,10 +92,11 @@ function tradePanel(t, close) {
   const mv = firstMove(t);
   const real = close ? [pnl(close.pnl), h('span', { class: 'muted small' }, ` ${close.reason || ''}`)] : h('span', { class: 'muted' }, 'ยังเปิดอยู่ หรือยังไม่เห็นผลในประวัติล่าสุด');
   let follow = h('span', { class: 'muted' }, 'AI ให้ถือต่อทุกครั้ง ผลเท่ากับบอท');
-  if (mv && (mv.action === 'close' || mv.action === 'reverse')) {
-    follow = [pnl(mv.profit), h('span', { class: 'muted small' }, mv.action === 'reverse' ? ' (ส่วนที่ปิด ไม้ที่เปิดสวนดูในรายงาน)' : ` (ปิดตอน ${fmtThai(Date.parse(mv.ts), 'time')})`)];
-  } else if (mv && mv.action === 'tighten') {
-    follow = h('span', { class: 'muted' }, `เลื่อน SL ไป ${fmtNum(mv.new_sl)} ตอน ${fmtThai(Date.parse(mv.ts), 'time')} (ผลต้องดูจากราคาจริง อยู่ในรายงาน)`);
+  if (mv) {
+    const when = fmtThai(Date.parse(mv.ts), 'time');
+    const note = mv.action === 'close' ? `ปิดตอน ${when}` : mv.action === 'reverse' ? `ปิดแล้วเปิดสวนตอน ${when} ผลของไม้สวนดูจากราคาจริงในรายงาน`
+      : `เลื่อน SL ตอน ${when} ผลดูจากราคาจริงในรายงาน`;
+    follow = h('div', null, h('p', { class: 'muted small' }, note), ...planLines(mv));
   }
   return panel(null, { cls: 'shadow-trade' },
     h('div', { class: 'shadow-head' }, modChip(t.module), sideEl(t.side), h('span', { class: 'num' }, `${fmtNum(t.lots)} ล็อต`),
@@ -75,13 +105,13 @@ function tradePanel(t, close) {
       h('dt', null, 'ผลจริงของบอท'), h('dd', null, real),
       h('dt', null, 'ถ้าทำตาม AI'), h('dd', null, follow)),
     h('div', { class: 'table-wrap' }, h('table', { class: 'rtable compact' },
-      h('thead', null, h('tr', null, ['เวลา', 'ราคา', 'กำไรตอนนั้น', 'AI ว่า', 'SL ใหม่', 'มั่นใจ', 'เหตุผล'].map((x) => h('th', { scope: 'col' }, x)))),
+      h('thead', null, h('tr', null, ['เวลา', 'ราคา', 'กำไรตอนนั้น', 'AI ว่า', 'แผนและตัวเลข', 'มั่นใจ', 'เหตุผล'].map((x) => h('th', { scope: 'col' }, x)))),
       h('tbody', null, t.list.map((r) => h('tr', null,
         h('td', { 'data-label': 'เวลา' }, fmtThai(Date.parse(r.ts), 'datetime')),
         h('td', { 'data-label': 'ราคา', class: 'num' }, fmtNum(r.side === 'BUY' ? r.bid : r.ask)),
         h('td', { 'data-label': 'กำไรตอนนั้น' }, pnl(r.profit)),
         h('td', { 'data-label': 'AI ว่า' }, actionChip(r)),
-        h('td', { 'data-label': 'SL ใหม่', class: 'num' }, r.new_sl === null || r.new_sl === undefined ? '—' : fmtNum(r.new_sl)),
+        h('td', { 'data-label': 'แผนและตัวเลข', class: 'shadow-plan' }, ...planLines(r)),
         h('td', { 'data-label': 'มั่นใจ', class: 'num' }, r.confidence === null || r.confidence === undefined ? '—' : `${r.confidence} %`),
         h('td', { 'data-label': 'เหตุผล', class: 'shadow-reason' }, r.reason || '—')))))));
 }

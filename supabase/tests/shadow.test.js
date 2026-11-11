@@ -35,9 +35,9 @@ before(async () => {
   botE = (await ctx.as(erin, `insert into public.bots (name) values ('Erin PC') returning id`))[0].id;
 });
 
-test('ai_config: shadow columns exist with safe defaults (off, Sonnet, 15 USD, 300 s)', async () => {
+test('ai_config: shadow columns exist with the defaults (off, Opus 5.5, 30 USD, 300 s)', async () => {
   const [c] = await ctx.sql(`select shadow_enabled, shadow_model, shadow_budget_usd::float8 as b, shadow_interval_s from public.ai_config`);
-  assert.deepEqual(c, { shadow_enabled: false, shadow_model: 'claude-sonnet-5-5', b: 15, shadow_interval_s: 300 });
+  assert.deepEqual(c, { shadow_enabled: false, shadow_model: 'claude-opus-5-5', b: 30, shadow_interval_s: 300 });
   await rejects(ctx.sql(`update public.ai_config set shadow_model = 'gpt-4' where id = 1`), 'check');
   await rejects(ctx.sql(`update public.ai_config set shadow_interval_s = 10 where id = 1`), 'check');
 });
@@ -48,12 +48,16 @@ test('shadow_start: refuses while off, for unapproved users and for someone else
   await rejects(start(carol, botB, 1), 'not_approved');
   await rejects(start(bob, botE, 1), 'bot_not_found');
   const r = await start(bob, botB, 1);
-  assert.deepEqual(r, { model: 'claude-sonnet-5-5', interval_s: 300 });
+  assert.deepEqual(r, { model: 'claude-opus-5-5', interval_s: 300 });
 });
 
 test('shadow_record + shadow_start: one question per trade per interval; other trades are not blocked', async () => {
-  const id = await record(bob, botB, row({ ticket: 77 }));
+  const id = await record(bob, botB, row({ ticket: 77, details: { close_price: 4051.03, close_pnl: 28 } }));
   assert.ok(Number(id) > 0);
+  const [stored] = await ctx.sql(`select details from public.shadow_decisions where id = $1`, [id]);
+  assert.deepEqual(stored.details, { close_price: 4051.03, close_pnl: 28 });
+  const id2 = await record(bob, botB, row({ ticket: 79, details: 'not an object' }));
+  assert.deepEqual((await ctx.sql(`select details from public.shadow_decisions where id = $1`, [id2]))[0].details, {});
   await rejects(start(bob, botB, 77), 'shadow_too_soon');
   assert.ok(await start(bob, botB, 78));
   await ctx.sql(`update public.shadow_decisions set ts = now() - interval '5 minutes' where ticket = 77`);
@@ -69,7 +73,7 @@ test('shadow_start: the monthly shadow budget stops it', async () => {
   await setConfig({ shadow_budget_usd: 0.01 });
   await record(bob, botB, row({ ticket: 90, cost_usd: 0.02 }));
   await rejects(start(bob, botB, 91), 'shadow_budget');
-  await setConfig({ shadow_budget_usd: 15 });
+  await setConfig({ shadow_budget_usd: 30 });
   assert.ok(await start(bob, botB, 91));
 });
 

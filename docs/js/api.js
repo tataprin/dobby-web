@@ -44,7 +44,7 @@ import { createDemoDb, DEMO_OFFSET_MIN } from './demo.js';
 import { sleep, utcToServer } from './util.js';
 import { normalizeParams, remoteSubset, REMOTE_KEYS, RUNNER_KEYS, COMMAND_KEYS, formatValue, PARAM_BY_KEY, runnerSupported, validateCommand } from './params.js';
 
-const SHADOW_COLS = 'id,bot_id,ts,ticket,module,side,lots,open_price,sl,tp,bid,ask,profit,server_time,action,new_sl,confidence,reason,valid,model,cost_usd';
+const SHADOW_COLS = 'id,bot_id,ts,ticket,module,side,lots,open_price,sl,tp,bid,ask,profit,server_time,action,new_sl,confidence,reason,valid,details,model,cost_usd';
 
 export const SUPABASE_CDN = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm';
 
@@ -1089,7 +1089,7 @@ export class DemoApi {
       });
       this.db.ai = { convs: [], msgs: [], usage, seq: 1,
         config: { id: 1, enabled: true, member_daily_limit: 20, admin_daily_limit: 100, monthly_budget_usd: 30, model: 'claude-opus-5-5',
-          shadow_enabled: true, shadow_model: 'claude-sonnet-5-5', shadow_budget_usd: 15, shadow_interval_s: 300,
+          shadow_enabled: true, shadow_model: 'claude-opus-5-5', shadow_budget_usd: 30, shadow_interval_s: 300,
           updated_at: new Date(now - 86400e3).toISOString(), updated_by: null } };
     }
     return this.db.ai;
@@ -1131,23 +1131,41 @@ export class DemoApi {
       const now = Date.now(), rows = [];
       const plan = [
         { ticket: 900101, module: 'C5G', side: 'BUY', open: 4049.63, sl: 4043.93, tp: 4080.98, ago: 3, steps: [
-          [5, 4051.2, 'hold', null, 35, 'ราคายังอยู่เหนือ VWAP และยังไม่ถึงจุดล็อก ให้ระบบถือต่อ'],
-          [10, 4054.3, 'hold', null, 40, 'กำไรเพิ่มขึ้น แท่ง M15 ยังยกตัว ยังไม่มีเหตุให้ออกก่อน'],
-          [15, 4052.4, 'tighten', 4049.9, 58, 'ราคาย้อนลงจากจุดสูง 4,056 และ RSI ลดลง เลื่อน SL มาใกล้ทุนกันพลิกเป็นขาดทุน'],
-          [20, 4047.5, 'close', null, 62, 'ราคาหลุด VWAP และแท่ง M15 ปิดต่ำกว่าแท่งก่อนหน้า โมเมนตัมขาขึ้นหมดแล้ว']] },
+          [5, 4051.2, 'hold', { hold_target: 4058.18, hold_exit: 4046.5 }, 35, 'ราคายังอยู่เหนือ VWAP 4,048.6 และยังไม่ถึงจุดล็อก ถือไปหาเป้า 4,058.18 ถ้าหลุด 4,046.50 ค่อยปิด'],
+          [10, 4054.3, 'hold', { hold_target: 4058.18, hold_exit: 4049.5 }, 40, 'กำไรเพิ่มขึ้น แท่ง M15 ยังยกตัว ถือไปหาเป้า 4,058.18 ถ้าย้อนต่ำกว่า 4,049.50 จะปิด'],
+          [15, 4052.4, 'tighten', { new_sl: 4049.9 }, 58, 'ราคาย้อนลงจากจุดสูง 4,056 และ RSI ลดลงจาก 61 เหลือ 52 เลื่อน SL มาที่ 4,049.90 เหนือทุนเล็กน้อย กันไม้นี้พลิกเป็นขาดทุน'],
+          [20, 4047.5, 'reverse', { reverse_sl: 4052.6, reverse_tp: 4039.0 }, 62, 'ราคาหลุด VWAP และแท่ง M15 ปิดต่ำกว่าแท่งก่อนหน้า ปิดไม้ซื้อแล้วเปิดขายที่ 4,047.50 SL 4,052.60 เหนือจุดย่อล่าสุด เป้า 4,039.00 แถวแนวรับของเมื่อวาน']] },
         { ticket: 900102, module: 'NY', side: 'SELL', open: 4033.33, sl: 4041.33, tp: 3993.33, ago: 27, steps: [
-          [3, 4030.1, 'hold', null, 30, 'เพิ่งทะลุกรอบ NY ลงมา แนวโน้ม H4 เป็นขาลง ให้ระบบถือต่อ'],
-          [8, 4026.4, 'hold', null, 45, 'ใกล้ถึงจุดล็อก 85 % แล้ว ปล่อยให้ตัวล็อกของบอททำงาน']] },
+          [3, 4030.1, 'hold', { hold_target: 4025.33, hold_exit: 4036.0 }, 30, 'เพิ่งทะลุกรอบ NY ลงมา แนวโน้ม H4 เป็นขาลง ถือไปหาเป้า 4,025.33 ถ้าเด้งกลับเหนือ 4,036.00 จะปิด'],
+          [8, 4026.4, 'close', {}, 45, 'ใกล้เป้าแล้วแต่ข่าว CPI จะออกในอีก 5 นาที ปิดเก็บกำไรตอนนี้เลยดีกว่าเสี่ยงโดนเหวี่ยง']] },
       ];
+      // the same arithmetic as the Edge Function's checkDecision (details in USD at 0.20 lot)
+      const detailsOf = (t, px, bid, ask, action, inp) => {
+        const buy = t.side === 'BUY', mult = 20, r2 = (x) => Math.round(x * 100) / 100;
+        const at = (p) => r2((buy ? p - t.open : t.open - p) * mult);
+        const d = { price_now: px, pnl_now: at(px) };
+        if (action === 'tighten') Object.assign(d, { new_sl: inp.new_sl, locked_pnl: at(inp.new_sl), old_sl: t.sl });
+        if (action === 'close') Object.assign(d, { close_price: px, close_pnl: at(px) });
+        if (action === 'hold') Object.assign(d, { hold_target: inp.hold_target, target_pnl: at(inp.hold_target), hold_exit: inp.hold_exit, exit_pnl: at(inp.hold_exit) });
+        if (action === 'reverse') {
+          const side = buy ? 'SELL' : 'BUY', entry = side === 'SELL' ? bid : ask;
+          const risk = r2(Math.abs(entry - inp.reverse_sl) * mult), reward = r2(Math.abs(inp.reverse_tp - entry) * mult);
+          Object.assign(d, { close_price: px, close_pnl: at(px), total_if_tp: r2(at(px) + reward), total_if_sl: r2(at(px) - risk),
+            reverse: { side, lots: 0.2, entry, sl: inp.reverse_sl, tp: inp.reverse_tp, risk: -risk, reward, sl_dist: r2(Math.abs(entry - inp.reverse_sl)), tp_dist: r2(Math.abs(inp.reverse_tp - entry)) } });
+        }
+        return d;
+      };
       let id = 1;
       for (const bot of this.db.bots) {
         for (const t of plan) {
           const t0 = now - t.ago * 3600e3;
-          for (const [min, px, action, nsl, conf, reason] of t.steps) {
-            const pnl = Number(((t.side === 'BUY' ? px - t.open : t.open - px) * 20).toFixed(2));
+          for (const [min, px, action, inp, conf, reason] of t.steps) {     // px = where this trade closes now
+            const buy = t.side === 'BUY';
+            const bid = buy ? px : Number((px - 0.16).toFixed(2)), ask = buy ? Number((px + 0.16).toFixed(2)) : px;
+            const details = detailsOf(t, px, bid, ask, action, inp);
             rows.push({ id: id++, bot_id: bot.id, ts: new Date(t0 + min * 60e3).toISOString(), ticket: t.ticket, module: t.module, side: t.side, lots: 0.2,
-              open_price: t.open, sl: t.sl, tp: t.tp, bid: px, ask: Number((px + 0.16).toFixed(2)), profit: pnl, server_time: null, action, new_sl: nsl,
-              confidence: conf, reason, valid: true, model: 'claude-sonnet-5-5', cost_usd: 0.0082 });
+              open_price: t.open, sl: t.sl, tp: t.tp, bid, ask, profit: details.pnl_now, server_time: null, action, new_sl: inp.new_sl ?? null,
+              confidence: conf, reason, valid: true, details, model: 'claude-opus-5-5', cost_usd: 0.021 });
           }
         }
       }
