@@ -4,7 +4,7 @@
 import { h, mount, icon, fmtNum, fmtThai, timeEl, money, duration, errorState, loadingState, emptyState, toast, errText, busy,
   callout, parseWall, wallString, isoUtc, thaiDayKey } from '../util.js';
 import { currentBot, ownsBot } from '../state.js';
-import { prepareRows, pairTrades, parseTradeKey, EVENT_LABELS, REASON_LABELS, SUGGESTED_TAGS } from '../journal.js';
+import { prepareRows, pairTrades, parseTradeKey, EVENT_LABELS, REASON_LABELS, SUGGESTED_TAGS, openNowOf } from '../journal.js';
 import { modChip, sideEl, panel, pageHead, noBotState } from '../views.js';
 import { whyOpened, explainEvent, parseOpenDetail } from '../explain.js';
 import { tradeChart, barsFromRows } from '../tradechart.js';
@@ -39,7 +39,8 @@ export async function render(root, ctx) {
     rows = prepareRows(raw, off);
     st = s ? s.status : null;
   } catch (e) { mount(root, back, errorState(e, () => ctx.route())); return; }
-  const trade = pairTrades(rows.filter((r) => r.tag === pk.tag)).find((t) => t.key === key);
+  // NY has no OPEN row: its trade starts at the stop order (key = the ORDER time); an open one takes the status' fill
+  const trade = pairTrades(rows.filter((r) => r.tag === pk.tag), { openNow: openNowOf(st, off) }).find((t) => t.key === key);
   if (!trade) { notFound(); return; }
   const cur = (st && st.account && st.account.currency) || 'USD';
 
@@ -52,7 +53,9 @@ export async function render(root, ctx) {
     || (r.event === 'DAYCAP' && Number.isFinite(endUtc) && r.utc >= endUtc && r.utc <= endUtc + 3 * MIN));
   const before = tl.filter((r) => r.utc <= trade.openUtc);
   const why = whyOpened(trade, {
-    signal: before.filter((r) => r.event === 'SIGNAL').pop(), arm: before.filter((r) => r.event === 'ARM').pop(), order: before.filter((r) => r.event === 'ORDER').pop(),
+    signal: before.filter((r) => r.event === 'SIGNAL').pop(), order: before.filter((r) => r.event === 'ORDER').pop(),
+    // NY's second try after an SL: its range (ARM) was set before the first try closed
+    arm: before.filter((r) => r.event === 'ARM').pop() || rows.filter((r) => r.tag === pk.tag && r.event === 'ARM' && r.utc <= trade.openUtc && r.utc >= trade.openUtc - 12 * HOUR).pop(),
   });
 
   // ---------------- layout
@@ -90,14 +93,17 @@ export async function render(root, ctx) {
         h('p', null, trade.open ? 'ยังไม่ออก' : ['ออกที่ ', h('span', { class: 'num' }, fmtNum(trade.closePrice))])),
       fig('ความเสี่ยงตอนเปิด', Number.isFinite(risk) ? money(risk, { signed: true, unit: cur }) : '—',
         h('p', null, 'SL ', h('span', { class: 'num' }, fmtNum(trade.sl)), ' TP ', h('span', { class: 'num' }, fmtNum(trade.tp)))),
-      fig('ถือไว้', h('span', { class: 'fig-text' }, Number.isFinite(trade.openUtc) ? duration((trade.open ? Date.now() : trade.closeUtc) - trade.openUtc) : '—'),
-        h('p', null, Number.isFinite(trade.openUtc) ? `${fmtThai(trade.openUtc, 'short')}${trade.open ? ' ถึงตอนนี้' : ` ถึง ${fmtThai(trade.closeUtc, sameDay ? 'time' : 'short')}`}` : '—')));
+      fig('ถือไว้', h('span', { class: 'fig-text' }, Number.isFinite(trade.openUtc) ? `${trade.openApprox ? 'ไม่เกิน ' : ''}${duration((trade.open ? Date.now() : trade.closeUtc) - trade.openUtc)}` : '—'),
+        trade.openApprox
+          ? h('p', null, `ตั้งคำสั่งรอ ${fmtThai(trade.openUtc, 'short')} น. ราคาแตะ `, h('span', { class: 'num' }, fmtNum(trade.orderPrice)), ' แล้วเข้าไม้ (บอทไม่ได้บันทึกเวลาที่เข้าจริง)',
+            trade.open ? null : ` ปิด ${fmtThai(trade.closeUtc, sameDay ? 'time' : 'short')} น.`)
+          : h('p', null, Number.isFinite(trade.openUtc) ? `${fmtThai(trade.openUtc, 'short')}${trade.open ? ' ถึงตอนนี้' : ` ถึง ${fmtThai(trade.closeUtc, sameDay ? 'time' : 'short')}`}` : '—')));
   }
 
   function legend() {
     const it = (cls, text) => h('li', null, h('span', { class: `lg-key ${cls}`, 'aria-hidden': 'true' }), text);
     return h('ul', { class: 'tc-legend' },
-      it(buy ? 'entry-buy' : 'entry-sell', 'จุดเข้า'), trade.open ? null : it((trade.pnl ?? 0) >= 0 ? 'exit-win' : 'exit-loss', 'จุดออก'),
+      it(buy ? 'entry-buy' : 'entry-sell', trade.openApprox ? 'ราคาเข้า (วางไว้ที่เวลาตั้งคำสั่ง)' : 'จุดเข้า'), trade.open ? null : it((trade.pnl ?? 0) >= 0 ? 'exit-win' : 'exit-loss', 'จุดออก'),
       it('tp', 'TP'), it('sl', 'SL'), (trade.lockSteps || []).length ? it('lock', 'SL ที่เลื่อนมาล็อกกำไร') : null);
   }
 

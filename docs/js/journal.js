@@ -41,32 +41,90 @@ export const tradeHref = (key) => `#/trade/${encodeURIComponent(key)}`;
 
 // OPEN -> CLOSE per module, in time order. Rows must be sorted ascending. Each trade carries its trade_key and the SL
 // steps of the lock stages (LOCK1 / LOCK rows: time and the new SL).
-export function pairTrades(rows) {
+// NY never writes an OPEN row (2026-11-11): it places a pending stop order (ORDER) and the fill is not logged, so the
+// trade starts at its last ORDER (key = that row: "NY|<ORDER time>", side / lots / SL / TP from it) once a lock row or
+// the CLOSE shows the order filled; a CANCEL drops the order. Such a trade has viaOrder = true and openApprox = true:
+// openUtc is the time the order was placed (the fill came later, before fillBy). The entry price is the position's
+// own open price from its LOCK rows, else the one the CLOSE's P&L implies, else the order's level.
+// openNow (optional): { <module>: { utc, price } } from the status' open positions: an order that filled and has no
+// lock row yet becomes an open trade with the exact fill time and price.
+const ORDER_MAX_MS = 12 * 3600e3; // a pending order older than this when the next row comes is not that trade's
+export function pairTrades(rows, { openNow = null } = {}) {
   const open = {};
+  const pending = {};
   const trades = [];
+  const fromOrder = (mod, o, r) => ({
+    module: mod, side: o.side, lots: o.lots, openUtc: o.utc, openWall: o.wall, openPrice: o.price, sl: o.sl, tp: o.tp,
+    step: o.step, openDetail: o.detail, events: [], lockSteps: [], openTs: o.ts_server, key: tradeKeyOf(mod, o.ts_server),
+    viaOrder: true, openApprox: true, orderPrice: o.price, fillBy: r ? r.utc : null,
+  });
+  const takeOrder = (mod, r) => {
+    const o = pending[mod];
+    pending[mod] = null;
+    return o && (!r || r.utc - o.utc <= ORDER_MAX_MS) ? fromOrder(mod, o, r) : null;
+  };
   for (const r of rows) {
     const mod = r.tag;
-    if (r.event === 'OPEN') {
+    if (r.event === 'ORDER') {
+      if (!open[mod]) pending[mod] = r;
+    } else if (r.event === 'CANCEL') {
+      pending[mod] = null;
+    } else if (r.event === 'OPEN') {
+      pending[mod] = null;
       if (open[mod]) trades.push({ ...open[mod], open: true, orphan: true });
       open[mod] = {
         module: mod, side: r.side, lots: r.lots, openUtc: r.utc, openWall: r.wall, openPrice: r.price, sl: r.sl, tp: r.tp,
         step: r.step, openDetail: r.detail, events: [], lockSteps: [], openTs: r.ts_server, key: tradeKeyOf(mod, r.ts_server),
       };
     } else if (r.event === 'CLOSE') {
-      const t = open[mod];
+      const t = open[mod] || takeOrder(mod, r);
       const base = t || { module: mod, side: r.side, lots: r.lots, openUtc: null, openWall: null, openPrice: null, sl: null, tp: null, step: r.step, events: [], lockSteps: [], key: '' };
-      trades.push({
+      const done = {
         ...base, open: false, closeUtc: r.utc, closeWall: r.wall, closePrice: r.price, pnl: r.pnl ?? 0, vBalance: r.v_balance,
         reason: closeReason(r.detail), closeDetail: r.detail, day: r.day,
-      });
+      };
+      // a filled stop order without a lock row: the entry the P&L implies (XAUUSD: 100 oz a lot), close to the real fill
+      if (done.viaOrder && !done.entryKnown && done.lots > 0 && r.price > 0 && Number.isFinite(r.pnl)) {
+        const dist = r.pnl / (100 * done.lots);
+        done.openPrice = Math.round((done.side === 'BUY' ? r.price - dist : r.price + dist) * 100) / 100;
+      }
+      trades.push(done);
       open[mod] = null;
-    } else if (open[mod] && LOCK_EVENTS.has(r.event)) {
+      pending[mod] = null;
+    } else if (LOCK_EVENTS.has(r.event)) {
+      if (!open[mod] && pending[mod]) open[mod] = takeOrder(mod, r);
+      if (!open[mod]) continue;
       open[mod].events.push(r.event);
       if ((r.event === 'LOCK' || r.event === 'LOCK1') && r.sl > 0) open[mod].lockSteps.push({ event: r.event, utc: r.utc, sl: r.sl, detail: r.detail });
+      // a LOCK row's price is the position's open price: the real entry of a filled stop order
+      if (open[mod].viaOrder && (r.event === 'LOCK' || r.event === 'LOCK1') && r.price > 0) { open[mod].openPrice = r.price; open[mod].entryKnown = true; }
     }
   }
-  for (const t of Object.values(open)) if (t) trades.push({ ...t, open: true });
+  for (const [mod, o] of Object.entries(pending)) {
+    if (o && !open[mod] && openNow && openNow[mod]) open[mod] = fromOrder(mod, o, null);
+  }
+  for (const [mod, t] of Object.entries(open)) {
+    if (!t) continue;
+    const now = openNow && openNow[mod];
+    if (t.viaOrder && now) {
+      if (Number.isFinite(now.utc) && now.utc >= t.openUtc) { t.openUtc = now.utc; t.openApprox = false; }
+      if (now.price > 0) { t.openPrice = now.price; t.entryKnown = true; }
+    }
+    trades.push({ ...t, open: true });
+  }
   return trades.sort((a, b) => (a.openWall ?? a.closeWall) - (b.openWall ?? b.closeWall));
+}
+
+// openNow for pairTrades from a status: the open positions' fill time (server time -> UTC) and price per module
+export function openNowOf(st, offsetMin) {
+  const out = {};
+  for (const p of (st && st.positions) || []) {
+    if (!p || !p.open || !p.module) continue;
+    const m = /^(\d{4})[.-](\d{2})[.-](\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(p.open_time || ''));
+    const utc = m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)) - (offsetMin || 0) * 60000 : NaN;
+    out[p.module] = { utc, price: Number(p.open_price) };
+  }
+  return out;
 }
 
 export function statsOf(trades) {

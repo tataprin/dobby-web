@@ -242,7 +242,7 @@ export function priceChart() {
   function tradeTip(t, touch = false) {
     const buy = t.side === 'BUY';
     const kids = [h('p', { class: 'pc-tip-title' }, h('span', { class: `side ${buy ? 'buy' : 'sell'}` }, buy ? '▲ ซื้อ' : '▼ ขาย'), ` ${t.module || ''} `, h('span', { class: 'num' }, fmtNum(t.lots)), ' ล็อต')];
-    if (t.openPrice > 0 && Number.isFinite(t.openUtc)) kids.push(h('p', null, `เปิด ${when(t.openUtc)} ที่ `, h('span', { class: 'num' }, fmtNum(t.openPrice))));
+    if (t.openPrice > 0 && Number.isFinite(t.openUtc)) kids.push(h('p', null, `${t.openApprox ? 'ตั้งคำสั่ง' : 'เปิด'} ${when(t.openUtc)} ${t.openApprox ? 'เข้าที่' : 'ที่'} `, h('span', { class: 'num' }, fmtNum(t.openPrice))));
     if (t.open) kids.push(h('p', { class: 'pc-tip-sub' }, 'ไม้นี้ยังเปิดอยู่'));
     else {
       kids.push(h('p', null, `ปิด ${when(t.closeUtc)} ที่ `, h('span', { class: 'num' }, fmtNum(t.closePrice))));

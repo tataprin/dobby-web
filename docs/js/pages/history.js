@@ -410,6 +410,8 @@ export async function render(root, ctx) {
           },
           h('td', { 'data-label': 'เปิด' }, Number.isFinite(t.openUtc)
             ? (t.key ? h('a', { class: 'trade-open', href: tradeHref(t.key), title: 'ดูรายละเอียดไม้นี้' }, timeEl(t.openUtc, off)) : timeEl(t.openUtc, off)) : '—',
+            // NY: the time its stop order was placed (the bot does not log the fill)
+            t.openApprox ? h('span', { class: 'muted small', title: 'เวลาที่ตั้งคำสั่งรอ บอทไม่ได้บันทึกเวลาที่ราคาแตะแล้วเข้าไม้' }, ' ตั้งคำสั่ง') : null,
             n && n.note ? h('span', { class: 'note-mark', title: n.note, 'aria-label': 'มีบันทึก' }, icon('doc')) : null),
           h('td', { 'data-label': 'สูตร' }, modChip(t.module), t.step ? h('span', { class: 'muted small' }, ` ไม้แก้ ${t.step}`) : null),
           h('td', { 'data-label': 'ฝั่ง' }, sideEl(t.side)),
@@ -419,7 +421,7 @@ export async function render(root, ctx) {
           h('td', { 'data-label': 'ผล' }, t.open ? h('span', { class: 'chip pending' }, 'ยังเปิดอยู่')
             : [REASON_LABELS[t.reason] || t.reason || '—', t.events.includes('LOCK') || t.events.includes('LOCK1') ? h('span', { class: 'muted small' }, ' (มีล็อก)') : null],
             tags.length ? h('span', { class: 'row-tags' }, tags.map((x) => h('span', { class: 'chip' }, x))) : null),
-          h('td', { 'data-label': 'ถือ' }, !t.open && Number.isFinite(t.openUtc) ? duration(t.closeUtc - t.openUtc) : '—'),
+          h('td', { 'data-label': 'ถือ' }, !t.open && Number.isFinite(t.openUtc) ? `${t.openApprox ? 'ไม่เกิน ' : ''}${duration(t.closeUtc - t.openUtc)}` : '—'),
           h('td', { 'data-label': 'กำไร', class: 'num' }, t.open ? '—' : pnl(t.pnl)));
         }))))));
     chartTrades();

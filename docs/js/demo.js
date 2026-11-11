@@ -118,7 +118,12 @@ export class BotSim {
     const exit = r2(entry + dir * move);
     const atr = (sl * (0.8 + r() * 0.6)).toFixed(2), rsi = (35 + r() * 30).toFixed(1);
     if (mod === 'A_new') this.add(t, 'SIGNAL', mod, side, lots, entry, null, null, 0, step, `${side === 'BUY' ? 'bull' : 'bear'} divergence on the closed M15 bar`);
-    this.add(t + 1000, 'OPEN', mod, side, lots, entry, slP, tpP, 0, step, `d=${f2(sl)} tp=${f2(tpd)} atr=${atr} rsi=${rsi} | ${this.desc(mod, side, entry)}`);
+    if (mod === 'NY') {
+      // like EA v3.04 / v3.05: NY places a stop order at its 16:45 range and never logs the fill (no OPEN row)
+      // (a retry after an SL places its order right after that close, which is before t)
+      const orderAt = step > 0 ? t - MIN : Math.max(t - 3 * HOUR, Math.min(t - MIN, t - (t % DAY) + 16 * HOUR + 45 * MIN));
+      this.add(orderAt, 'ORDER', mod, side, lots, entry, slP, tpP, 0, step, `${side === 'BUY' ? 'buy' : 'sell'} stop at ${f2(entry)} d=${f2(sl)}`);
+    } else this.add(t + 1000, 'OPEN', mod, side, lots, entry, slP, tpP, 0, step, `d=${f2(sl)} tp=${f2(tpd)} atr=${atr} rsi=${rsi} | ${this.desc(mod, side, entry)}`);
     const close = t + dur;
     const lockOn = P.InpLockEnable && P[`InpLock_${mod === 'C5G' ? 'C5G' : mod === 'NY' ? 'NY' : 'A'}`];
     if (outcome === 'LOCK1' || (outcome === 'LOCK' && r() < 0.4)) {
@@ -126,7 +131,8 @@ export class BotSim {
       const nsl = r2(entry + dir * tpd * lock1To);
       const a1 = Math.round(lock1At * 100), t1 = Math.round(lock1To * 100);
       this.add(close - 9 * MIN, 'NEAR1', mod, side, lots, r2(entry + dir * g), slP, tpP, 0, step, `gain ${f2(g)} = ${a1}% of TP ${f2(tpd)} (stage 1 ${P.InpLock1Enable ? 'ON' : 'shadow'})`);
-      if (P.InpLock1Enable) this.add(close - 9 * MIN + 5000, 'LOCK1', mod, side, lots, r2(entry + dir * g), nsl, tpP, 0, step, `gain ${f2(g)} >= ${a1}% of TP ${f2(tpd)} -> SL ${f2(nsl)} locks about +${f2(tpd * lock1To * per)} (${t1}%)`);
+      // like the EA: a LOCK row's price is the position's open price (the NEAR row before it has the market price)
+      if (P.InpLock1Enable) this.add(close - 9 * MIN + 5000, 'LOCK1', mod, side, lots, entry, nsl, tpP, 0, step, `gain ${f2(g)} >= ${a1}% of TP ${f2(tpd)} -> SL ${f2(nsl)} locks about +${f2(tpd * lock1To * per)} (${t1}%)`);
       else this.add(close - 9 * MIN + 5000, 'SHADOWLOCK1', mod, side, lots, r2(entry + dir * g), slP, tpP, 0, step, `stage 1 would move SL to ${f2(nsl)} (off)`);
     }
     if (outcome === 'LOCK' || (outcome === 'TP' && r() < 0.5)) {
@@ -134,7 +140,7 @@ export class BotSim {
       const nsl = r2(entry + dir * tpd * lockTo);
       const a2 = Math.round(lockAt * 100), t2 = Math.round(lockTo * 100);
       this.add(close - 2 * MIN, 'NEARTP', mod, side, lots, r2(entry + dir * g), slP, tpP, 0, step, `gain ${f2(g)} = ${a2}% of TP ${f2(tpd)} (lock ${lockOn ? 'ON' : 'off'})`);
-      if (lockOn) this.add(close - 2 * MIN + 1000, 'LOCK', mod, side, lots, r2(entry + dir * g), nsl, tpP, 0, step, `gain ${f2(g)} >= ${a2}% of TP ${f2(tpd)} -> SL ${f2(nsl)} locks about +${f2(tpd * lockTo * per)} (${t2}%)`);
+      if (lockOn) this.add(close - 2 * MIN + 1000, 'LOCK', mod, side, lots, entry, nsl, tpP, 0, step, `gain ${f2(g)} >= ${a2}% of TP ${f2(tpd)} -> SL ${f2(nsl)} locks about +${f2(tpd * lockTo * per)} (${t2}%)`);
       else this.add(close - 2 * MIN + 1000, 'SHADOWLOCK', mod, side, lots, r2(entry + dir * g), slP, tpP, 0, step, `lock would move SL to ${f2(nsl)} (off)`);
     }
     if (mod === 'C5G' && this.nextId % 23 === 0 && outcome !== 'SL') {
@@ -249,12 +255,12 @@ export class BotSim {
         let slNow = p.sl;
         if (P.InpLock1Enable && P.InpLock1AtPct > 0) {
           slNow = r2(entry + tpd * P.InpLock1ToPct / 100);
-          this.add(openAt + 9 * MIN, 'LOCK1', 'C5G', 'BUY', lots, r2(entry + tpd * P.InpLock1AtPct / 100 + 0.03), slNow, p.tp, 0, 0,
+          this.add(openAt + 9 * MIN, 'LOCK1', 'C5G', 'BUY', lots, entry, slNow, p.tp, 0, 0,
             `gain ${f2(tpd * P.InpLock1AtPct / 100 + 0.03)} >= ${Math.round(P.InpLock1AtPct)}% of TP ${f2(tpd)} -> SL ${f2(slNow)} locks about +${f2(tpd * P.InpLock1ToPct / 100 * per)} (${Math.round(P.InpLock1ToPct)}%)`);
         }
         if (lockOn) {
           slNow = r2(entry + tpd * P.InpLockToPct / 100);
-          this.add(openAt + 16 * MIN, 'LOCK', 'C5G', 'BUY', lots, r2(entry + tpd * P.InpLockAtPct / 100 + 0.02), slNow, p.tp, 0, 0,
+          this.add(openAt + 16 * MIN, 'LOCK', 'C5G', 'BUY', lots, entry, slNow, p.tp, 0, 0,
             `gain ${f2(tpd * P.InpLockAtPct / 100 + 0.02)} >= ${Math.round(P.InpLockAtPct)}% of TP ${f2(tpd)} -> SL ${f2(slNow)} locks about +${f2(tpd * P.InpLockToPct / 100 * per)} (${Math.round(P.InpLockToPct)}%)`);
         }
         // touch: SL_conv = max(SL in force, E + KeepPct % of tpd); target T1 = TP0 + step; the broker TP is the safety
@@ -326,14 +332,14 @@ export class BotSim {
   // the price anchors of the trade opened at openUtc (OPEN, NEAR / LOCK triggers, CLOSE), for barsBetween
   anchorsFor(openUtc) {
     const w0 = openUtc + DEMO_OFFSET_MIN * MIN;
-    const i = this.rows.findIndex((r) => r.event === 'OPEN' && Math.abs(Date.parse(r.ts_server + 'Z') - w0) < 90000);
+    const i = this.rows.findIndex((r) => (r.event === 'OPEN' || r.event === 'ORDER') && Math.abs(Date.parse(r.ts_server + 'Z') - w0) < 90000);
     if (i < 0) return null;
     const tag = this.rows[i].tag, out = [];
     for (let j = i; j < this.rows.length; j++) {
       const r = this.rows[j];
       if (r.tag !== tag || !(r.price > 0)) continue;
-      if (j > i && r.event === 'OPEN') break;
-      if (['OPEN', 'NEAR1', 'NEARTP', 'LOCK1', 'LOCK', 'RUN_ON', 'RUN_UP', 'CLOSE'].includes(r.event)) out.push({ w: Date.parse(r.ts_server + 'Z'), p: r.price });
+      if (j > i && (r.event === 'OPEN' || r.event === 'ORDER')) break;
+      if (['OPEN', 'ORDER', 'NEAR1', 'NEARTP', 'RUN_ON', 'RUN_UP', 'CLOSE'].includes(r.event)) // LOCK rows hold the open price out.push({ w: Date.parse(r.ts_server + 'Z'), p: r.price });
       if (r.event === 'CLOSE') break;
     }
     return out;
@@ -615,7 +621,7 @@ function autoWindows(nowUtc, events, autoNews, schedule) {
 function closedTrades(sim) {
   const open = {}, out = [];
   for (const r of sim.rows) {
-    if (r.event === 'OPEN') open[r.tag] = r;
+    if (r.event === 'OPEN' || r.event === 'ORDER') open[r.tag] = r; // NY: its stop order (no OPEN row)
     else if (r.event === 'CLOSE' && open[r.tag]) { out.push({ open: open[r.tag], close: r }); open[r.tag] = null; }
   }
   return out;

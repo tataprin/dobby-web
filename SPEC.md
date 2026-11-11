@@ -571,7 +571,9 @@ trade_notes  bot_id uuid -> bots on delete cascade, trade_key text not null, not
              tags text[] not null default '{}', updated_at timestamptz default now(), updated_by uuid default auth.uid(),
              primary key (bot_id, trade_key)
 ```
-trade_key = `<tag>|<open ts_server as YYYY-MM-DD HH:MM:SS>` of the trade's OPEN journal row. RLS: approved owner of the
+trade_key = `<tag>|<open ts_server as YYYY-MM-DD HH:MM:SS>` of the trade's OPEN journal row. NY never logs OPEN
+(its stop order fills without a row): its trade starts at its last ORDER row, so its key is that ORDER's time
+(2026-11-11, journal.js pairTrades; entry price from its LOCK rows, else the one its CLOSE P&L implies). RLS: approved owner of the
 bot all; admin select. Website: note + tags on the trade page, tag filter in ประวัติ > รายการเทรด. Suggested tags:
 ช่วงข่าว, ปิดเอง, เลื่อน SL เอง, ตลาดผันผวน.
 DB (2026-11-07): trade_key 1..200 characters, note <= 5000, at most 30 tags; updated_at / updated_by are set by the

@@ -7,7 +7,7 @@ import { app, currentBot, updateBotRow, on, ownsBot, canControl } from '../state
 import { normDesired, patchDesired, onlineInfo, rejectionsBlock, isPending, heroState } from '../botctl.js';
 import { modChip, sideEl, kv, panel, noBotState, onOff, pageHead } from '../views.js';
 import { runnerSupported, capResetToken, minutesToClock } from '../params.js';
-import { prepareRows, pairTrades, REASON_LABELS, tradeHref, rebaseBalances, statsOf } from '../journal.js';
+import { prepareRows, pairTrades, REASON_LABELS, tradeHref, rebaseBalances, statsOf, openNowOf } from '../journal.js';
 import { strategyHealth, riskStats, sinceStart, dietz } from '../analytics.js';
 import { roundsOf, currentRound, roundTitle, botPnlOf } from '../rounds.js';
 import { riskStrip } from '../insights.js';
@@ -453,9 +453,9 @@ export async function render(root, ctx) {
         : h('p', { class: 'muted small' }, `เปิดเมื่อ ${opened}`));
   }
 
-  // the journal's OPEN row of the position that is still open (for the link to its trade page)
+  // the journal's OPEN row of the position that is still open (for the link to its trade page); NY: its filled ORDER
   function openKey(mod) {
-    const t = pairTrades(rows).filter((x) => x.open && x.module === mod).pop();
+    const t = pairTrades(rows, { openNow: openNowOf(st, off()) }).filter((x) => x.open && x.module === mod).pop();
     return t ? t.key : '';
   }
 
