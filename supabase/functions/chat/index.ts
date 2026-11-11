@@ -267,7 +267,8 @@ export function parseThaiInput(s: unknown, end = false): number | null {
 // ------------------------------------------------------------------ journal (port of docs/js/journal.js)
 export const MODULES = ["A_new", "NY", "C5G", "ASIA16"];
 const LOCK_EVENTS = new Set(["NEARTP", "LOCK", "NEAR1", "LOCK1", "SHADOWLOCK", "SHADOWLOCK1"]);
-const TRADE_EVENTS = ["OPEN", "CLOSE", ...LOCK_EVENTS];
+// ORDER / CANCEL: NY has no OPEN row, its trade starts at its stop order (pairTrades)
+const TRADE_EVENTS = ["OPEN", "CLOSE", "ORDER", "CANCEL", ...LOCK_EVENTS];
 const TIMELINE = new Set(["SIGNAL", "ARM", "ORDER", "OPEN", "NEAR1", "NEARTP", "LOCK1", "LOCK", "SHADOWLOCK1", "SHADOWLOCK", "CLOSE", "CANCEL", "ERROR", "SKIP"]);
 const JOURNAL_COLS = "id,ts_server,event,tag,side,lots,price,sl,tp,pnl,v_balance,step,detail";
 
@@ -301,32 +302,88 @@ export function parseTradeKey(key: unknown): { tag: string; ts: string } | null 
 export const tradeHref = (key: string) => `#/trade/${encodeURIComponent(key)}`;
 
 // OPEN -> CLOSE per module, in time order. Rows must be sorted ascending.
-export function pairTrades(rows: Json[]): Json[] {
+// NY never writes an OPEN row (2026-11-11): it places a pending stop order (ORDER) and the fill is not logged, so the
+// trade starts at its last ORDER (key = that row) once a lock row or the CLOSE shows the order filled; a CANCEL drops
+// the order. viaOrder / openApprox: openUtc is the time the order was placed (the fill came later, before fillBy). The
+// entry price is the position's open price from its LOCK rows, else the one the CLOSE's P&L implies, else the order's.
+// openNow (optional): { <module>: { utc, price } } of the status' open positions (exact fill of an open NY trade).
+const ORDER_MAX_MS = 12 * 3600e3;
+export function pairTrades(rows: Json[], { openNow = null }: { openNow?: Json | null } = {}): Json[] {
   const open: Json = {};
+  const pending: Json = {};
   const trades: Json[] = [];
+  const fromOrder = (mod: string, o: Json, r: Json | null) => ({
+    module: mod, side: o.side, lots: o.lots, openUtc: o.utc, openWall: o.wall, openPrice: o.price, sl: o.sl, tp: o.tp,
+    step: o.step, openDetail: o.detail, events: [], lockSteps: [], openTs: o.ts_server, key: tradeKeyOf(mod, o.ts_server),
+    viaOrder: true, openApprox: true, orderPrice: o.price, fillBy: r ? r.utc : null,
+  });
+  const takeOrder = (mod: string, r: Json | null) => {
+    const o = pending[mod];
+    pending[mod] = null;
+    return o && (!r || r.utc - o.utc <= ORDER_MAX_MS) ? fromOrder(mod, o, r) : null;
+  };
   for (const r of rows) {
     const mod = r.tag;
-    if (r.event === "OPEN") {
+    if (r.event === "ORDER") {
+      if (!open[mod]) pending[mod] = r;
+    } else if (r.event === "CANCEL") {
+      pending[mod] = null;
+    } else if (r.event === "OPEN") {
+      pending[mod] = null;
       if (open[mod]) trades.push({ ...open[mod], open: true, orphan: true });
       open[mod] = {
         module: mod, side: r.side, lots: r.lots, openUtc: r.utc, openWall: r.wall, openPrice: r.price, sl: r.sl, tp: r.tp,
         step: r.step, openDetail: r.detail, events: [], lockSteps: [], openTs: r.ts_server, key: tradeKeyOf(mod, r.ts_server),
       };
     } else if (r.event === "CLOSE") {
-      const t = open[mod];
+      const t = open[mod] || takeOrder(mod, r);
       const base = t || { module: mod, side: r.side, lots: r.lots, openUtc: null, openWall: null, openPrice: null, sl: null, tp: null, step: r.step, events: [], lockSteps: [], key: "" };
-      trades.push({
+      const done: Json = {
         ...base, open: false, closeUtc: r.utc, closeWall: r.wall, closePrice: r.price, pnl: r.pnl ?? 0, vBalance: r.v_balance,
         reason: closeReason(r.detail), closeDetail: r.detail, day: r.day,
-      });
+      };
+      // a filled stop order without a lock row: the entry the P&L implies (XAUUSD: 100 oz a lot)
+      if (done.viaOrder && !done.entryKnown && done.lots > 0 && r.price > 0 && Number.isFinite(r.pnl)) {
+        const dist = r.pnl / (100 * done.lots);
+        done.openPrice = Math.round((done.side === "BUY" ? r.price - dist : r.price + dist) * 100) / 100;
+      }
+      trades.push(done);
       open[mod] = null;
-    } else if (open[mod] && LOCK_EVENTS.has(r.event)) {
+      pending[mod] = null;
+    } else if (LOCK_EVENTS.has(r.event)) {
+      if (!open[mod] && pending[mod]) open[mod] = takeOrder(mod, r);
+      if (!open[mod]) continue;
       open[mod].events.push(r.event);
       if ((r.event === "LOCK" || r.event === "LOCK1") && r.sl > 0) open[mod].lockSteps.push({ event: r.event, utc: r.utc, sl: r.sl, detail: r.detail });
+      // a LOCK row's price is the position's open price: the real entry of a filled stop order
+      if (open[mod].viaOrder && (r.event === "LOCK" || r.event === "LOCK1") && r.price > 0) { open[mod].openPrice = r.price; open[mod].entryKnown = true; }
     }
   }
-  for (const t of Object.values(open) as Json[]) if (t) trades.push({ ...t, open: true });
+  for (const [mod, o] of Object.entries(pending) as [string, Json][]) {
+    if (o && !open[mod] && openNow && openNow[mod]) open[mod] = fromOrder(mod, o, null);
+  }
+  for (const [mod, t] of Object.entries(open) as [string, Json][]) {
+    if (!t) continue;
+    const now = openNow && openNow[mod];
+    if (t.viaOrder && now) {
+      if (Number.isFinite(now.utc) && now.utc >= t.openUtc) { t.openUtc = now.utc; t.openApprox = false; }
+      if (now.price > 0) { t.openPrice = now.price; t.entryKnown = true; }
+    }
+    trades.push({ ...t, open: true });
+  }
   return trades.sort((a, b) => (a.openWall ?? a.closeWall) - (b.openWall ?? b.closeWall));
+}
+
+// openNow for pairTrades from a status: the open positions' fill time (server time -> UTC) and price per module
+export function openNowOf(st: Json, offsetMin: number): Json {
+  const out: Json = {};
+  for (const p of (st && st.positions) || []) {
+    if (!p || !p.open || !p.module) continue;
+    const m = /^(\d{4})[.-](\d{2})[.-](\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(p.open_time || ""));
+    const utc = m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)) - (offsetMin || 0) * 60000 : NaN;
+    out[p.module] = { utc, price: Number(p.open_price) };
+  }
+  return out;
 }
 
 export function statsOf(trades: Json[]): Json {
@@ -616,7 +673,7 @@ Journal rows (time_server, event, tag = strategy, side, lots, price, sl, tp, pnl
 - CLOSE "reason=<TP|SL|LOCK|TIME|FLAT|MANUAL|RUN> pos=<ticket>" (plus "NY win: no more NY trades today"); pnl = the trade's result in the account currency, v_balance = the virtual balance after it. TIME = time stop, FLAT = end-of-day close (NY 23:00, ASIA16 16:15), MANUAL = closed by hand, RUN = the runner's ratcheted SL after the TP touch (EA v3.05). RUN_ON / RUN_UP = the runner touched TP0 / ratcheted (EA v3.05).
 - SKIP "SL distance <x> > cap <y>" (signal skipped, too risky). DAYCAP "day P&L <x> <= -<pct>% of <day start>". ERROR "... retcode <n>": 10004 requote, 10006 rejected by the broker, 10014 invalid volume, 10015 invalid price, 10016 SL/TP too close or invalid, 10018 market closed, 10019 not enough money, 10027 the Algo Trading button in MT5 is off; "modify" or "lock" in the text = moving the SL failed.
 - START / STOP (EA started / stopped), CONTROL "control file W<version> -> mode=... lots=... blackouts=<n>" (a website command reached the EA), LOCKED / UNLOCKED (real-account trading lock), REMOTE rows of EA v3.04+ (APPLY v<n>: key old->new; WAIT v<n> = waiting until no trade is open; REJECT v<n>: reasons; LIVE on/off), DAYCAP_RESET (EA v3.05: the owner's daily-cap reset applied or IGNORED).
-- A trade = an OPEN row and the next CLOSE row of the same strategy. trade_key = "<strategy>|<OPEN time_server YYYY-MM-DD HH:MM:SS>".
+- A trade = an OPEN row and the next CLOSE row of the same strategy. trade_key = "<strategy>|<OPEN time_server YYYY-MM-DD HH:MM:SS>". NY never writes an OPEN row: it places a buy stop / sell stop (ORDER) and the fill is not logged, so an NY trade starts at its ORDER row (its trade_key is the ORDER time) and its open time is when the order was placed (open_time_note); its entry price is the real fill from its LOCK rows or the P&L.
 - "Why did this trade open": call get_trade_detail, explain the signal from the OPEN reason (with the NY ARM row or the A_new SIGNAL row), the SL and TP distances and the money at risk, ATR and RSI, whether it was a recovery step, then what happened (lock stages, close reason, P&L).
 
 Website controls and how a change reaches the bot:
@@ -672,7 +729,7 @@ const TOOL_DEFS: ToolDef[] = [
   {
     name: "get_trade_detail", status: "กำลังดูรายละเอียดไม้…",
     description: "Everything about one trade: every journal row from the signal to the close (Thai and server time), the parsed OPEN detail (SL and TP distance, ATR, RSI, reason), the NY range when armed, lock stages, the owner's trade note and tags, and up to 80 price points (close and VWAP) from 3 h before the open to 1 h after the close. Call it to explain why a trade opened, what happened to it or why it closed. Needs the trade_key (the header's ไม้, or from get_trades).",
-    input_schema: obj({ bot_id: BOT_ID, trade_key: { type: "string", description: 'Trade key "<strategy>|YYYY-MM-DD HH:MM:SS" (server time of the OPEN row).' } }, ["bot_id", "trade_key"]),
+    input_schema: obj({ bot_id: BOT_ID, trade_key: { type: "string", description: 'Trade key "<strategy>|YYYY-MM-DD HH:MM:SS" (server time of the OPEN row; NY: of its ORDER row).' } }, ["bot_id", "trade_key"]),
     run: (t, i) => toolTradeDetail(t, i),
   },
   {
@@ -1321,6 +1378,8 @@ function tradeOut(tr: Json): Json {
     step: tr.step ? tr.step : undefined,
     status: tr.open ? (tr.orphan ? "open row without a close row" : "open") : (tr.key ? "closed" : "closed (open row not found)"),
     open_th: thaiTime(tr.openUtc ?? NaN), open_server: serverWall(tr.openWall ?? NaN), open_price: nz(tr.openPrice), sl: tr.sl ? tr.sl : undefined, tp: tr.tp ? tr.tp : undefined,
+    // NY: no OPEN row; open_th is when its stop order was placed
+    open_time_note: tr.openApprox ? `time the NY stop order was placed at ${tr.orderPrice}; the fill time is not logged${Number.isFinite(tr.fillBy) ? ` (it filled before ${thaiTime(tr.fillBy)})` : ""}` : undefined,
     close_th: tr.open ? undefined : thaiTime(tr.closeUtc), close_server: tr.open ? undefined : serverWall(tr.closeWall), close_price: tr.open ? undefined : nz(tr.closePrice),
     pnl: tr.open ? undefined : r2(tr.pnl), reason: nz(tr.reason), v_balance_after: tr.open ? undefined : nz(tr.vBalance),
     lock_steps: tr.lockSteps && tr.lockSteps.length ? tr.lockSteps.map((l: Json) => `${l.event}: SL -> ${l.sl} at ${thaiTime(l.utc)}`) : undefined,
@@ -1409,7 +1468,8 @@ function trimStatus(st: Json, off: number, now: number, updatedAt: unknown): Jso
       strategy: p.module, side: p.side, lots: p.lots, open_price: p.open_price, sl: p.sl, tp: p.tp, profit: p.profit, swap: p.swap,
       open_server: p.open_time, open_th: thaiTime(serverToUtc(p.open_time, off)), bars_held: p.bars_held, near_tp: p.near_tp, locked: p.locked,
       runner: nz(p.runner), // EA v3.05: {on, converted, k, sl_floor, target}
-      trade_key: nz(tradeKeyOf(p.module, p.open_time)),
+      // NY has no OPEN row: its trade_key is the time of its stop order (get_trades), not the fill time
+      trade_key: p.module === "NY" ? undefined : nz(tradeKeyOf(p.module, p.open_time)),
     })),
     modules: Array.isArray(st.modules) ? st.modules.map((m: Json) => pick(m, ["module", "enabled", "lots", "step", "day_stopped", "won_today", "trades", "wins", "losses", "net"])) : undefined,
     ny: st.ny, options: st.options, control: st.control, flags: st.flags, market: st.market, params: st.params,
@@ -1426,8 +1486,9 @@ async function toolTrades(t: TurnCtx, input: Json): Promise<Json> {
   if (w.from !== null) pairs.push(["ts_server", `gte.${srvParam(w.from - 3 * DAY, off)}`]);
   if (input.strategy) pairs.push(["tag", `eq.${input.strategy}`]);
   pairs.push(["select", JOURNAL_COLS], ["order", "ts_server.desc,id.desc"]);
-  const raw = await sbSelectAll(t.sb, "journal", pairs, 8000);
-  const all = pairTrades(prepareRows(raw, off));
+  const [raw, stRows] = await Promise.all([sbSelectAll(t.sb, "journal", pairs, 8000),
+    sbSelect(t.sb, "bot_status", [["bot_id", `eq.${b.id}`], ["select", "status"], ["limit", "1"]]).catch(() => [])]);
+  const all = pairTrades(prepareRows(raw, off), { openNow: openNowOf(stRows[0] && stRows[0].status, off) });
   const inWin = all.filter((tr) => { const at = tr.openUtc ?? tr.closeUtc; return at >= (w.from ?? -Infinity) && at < w.to; }).reverse();
   const closed = inWin.filter((tr) => !tr.open);
   return {
@@ -1442,16 +1503,17 @@ async function toolTrades(t: TurnCtx, input: Json): Promise<Json> {
 async function toolTradeDetail(t: TurnCtx, input: Json): Promise<Json> {
   const b = await botOf(t, input.bot_id);
   const pk = parseTradeKey(String(input.trade_key || "").trim());
-  if (!pk) throw new ToolError('trade_key must look like "C5G|2026-11-07 10:15:00" (strategy|server time of the OPEN row).');
+  if (!pk) throw new ToolError('trade_key must look like "C5G|2026-11-07 10:15:00" (strategy|server time of the OPEN row; NY: of its ORDER row).');
   const key = `${pk.tag}|${pk.ts}`;
   const off = offsetOf(b);
   const openWall = parseWall(pk.ts);
-  const raw = await sbSelectAll(t.sb, "journal", [
+  const [raw, stRows] = await Promise.all([sbSelectAll(t.sb, "journal", [
     ["bot_id", `eq.${b.id}`], ["ts_server", `gte.${wallString(openWall - 14 * HOUR, "-", true).replace(" ", "T")}`],
     ["ts_server", `lte.${wallString(openWall + 3 * DAY, "-", true).replace(" ", "T")}`], ["select", JOURNAL_COLS], ["order", "ts_server.asc,id.asc"],
-  ], 3000);
+  ], 3000), sbSelect(t.sb, "bot_status", [["bot_id", `eq.${b.id}`], ["select", "status"], ["limit", "1"]]).catch(() => [])]);
   const rows = prepareRows(raw, off);
-  const trade = pairTrades(rows.filter((r) => r.tag === pk.tag)).find((tr) => tr.key === key);
+  // NY has no OPEN row: its trade starts at its stop order (key = the ORDER time); an open one takes the status' fill
+  const trade = pairTrades(rows.filter((r) => r.tag === pk.tag), { openNow: openNowOf(stRows[0] && stRows[0].status, off) }).find((tr) => tr.key === key);
   if (!trade) throw new ToolError(`Trade ${key} was not found in the journal of ${b.name}. Use get_trades to find the trade_key.`);
   // the rows of this trade (as the trade page): same strategy, after its previous close (at most 12 h before the open),
   // up to the close; a DAYCAP written right after the close belongs to it too
@@ -1460,7 +1522,8 @@ async function toolTradeDetail(t: TurnCtx, input: Json): Promise<Json> {
   const endUtc = trade.open ? Infinity : trade.closeUtc;
   const tl = rows.filter((r) => (r.tag === pk.tag && TIMELINE.has(r.event) && r.utc >= startUtc && r.utc <= endUtc)
     || (r.event === "DAYCAP" && Number.isFinite(endUtc) && r.utc >= endUtc && r.utc <= endUtc + 3 * MIN));
-  const arm = tl.filter((r) => r.event === "ARM" && r.utc <= trade.openUtc).pop();
+  const arm = tl.filter((r) => r.event === "ARM" && r.utc <= trade.openUtc).pop()
+    || rows.filter((r) => r.tag === pk.tag && r.event === "ARM" && r.utc <= trade.openUtc && r.utc >= trade.openUtc - 12 * HOUR).pop(); // NY second try
   const o = parseOpenDetail(trade.openDetail);
   const [notes, bars] = await Promise.all([
     sbSelect(t.sb, "trade_notes", [["bot_id", `eq.${b.id}`], ["trade_key", `eq.${key}`], ["select", "note,tags,updated_at"], ["limit", "1"]]).catch(() => []),

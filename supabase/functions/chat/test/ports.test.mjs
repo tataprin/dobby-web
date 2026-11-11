@@ -57,6 +57,53 @@ test('prepareRows / pairTrades / statsOf / moduleStats / dailyPnl match docs/js/
   assert.equal(fn.tradeHref('A_new|2026-11-05 09:00:01'), webJournal.tradeHref('A_new|2026-11-05 09:00:01'));
 });
 
+// NY as EA v3.04 / v3.05 write it (2026-11-11): no OPEN row, a stop ORDER, a CANCEL / re-ORDER, an SL, a second try
+// with lock rows (whose price is the position's open price), and a filled order that is still open.
+function nyOrderJournal() {
+  return [
+    jr('2026-11-10T16:45:00', 'ARM', 'NY', { lots: 0.2, detail: 'range 4033.81-4057.81 spread 0.20 d=8.00 -> buy stop 4058.21 / sell stop 4033.61' }),
+    jr('2026-11-10T16:45:00', 'ORDER', 'NY', { side: 'SELL', lots: 0.15, price: 4033.61, sl: 4041.61, tp: 3993.61, detail: 'sell stop at 4033.61 d=8.00' }),
+    jr('2026-11-10T16:45:30', 'CANCEL', 'NY', { side: 'SELL', price: 4033.61, detail: 'volume 0.15 -> 0.20' }),
+    jr('2026-11-10T16:45:31', 'ORDER', 'NY', { side: 'SELL', lots: 0.2, price: 4033.61, sl: 4041.61, tp: 3993.61, detail: 'sell stop at 4033.61 d=8.00' }),
+    jr('2026-11-10T16:55:34', 'CLOSE', 'NY', { side: 'SELL', lots: 0.2, price: 4041.43, pnl: -160, v_balance: 1543.78, detail: 'reason=SL pos=431586312' }),
+    jr('2026-11-10T17:00:00', 'ORDER', 'NY', { side: 'SELL', lots: 0.3, price: 4033.61, sl: 4041.61, tp: 3993.61, step: 1, detail: 'sell stop at 4033.61 d=8.00 (attempt 2 of 4)' }),
+    jr('2026-11-10T18:21:16', 'NEAR1', 'NY', { side: 'SELL', lots: 0.3, price: 4025.8, sl: 4041.33, tp: 3993.33, detail: 'gain 7.53 = 94% of TP 8.00 (stage-1 lock ON)' }),
+    jr('2026-11-10T18:21:16', 'LOCK1', 'NY', { side: 'SELL', lots: 0.3, price: 4033.33, sl: 4026.69, tp: 3993.33, detail: 'gain 7.53 >= 85% of TP 8.00 -> SL 4026.69' }),
+    jr('2026-11-10T18:21:18', 'CLOSE', 'NY', { side: 'SELL', lots: 0.3, price: 4025.98, pnl: 220.5, v_balance: 1764.28, detail: 'reason=LOCK pos=431625774' }),
+    jr('2026-11-11T16:45:00', 'ORDER', 'NY', { side: 'BUY', lots: 0.2, price: 4100.5, sl: 4092.5, tp: 4108.5, detail: 'buy stop at 4100.50 d=8.00' }),
+    jr('2026-11-11T16:46:00', 'CANCEL', 'NY', { side: 'BUY', price: 4100.5, detail: 'order no longer wanted' }),
+    jr('2026-11-12T16:45:00', 'ORDER', 'NY', { side: 'BUY', lots: 0.2, price: 4110.0, sl: 4102.0, tp: 4118.0, detail: 'buy stop at 4110.00 d=8.00' }),
+  ];
+}
+
+test('pairTrades: NY starts at its stop ORDER, the same in the function and docs/js/journal.js', () => {
+  const rows = nyOrderJournal();
+  const mine = fn.prepareRows(structuredClone(rows), OFFSET), web = webJournal.prepareRows(structuredClone(rows), OFFSET);
+  const status = { positions: [{ open: true, module: 'NY', open_time: '2026.11.12 17:20:05', open_price: 4110.12 }, { open: false, module: 'C5G' }] };
+  assert.deepEqual(fn.openNowOf(status, OFFSET), webJournal.openNowOf(status, OFFSET));
+  for (const opts of [undefined, { openNow: fn.openNowOf(status, OFFSET) }]) {
+    const tm = fn.pairTrades(mine, opts), tw = webJournal.pairTrades(web, opts);
+    assert.deepEqual(tm, tw);
+  }
+  const closed = fn.pairTrades(mine);
+  assert.equal(closed.length, 2, 'two closed NY trades, the cancelled and the pending order are none');
+  const [sl, lock] = closed;
+  assert.equal(sl.key, 'NY|2026-11-10 16:45:31');
+  assert.equal(sl.lots, 0.2);
+  assert.equal(sl.openPrice, 4033.43, 'entry from the P&L: 4041.43 - 160 / 20');
+  assert.ok(sl.openApprox && sl.viaOrder);
+  assert.equal(lock.key, 'NY|2026-11-10 17:00:00');
+  assert.equal(lock.openPrice, 4033.33, 'entry from the LOCK1 row');
+  assert.equal(lock.step, 1);
+  assert.equal(lock.lockSteps.length, 1);
+  const withNow = fn.pairTrades(mine, { openNow: fn.openNowOf(status, OFFSET) });
+  const live = withNow.find((t) => t.open);
+  assert.equal(live.key, 'NY|2026-11-12 16:45:00');
+  assert.equal(live.openPrice, 4110.12);
+  assert.equal(live.openApprox, false);
+  assert.equal(live.openUtc, Date.UTC(2026, 10, 12, 17, 20, 5) - OFFSET * 60000);
+});
+
 test('strategyHealth / binomCdf / flowTotals match docs/js/analytics.js, with every status reached', () => {
   const rows = [...manyCloses('A_new', 22, 2), ...manyCloses('NY', 20, 2, { win: 18 }), ...manyCloses('C5G', 25, 10), ...manyCloses('ASIA16', 3, 1, { lots: 0.01 }), ...manyCloses('C5G', 5, 1).map((r) => ({ ...r, tag: 'X9' }))];
   const toTrades = (prepared) => prepared.map((r) => ({ module: r.tag, open: false, closeUtc: r.utc, lots: r.lots, pnl: r.pnl ?? 0 }));
