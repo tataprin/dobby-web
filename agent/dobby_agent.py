@@ -37,6 +37,7 @@ import os
 import re
 import socket
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -45,7 +46,7 @@ try:
 except ImportError:  # only the real HTTP transport needs it; the tests inject a fake transport
     requests = None
 
-AGENT_VERSION = "1.2.1"
+AGENT_VERSION = "1.3.0"
 
 LOG = logging.getLogger("dobby_agent")
 LOG.addHandler(logging.NullHandler())
@@ -98,6 +99,17 @@ NEWS_WEEK_OVER_REFRESH_S = 2 * 3600 # the cached week is over: look for the new 
 NEWS_TIMEOUT_S = 15
 NEWS_MAX_BYTES = 2 * 1024 * 1024
 NEWS_REPORT_MAX = 60
+# SPEC 10.6 shadow AI: while a Dobby trade is open, ask the Edge Function `shadow` what Claude would do (log only)
+SHADOW_PATH = "/functions/v1/shadow"
+SHADOW_LOG_NAME = "shadow_decisions.jsonl"
+SHADOW_INTERVAL_S = 300             # until the function answers with its own next_after_s
+SHADOW_TIMEOUT_S = 75
+SHADOW_TOKEN_LEFT_S = 150           # the call uses the current access token only when it has this long left
+SHADOW_BARS = 32                    # 8 h of M15 bars in the snapshot
+SHADOW_JOURNAL_ROWS = 12
+SHADOW_PAUSE_S = {"shadow_disabled": 1800, "ai_not_configured": 1800, "shadow_budget": 3600, "not_approved": 3600,
+                  "bot_not_found": 3600}
+SHADOW_RETRY_S = 120                # network error / 5xx
 AUTO_HORIZON_S = 7 * 86400          # automatic blackouts: the next 7 days
 THAI_OFFSET_S = 7 * 3600            # schedule windows are Thai time (UTC+7, no DST)
 AUTO_NEWS_DEFAULTS = {"before_min": 30, "after_min": 60, "currencies": ["USD"], "impact": ["High"]}
@@ -2245,6 +2257,224 @@ class CommonLock(object):
 # ---------------------------------------------------------------------------------------------------------------------
 # The agent loop (SPEC 3.4)
 # ---------------------------------------------------------------------------------------------------------------------
+def shadow_bar_rows(text, offset_min, keep=SHADOW_BARS):
+    """SPEC 10.6: the last `keep` M15 bars of dobby2_bars.csv with the EA's indicators, for the shadow snapshot.
+    Columns: 0 bar_time (server), 2 close, 3 rsi, 4 atr, 6 h4_close, 7 h4_ema, 9 trend, 14 vwap (newer EA rows)."""
+    if text is None or offset_min is None:
+        return []
+    dedup = {}
+    for line in text.splitlines()[1:]:
+        p = line.split(",")
+        if len(p) < 10:
+            continue
+        dt = parse_server_dt(p[0])
+        close = to_num(p[2])
+        if dt is None or close is None or close <= 0:
+            continue
+        t = naive_to_epoch(dt) - int(offset_min) * 60
+        vwap = to_num(p[14]) if len(p) > 14 else None
+        dedup[t] = {"t_utc": iso_z(t), "close": round(close, 2), "rsi": to_num(p[3]), "atr": to_num(p[4]),
+                    "h4_close": to_num(p[6]), "h4_ema": to_num(p[7]), "trend": to_num(p[9]),
+                    "vwap": round(vwap, 2) if vwap is not None and vwap > 0 else None}
+    return [dedup[k] for k in sorted(dedup)][-keep:]
+
+
+def shadow_post_http(url, headers, body, timeout):
+    """One POST with its own requests session (the shadow thread never shares the main loop's session).
+    Returns (status, parsed JSON or None)."""
+    if requests is None:
+        raise NetworkError("the 'requests' package is missing")
+    try:
+        r = requests.post(url, headers=headers, json=body, timeout=timeout)
+    except requests.RequestException as e:
+        raise NetworkError(redact("%s: %s" % (type(e).__name__, e)))
+    try:
+        data = r.json()
+    except ValueError:
+        data = None
+    return r.status_code, data
+
+
+class ShadowWatcher(object):
+    """SPEC 10.6 shadow AI forward test. While the EA reports an open Dobby position, post a snapshot of it to the
+    Edge Function `shadow` every next_after_s seconds (default 5 min) and append the answer to shadow_decisions.jsonl.
+    It never writes an EA file and never changes the bot: the answers are only logged (on the website and locally).
+    The call runs in a background thread with the access token the main loop already holds (the thread never
+    refreshes the token, so the refresh-token rotation stays in one place). Never raises."""
+
+    def __init__(self, agent, post=None, threaded=True, clock=time.time):
+        self.agent = agent
+        self.post = post or shadow_post_http
+        self.threaded = threaded
+        self.clock = clock
+        self.log_path = os.path.join(agent.agent_dir, SHADOW_LOG_NAME)
+        self.next_at = {}            # ticket -> epoch of the next question
+        self.busy = set()            # tickets with a call in flight
+        self.paused_until = 0.0
+        self.pause_reason = ""
+        self.journal = []            # recent journal rows (parsed), newest last
+        self.calls = 0
+        self.last_at = None
+        self.last_error = ""
+        self.lock = threading.Lock()
+
+    def enabled(self):
+        return bool(self.agent.config.get("shadow", True)) and not self.agent.dry_run
+
+    def feed_journal(self, rows):
+        if rows:
+            self.journal = (self.journal + [r for r in rows if isinstance(r, dict)])[-200:]
+
+    def open_positions(self, status):
+        out = []
+        for p in (status or {}).get("positions") or []:
+            if isinstance(p, dict) and p.get("open") is True and to_num(p.get("ticket")):
+                out.append(p)
+        return out
+
+    def snapshot(self, status, pos, now):
+        st = status or {}
+        mod = pos.get("module")
+        off, _ = self.agent.effective_offset()
+        try:
+            bars = shadow_bar_rows(read_text(self.agent.bars_path, sleep=self.agent.sleep), off)
+        except Exception:
+            bars = []
+        events = []
+        for e in self.agent.news.events:
+            t = parse_utc(e.get("ts_utc"))
+            if t is not None and now - 2 * 3600 <= t <= now + 6 * 3600 and e.get("currency") == "USD" and \
+                    e.get("impact") in ("High", "Medium"):
+                events.append(dict((k, e.get(k)) for k in ("title", "ts_utc", "impact", "forecast", "previous")))
+        jr = [dict((k, r.get(k)) for k in ("ts_server", "event", "tag", "side", "lots", "price", "sl", "tp", "pnl",
+                                           "detail"))
+              for r in self.journal if r.get("tag") == mod][-SHADOW_JOURNAL_ROWS:]
+        modstats = [m for m in st.get("modules") or [] if isinstance(m, dict) and m.get("module") == mod]
+        opts = st.get("options") or {}
+        snap = {
+            "now_utc": iso_z(now),
+            "server_time": st.get("server_time"),
+            "server_utc_offset_min": off,
+            "position": dict((k, v) for k, v in pos.items() if k != "open"),
+            "market": st.get("market"),
+            "last_bar": st.get("last_bar"),
+            "bars_m15": bars,
+            "day": dict((k, (st.get("virtual") or {}).get(k)) for k in ("day", "day_start", "day_pnl", "step",
+                                                                       "day_cap_hit", "balance")),
+            "module_today": modstats[0] if modstats else None,
+            "rules": {"params": st.get("params"), "lock": opts.get("lock"), "lock1": opts.get("lock1"),
+                      "daily_cap_pct": (st.get("params") or {}).get("daily_cap_pct")},
+            "news_usd": events,
+            "journal_this_module": jr,
+        }
+        if mod == "NY":
+            snap["ny"] = st.get("ny")
+        return snap
+
+    def step(self, status, now):
+        """Called by the main loop after a successful login. Starts at most one call per open trade."""
+        try:
+            self._step(status, now)
+        except Exception as e:  # a shadow bug must never disturb the bot loop
+            LOG.warning("shadow AI step failed: %s", redact(str(e))[:200])
+
+    def _step(self, status, now):
+        if not self.enabled():
+            return
+        positions = self.open_positions(status)
+        open_tickets = set(int(to_num(p["ticket"])) for p in positions)
+        with self.lock:
+            for t in list(self.next_at):
+                if t not in open_tickets and t not in self.busy:
+                    del self.next_at[t]
+        if not positions or now < self.paused_until:
+            return
+        client = self.agent.client
+        token = getattr(client, "access_token", None)
+        if not token or getattr(client, "expires_at", 0) - now < SHADOW_TOKEN_LEFT_S:
+            return
+        bot_id = self.agent.config.get("bot_id")
+        if not bot_id:
+            return
+        # the news calendar is also used by the snapshot (refresh is rate-limited and never raises)
+        self.agent.news.refresh(now)
+        for p in positions:
+            ticket = int(to_num(p["ticket"]))
+            with self.lock:
+                if ticket in self.busy or now < self.next_at.get(ticket, 0):
+                    continue
+                self.busy.add(ticket)
+                self.next_at[ticket] = now + SHADOW_INTERVAL_S
+            body = {"bot_id": bot_id, "snapshot": self.snapshot(status, p, now)}
+            headers = {"apikey": client.key, "Authorization": "Bearer " + token, "Content-Type": "application/json",
+                       "Accept": "application/json"}
+            args = (client.url + SHADOW_PATH, headers, body, ticket, p)
+            if self.threaded:
+                threading.Thread(target=self._call, args=args, name="shadow-%d" % ticket, daemon=True).start()
+            else:
+                self._call(*args)
+
+    def _call(self, url, headers, body, ticket, pos):
+        started = self.clock()
+        entry = {"ts_utc": iso_z(started), "ticket": ticket, "module": pos.get("module"), "side": pos.get("side"),
+                 "lots": pos.get("lots"), "open_price": pos.get("open_price"), "sl": pos.get("sl"), "tp": pos.get("tp"),
+                 "profit": pos.get("profit"), "comment": pos.get("comment"),
+                 "server_time": body["snapshot"].get("server_time"),
+                 "bid": (body["snapshot"].get("market") or {}).get("bid"),
+                 "ask": (body["snapshot"].get("market") or {}).get("ask")}
+        nxt = SHADOW_RETRY_S
+        try:
+            status, data = self.post(url, headers, body, SHADOW_TIMEOUT_S)
+            data = data if isinstance(data, dict) else {}
+            entry["http"] = status
+            if status == 200 and data.get("ok"):
+                d = data.get("decision") or {}
+                entry.update({"id": data.get("id"), "action": d.get("action"), "new_sl": d.get("new_sl"),
+                              "confidence": d.get("confidence"), "reason": d.get("reason"), "valid": data.get("valid"),
+                              "model": data.get("model"), "cost_usd": data.get("cost_usd")})
+                nxt = to_num(data.get("next_after_s")) or SHADOW_INTERVAL_S
+                self.last_error = ""
+                LOG.info("shadow AI: %s #%s -> %s (%s%%) %s", pos.get("module"), ticket, d.get("action"),
+                         d.get("confidence"), clean_note(d.get("reason"), 120))
+            else:
+                code = str(data.get("error") or ("http_%d" % status))
+                entry.update({"error": code, "message": clean_note(data.get("message"), 200), "id": data.get("id")})
+                if code in SHADOW_PAUSE_S:
+                    with self.lock:
+                        self.paused_until = self.clock() + SHADOW_PAUSE_S[code]
+                        self.pause_reason = code
+                    nxt = SHADOW_PAUSE_S[code]
+                elif code == "shadow_too_soon":
+                    nxt = 60
+                elif code == "ai_failed":
+                    nxt = to_num(data.get("next_after_s")) or SHADOW_INTERVAL_S
+                self.last_error = code
+                LOG.info("shadow AI: %s #%s not answered (%s)", pos.get("module"), ticket, code)
+        except Exception as e:  # network or anything else: try again later
+            entry["error"] = "network"
+            entry["message"] = clean_note(redact(str(e)), 200)
+            self.last_error = "network"
+        with self.lock:
+            self.busy.discard(ticket)
+            if ticket in self.next_at:
+                self.next_at[ticket] = started + nxt
+            self.calls += 1
+            self.last_at = started
+            try:
+                with open(self.log_path, "ab") as f:
+                    f.write((json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
+            except OSError as e:
+                LOG.warning("cannot write %s: %s", SHADOW_LOG_NAME, e)
+
+    def state(self):
+        if not self.enabled():
+            return None
+        with self.lock:
+            return {"calls": self.calls, "last_at": iso_z(self.last_at) if self.last_at else None,
+                    "last_error": self.last_error or None,
+                    "paused": self.pause_reason if self.clock() < self.paused_until else None}
+
+
 class Agent(object):
     def __init__(self, agent_dir, common_dir, client, telegram, clock=time.time, sleep=time.sleep,
                  local_now=datetime.now, dry_run=False, news_transport=None):
@@ -2292,6 +2522,7 @@ class Agent(object):
         if client is not None:
             client.on_refresh_token = self._save_refresh_token
             self._known_tokens.add(client.refresh_token)
+        self.shadow = ShadowWatcher(self, clock=clock)   # SPEC 10.6 (log only, never touches the EA)
 
     # -- helpers
     def bot_name(self):
@@ -2425,6 +2656,7 @@ class Agent(object):
         j = self.state["journal"]
         rows, ends, end_off, reset = read_journal_chunk(self.journal_path, j["offset"], sleep=self.sleep)
         self._journal_local(rows, ends, end_off, reset)
+        self.shadow.feed_journal(rows)
         try:
             if not self.config.get("bot_id"):
                 raise AuthError("this PC is not registered: run `register`")
@@ -2436,6 +2668,7 @@ class Agent(object):
             self._apply_control(row, now)
             self._upload_bars(now)              # SPEC 9.1 (after the control step: never delays it)
             self._cash_flows(status, now)       # SPEC 9.2
+            self.shadow.step(status, now)       # SPEC 10.6 (background call, log only; never raises)
             self.last_error = self.cycle_errors[-1] if self.cycle_errors else ""
             self._update_bot_row(status, now)
             self._ok()
@@ -2879,6 +3112,9 @@ class Agent(object):
         bars = self.recent_bars()
         if bars:
             out["bars"] = bars
+        sh = self.shadow.state()            # SPEC 10.6
+        if sh:
+            out["shadow"] = sh
         # SPEC 9.3: automatic blackouts (keys only while auto_news / schedule is on)
         if self.news_cfg or self.sched_cfg:
             out["auto_blackouts"] = [dict(w) for w in self.auto_windows]

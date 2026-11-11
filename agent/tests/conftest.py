@@ -52,6 +52,11 @@ def _guards(monkeypatch, tmp_path):
         raise AssertionError("a real HTTP transport was created in a test")
 
     monkeypatch.setattr(da.HttpTransport, "__init__", no_real_http)
+
+    def no_real_shadow_post(*a, **k):
+        raise AssertionError("a real shadow AI POST was attempted in a test")
+
+    monkeypatch.setattr(da, "shadow_post_http", no_real_shadow_post)
     try:
         import dobby_app_core as core
     except ImportError:  # pragma: no cover

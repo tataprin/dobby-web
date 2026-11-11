@@ -233,6 +233,50 @@ create table if not exists public.ai_usage (
 create index if not exists ai_usage_user_ts_idx on public.ai_usage (user_id, ts desc);
 create index if not exists ai_usage_ts_idx on public.ai_usage (ts);
 
+-- Shadow AI (SPEC 10.6, 2026-11-11): while a bot trade is open, the Dobby app asks the Edge Function `shadow` every
+-- few minutes what Claude would do with it (hold / close / tighten the stop / reverse). The answer is ONLY recorded
+-- here for a forward test; nothing is ever sent to the EA. Off by default; the admin turns it on and sets its own
+-- model, monthly budget and interval (separate from the assistant's budget). Rows are written only by the
+-- service_role RPC shadow_record; the owner (and the admin) read them.
+alter table public.ai_config add column if not exists shadow_enabled boolean not null default false;
+alter table public.ai_config add column if not exists shadow_model text not null default 'claude-sonnet-5-5'
+  check (shadow_model in ('claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'));
+alter table public.ai_config add column if not exists shadow_budget_usd numeric not null default 15
+  check (shadow_budget_usd between 0 and 10000);
+alter table public.ai_config add column if not exists shadow_interval_s int not null default 300
+  check (shadow_interval_s between 60 and 3600);
+
+create table if not exists public.shadow_decisions (
+  id            bigserial primary key,
+  bot_id        uuid not null references public.bots(id) on delete cascade,
+  user_id       uuid not null references public.profiles(id) on delete cascade,
+  ts            timestamptz not null default now(),
+  ticket        bigint not null check (ticket > 0),
+  module        text not null check (char_length(module) between 1 and 24),
+  side          text not null check (side in ('BUY', 'SELL')),
+  lots          numeric,
+  open_price    numeric,
+  sl            numeric,
+  tp            numeric,
+  bid           numeric,
+  ask           numeric,
+  profit        numeric,
+  server_time   text check (server_time is null or char_length(server_time) <= 24),
+  action        text not null check (action in ('hold', 'close', 'tighten', 'reverse', 'error')),
+  new_sl        numeric,
+  confidence    int check (confidence is null or confidence between 0 and 100),
+  reason        text not null default '' check (char_length(reason) <= 2000),
+  valid         boolean not null default true,     -- false: e.g. a tighten whose stop is not between SL and price
+  snapshot      jsonb not null default '{}'::jsonb check (jsonb_typeof(snapshot) = 'object'),
+  model         text,
+  input_tokens  int not null default 0 check (input_tokens >= 0),
+  output_tokens int not null default 0 check (output_tokens >= 0),
+  cost_usd      numeric(12, 6) not null default 0 check (cost_usd >= 0)
+);
+create index if not exists shadow_decisions_bot_ts_idx on public.shadow_decisions (bot_id, ts desc);
+create index if not exists shadow_decisions_ticket_idx on public.shadow_decisions (bot_id, ticket, ts);
+create index if not exists shadow_decisions_ts_idx on public.shadow_decisions (ts);
+
 -- Push notifications were removed (2026-11-08, site owner's decision). Drop what a run of the 2026-11-07 version of
 -- this file created; nothing else used these objects.
 drop function if exists public.register_push_subscription(text, text, text, text, text[]);
@@ -256,6 +300,7 @@ alter table public.ai_config          enable row level security;
 alter table public.ai_conversations   enable row level security;
 alter table public.ai_messages        enable row level security;
 alter table public.ai_usage           enable row level security;
+alter table public.shadow_decisions   enable row level security;
 
 
 -- -----------------------------------------------------------------------------------------------------
@@ -731,6 +776,76 @@ begin
 end;
 $$;
 
+-- SPEC 10.6: this Thai calendar month's cost of every shadow decision (the shadow AI has its own budget).
+create or replace function public.shadow_month_cost()
+returns numeric
+language sql stable set search_path = public
+as $$
+  select coalesce(sum(d.cost_usd), 0) from public.shadow_decisions d
+  where d.ts >= (date_trunc('month', now() at time zone 'Asia/Bangkok') at time zone 'Asia/Bangkok');
+$$;
+
+-- SPEC 10.6: service_role ONLY (the Edge Function `shadow`). Checks in this order: not_approved, bot_not_found
+-- (the bot must be the user's own), shadow_disabled, shadow_budget, shadow_too_soon (one question per open trade per
+-- interval, 20 s grace); returns the model and the interval. The ai_config row is locked so parallel calls queue.
+create or replace function public.shadow_start(p_user uuid, p_bot uuid, p_ticket bigint)
+returns jsonb
+language plpgsql volatile security definer set search_path = public
+as $$
+declare
+  v_prof public.profiles%rowtype;
+  v_cfg  public.ai_config%rowtype;
+  v_last timestamptz;
+begin
+  select * into v_prof from public.profiles where id = p_user;
+  if not found or not v_prof.approved or v_prof.disabled then
+    raise exception 'not_approved';
+  end if;
+  if not exists (select 1 from public.bots b where b.id = p_bot and b.owner = p_user) then
+    raise exception 'bot_not_found';
+  end if;
+  select * into v_cfg from public.ai_config where id = 1 for update;
+  if not found or not v_cfg.shadow_enabled then
+    raise exception 'shadow_disabled';
+  end if;
+  if public.shadow_month_cost() >= v_cfg.shadow_budget_usd then
+    raise exception 'shadow_budget';
+  end if;
+  select max(d.ts) into v_last from public.shadow_decisions d where d.bot_id = p_bot and d.ticket = p_ticket;
+  if v_last is not null and v_last > now() - make_interval(secs => greatest(v_cfg.shadow_interval_s - 20, 30)) then
+    raise exception 'shadow_too_soon';
+  end if;
+  return jsonb_build_object('model', v_cfg.shadow_model, 'interval_s', v_cfg.shadow_interval_s);
+end;
+$$;
+
+-- SPEC 10.6: service_role ONLY. Stores one decision (p_row = the columns of shadow_decisions except id / user_id /
+-- ts); bot ownership is checked again. Returns the new id.
+create or replace function public.shadow_record(p_user uuid, p_bot uuid, p_row jsonb)
+returns bigint
+language plpgsql volatile security definer set search_path = public
+as $$
+declare
+  v_id bigint;
+begin
+  if not exists (select 1 from public.bots b where b.id = p_bot and b.owner = p_user) then
+    raise exception 'bot_not_found';
+  end if;
+  insert into public.shadow_decisions (bot_id, user_id, ticket, module, side, lots, open_price, sl, tp, bid, ask, profit,
+                                       server_time, action, new_sl, confidence, reason, valid, snapshot, model,
+                                       input_tokens, output_tokens, cost_usd)
+  values (p_bot, p_user, (p_row->>'ticket')::bigint, p_row->>'module', p_row->>'side',
+          (p_row->>'lots')::numeric, (p_row->>'open_price')::numeric, (p_row->>'sl')::numeric, (p_row->>'tp')::numeric,
+          (p_row->>'bid')::numeric, (p_row->>'ask')::numeric, (p_row->>'profit')::numeric, p_row->>'server_time',
+          p_row->>'action', (p_row->>'new_sl')::numeric, (p_row->>'confidence')::int, coalesce(p_row->>'reason', ''),
+          coalesce((p_row->>'valid')::boolean, true), coalesce(p_row->'snapshot', '{}'::jsonb), p_row->>'model',
+          coalesce((p_row->>'input_tokens')::int, 0), coalesce((p_row->>'output_tokens')::int, 0),
+          coalesce((p_row->>'cost_usd')::numeric, 0))
+  returning id into v_id;
+  return v_id;
+end;
+$$;
+
 
 -- -----------------------------------------------------------------------------------------------------
 -- 4. Trigger functions and triggers (SPEC 2.4)
@@ -1111,11 +1226,12 @@ create trigger ai_messages_touch_conversation
 revoke all on table public.profiles, public.invites, public.bots, public.bot_status, public.journal,
                     public.bot_control, public.presets, public.audit, public.news_events,
                     public.bars, public.cash_flows, public.trade_notes, public.rounds,
-                    public.ai_config, public.ai_conversations, public.ai_messages, public.ai_usage
+                    public.ai_config, public.ai_conversations, public.ai_messages, public.ai_usage,
+                    public.shadow_decisions
   from anon, authenticated;
 revoke all on sequence public.journal_id_seq, public.audit_id_seq, public.news_events_id_seq,
                        public.cash_flows_id_seq, public.ai_messages_id_seq, public.ai_usage_id_seq,
-                       public.rounds_id_seq
+                       public.rounds_id_seq, public.shadow_decisions_id_seq
   from anon, authenticated;
 
 grant select                         on table public.profiles, public.invites, public.audit to authenticated;
@@ -1130,6 +1246,7 @@ grant select, update                 on table public.ai_config to authenticated;
 grant select, insert, delete         on table public.ai_conversations, public.ai_messages to authenticated;
 grant update (title)                 on table public.ai_conversations to authenticated;  -- only the title changes
 grant select                         on table public.ai_usage to authenticated;     -- writes: service_role RPCs only
+grant select                         on table public.shadow_decisions to authenticated;  -- writes: shadow_record only
 grant usage, select on sequence public.journal_id_seq, public.news_events_id_seq, public.cash_flows_id_seq,
                                 public.ai_messages_id_seq, public.rounds_id_seq
   to authenticated;
@@ -1169,6 +1286,12 @@ revoke execute on function public.ai_finish_turn(bigint, text, int, int, int, in
   from public, anon, authenticated;
 grant execute on function public.ai_start_turn(uuid, uuid)                     to service_role;
 grant execute on function public.ai_finish_turn(bigint, text, int, int, int, int, numeric, uuid) to service_role;
+-- shadow AI bookkeeping (SPEC 10.6): service_role ONLY
+revoke execute on function public.shadow_start(uuid, uuid, bigint)             from public, anon, authenticated;
+revoke execute on function public.shadow_record(uuid, uuid, jsonb)             from public, anon, authenticated;
+revoke execute on function public.shadow_month_cost()                          from public, anon, authenticated;
+grant execute on function public.shadow_start(uuid, uuid, bigint)              to service_role;
+grant execute on function public.shadow_record(uuid, uuid, jsonb)              to service_role;
 
 -- internal functions: nobody but the owner (triggers fire regardless of EXECUTE rights)
 revoke execute on function public.gen_invite_code()        from public, anon, authenticated;
@@ -1436,6 +1559,12 @@ create policy ai_messages_delete on public.ai_messages for delete to authenticat
 drop policy if exists ai_usage_select on public.ai_usage;
 create policy ai_usage_select on public.ai_usage for select to authenticated
   using ((user_id = (select auth.uid()) and (select public.is_approved())) or (select public.is_admin()));
+
+-- shadow_decisions (SPEC 10.6): the bot owner's rows; the admin reads every row (cost on the Users page).
+-- No client writes (no grant): only shadow_record (service_role) inserts.
+drop policy if exists shadow_decisions_select on public.shadow_decisions;
+create policy shadow_decisions_select on public.shadow_decisions for select to authenticated
+  using (((select public.is_approved()) and (select public.owns_bot(bot_id))) or (select public.is_admin()));
 
 
 -- -----------------------------------------------------------------------------------------------------

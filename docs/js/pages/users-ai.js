@@ -108,9 +108,49 @@ export async function renderAi(root, ctx) {
   }
   drawUsage();
 
+  // ---------------- shadow AI (SPEC 10.6): its own switch, model, budget and interval
+  const hasShadow = 'shadow_enabled' in cfg;
+  const shOn = h('input', { type: 'checkbox', class: 'toggle', role: 'switch', checked: !!cfg.shadow_enabled, 'aria-label': 'เปิด AI เงา' });
+  const shModel = h('select', { class: 'input select' }, MODELS.map((m) => h('option', { value: m.id, selected: m.id === (cfg.shadow_model || 'claude-sonnet-5-5') }, m.label)));
+  const shBudget = h('input', { class: 'input', type: 'number', min: '0', max: '10000', step: '1', inputmode: 'decimal', value: String(Number(cfg.shadow_budget_usd ?? 15)) });
+  const shEvery = h('input', { class: 'input', type: 'number', min: '1', max: '60', step: '1', inputmode: 'numeric', value: String(Math.round(Number(cfg.shadow_interval_s ?? 300) / 60)) });
+  const shErr = h('p', { class: 'field-error', role: 'alert' });
+  const shSave = h('button', { class: 'btn primary', type: 'submit' }, icon('save'), 'บันทึก');
+  const shCost = h('p', { class: 'muted small' });
+  ctx.api.shadowMonthCost().then((c) => { shCost.textContent = `ใช้ไปเดือนนี้ ${usd(c)}`; }).catch(() => {});
+  const shForm = h('form', {
+    class: 'stack ai-form',
+    onsubmit: async (e) => {
+      e.preventDefault();
+      shErr.textContent = '';
+      const mins = Number(shEvery.value), budget = Number(shBudget.value);
+      if (!(Number.isInteger(mins) && mins >= 1 && mins <= 60)) { shErr.textContent = 'ถามทุกกี่นาที ต้องเป็นจำนวนเต็ม 1 ถึง 60'; return; }
+      if (!(budget >= 0 && budget <= 10000)) { shErr.textContent = 'งบต่อเดือนต้องอยู่ระหว่าง 0 ถึง 10,000 USD'; return; }
+      busy(shSave, true, 'กำลังบันทึก…');
+      try {
+        cfg = await ctx.api.updateAiConfig({ shadow_enabled: shOn.checked, shadow_model: shModel.value, shadow_budget_usd: budget, shadow_interval_s: mins * 60 });
+        toast(cfg.shadow_enabled ? 'เปิด AI เงาแล้ว' : 'ปิด AI เงาแล้ว', 'good');
+      } catch (ex) { shErr.textContent = errText(ex); }
+      busy(shSave, false);
+    },
+  },
+  h('div', { class: 'set-row ai-switch' }, h('div', { class: 'set-row-main' },
+    h('div', { class: 'set-copy' }, h('p', { class: 'set-label' }, 'เปิด AI เงา'),
+      h('p', { class: 'hint' }, 'ทุกครั้งที่บอทของสมาชิกมีไม้เปิด แอปที่เครื่องจะส่งไม้ให้ AI ดูแล้วบันทึกว่าจะทำอะไร บอทไม่ได้ทำตาม')), shOn)),
+  h('div', { class: 'grid-2 ai-fields' },
+    field('รุ่น Claude ของ AI เงา', shModel, { hint: 'Sonnet พอสำหรับงานนี้ ราคาราวครึ่งหนึ่งของ Opus' }),
+    field('ถามทุกกี่นาที', shEvery, { hint: 'ต่อไม้ที่เปิดอยู่ 1 ไม้' }),
+    field('งบ AI เงาต่อเดือน (USD)', shBudget, { hint: 'แยกจากงบผู้ช่วย ครบงบแล้วหยุดถามจนถึงต้นเดือนหน้า' })),
+  shCost, shErr,
+  h('div', { class: 'ai-actions' }, shSave));
+  const shadowPanel = hasShadow
+    ? panel('AI เงา (ทดสอบไปข้างหน้า)', { sub: 'ใช้ API key เดียวกับผู้ช่วย ต้องสร้างฟังก์ชัน shadow ใน Supabase และสมาชิกต้องใช้แอป Dobby 1.3.0 ขึ้นไป' }, shForm)
+    : callout('warn', 'ฐานข้อมูลยังไม่มีส่วนของ AI เงา', h('p', null, 'รัน supabase/schema.sql รุ่นล่าสุด แล้วเปิดหน้านี้อีกครั้ง'));
+
   mount(box,
     panel('การตั้งค่าผู้ช่วย AI', { sub: 'ทุกคนที่ได้รับอนุมัติถามผู้ช่วยได้ ใช้ API key ของคุณ ผู้ช่วยอ่านได้เฉพาะข้อมูลที่ผู้ถามมีสิทธิ์เห็น และสั่งงานบอทเองไม่ได้' }, form),
     usageBox,
+    shadowPanel,
     callout('info', 'ถ้าผู้ช่วยยังตอบไม่ได้',
       h('p', null, 'ต้องสร้างฟังก์ชัน chat ใน Supabase และใส่ ANTHROPIC_API_KEY ครั้งเดียว ', h('a', { href: SETUP_URL, target: '_blank', rel: 'noopener' }, 'ดูขั้นตอน'))));
 }

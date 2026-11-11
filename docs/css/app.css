@@ -1837,3 +1837,8 @@ textarea.input.chat-input { flex: 1 1 auto; min-height: var(--h-input); max-heig
 .runner-explain { max-width: 72ch; }
 .runner-adv > summary { min-height: 44px; display: flex; align-items: center; color: var(--ink); font-weight: 600; cursor: pointer; }
 .runner-adv .adv-list { display: grid; }
+
+/* AI เงา (SPEC 10.6) */
+.shadow-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 10px; }
+.shadow-reason { min-width: 16rem; max-width: 34rem; white-space: normal; }
+.shadow-count { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; }

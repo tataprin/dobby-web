@@ -7,6 +7,7 @@ Files:
 | `schema.sql` | the whole database: tables, RLS, RPCs, triggers incl. the live gate, realtime, storage bucket, news seed, bootstrap admin invite. One file, safe to run again. |
 | `seed_news.sql` | tier-1 US news (NFP, CPI, FOMC decision + press conference) from 2026-11-01, in UTC. Already included at the end of `schema.sql`. |
 | `functions/chat/index.ts` | the Edge Function `chat` (SPEC 10.3): the AI assistant. Pasted once into the dashboard; needs the secret `ANTHROPIC_API_KEY`. |
+| `functions/shadow/index.ts` | the Edge Function `shadow` (SPEC 10.6): the shadow AI forward test (log only). Pasted once, Verify JWT off, same secret. Tests: `cd functions/shadow/test && npm test` (needs `npm install` in `functions/chat/test` once). |
 | `tests/` | PGlite (Postgres in WebAssembly) tests with stubbed Supabase `auth` / `storage` / realtime. `npm test`. |
 
 ---
@@ -56,6 +57,16 @@ Files:
 - 503 `ai_not_configured` = ยังไม่ได้ใส่ `ANTHROPIC_API_KEY` (ขั้น 2)
 - ตอบ 401 ทุกครั้ง = ยังไม่ได้ปิด Verify JWT (ขั้น 1 ข้อ 4)
 - `ai_failed` พร้อมข้อความ authentication = key ผิดหรือถูกยกเลิก สร้างใหม่แล้วใส่แทน
+
+### AI เงา (อัปเดต 2026-11-11) - ทำครั้งเดียว
+AI เงาดูไม้ที่บอทเปิดอยู่ทุก 5 นาที แล้ว**บันทึกอย่างเดียว**ว่าจะทำอะไร บอทไม่ได้ทำตาม ใช้ API key เดียวกับผู้ช่วย AI
+1. SQL Editor -> New query -> วาง `schema.sql` **ทั้งไฟล์** (ไฟล์ล่าสุด) -> Run (ยืนยัน destructive ได้ ไม่มีข้อมูลหาย)
+2. Edge Functions -> **Deploy a new function** -> **Via Editor** -> ตั้งชื่อ `shadow` -> ลบโค้ดตัวอย่าง -> วางไฟล์
+   `supabase/functions/shadow/index.ts` **ทั้งไฟล์** -> Deploy function -> เปิด function `shadow` -> **ปิด Verify JWT** -> Save
+3. เว็บ -> ผู้ใช้ -> ผู้ช่วย AI -> หัวข้อ **AI เงา** -> เปิดสวิตช์ -> บันทึก (ค่าเริ่มต้น: Sonnet 5.5 ทุก 5 นาที งบ 15 USD ต่อเดือน)
+4. ที่เครื่องที่รัน MT5 อัปเดตแอป Dobby เป็นรุ่น **1.3.0** (หน้าดาวน์โหลดแอป)
+5. ดูคำตอบได้ที่เมนู **AI เงา** ทุกครั้งที่บอทมีไม้เปิด
+ถ้าไม่มีคำตอบ: Edge Functions -> shadow -> Logs หรือดูข้อความเตือนในหน้า AI เงา
 
 **รหัส bootstrap คืออะไร:** รหัสเชิญพิเศษที่สร้างอัตโนมัติเมื่อยังไม่มีแอดมินและยังไม่มีรหัสเชิญแอดมินที่ใช้ได้
 ใครใช้รหัสนี้ก่อนจะได้สิทธิ์แอดมิน ดังนั้น **อย่าส่งให้ใคร** ใช้เองทันที ถ้าหมดอายุ (7 วัน) ให้รัน `schema.sql` ใหม่ จะได้รหัสใหม่

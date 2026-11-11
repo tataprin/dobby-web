@@ -51,7 +51,7 @@ def test_allow_list_order_kinds_and_bounds():
     assert da.REMOTE_SPEC["InpRunnerSafetyTP"] == ("float", 0.0, 10.0)
     assert da.REMOTE_SPEC["cap_reset"] == ("token", None, None)
     assert da.TOKEN_WINDOW_S == 48 * 3600 and da.V305_MIN_EA == (3, 5)
-    assert da.AGENT_VERSION == "1.2.1" and core.APP_VERSION == "1.2.2"
+    assert da.AGENT_VERSION == "1.3.0" and core.APP_VERSION == "1.3.0"
 
 
 @pytest.mark.parametrize("key,value,ok", [

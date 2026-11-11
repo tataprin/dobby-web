@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - python 2
 import dobby_agent as da
 
 APP_NAME = "Dobby App"
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.3.0"
 DEFAULT_URL = "https://rpzuzhefviydjmeggvvz.supabase.co"
 DEFAULT_KEY = "sb_publishable_208tCs0INvDHYohhl5_DGQ_ezVQkJst"   # publishable key: public by design (RLS protects data)
 WEB_URL = "https://tataprin.github.io/dobby-web/"

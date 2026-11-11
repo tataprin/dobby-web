@@ -37,10 +37,14 @@
 //   aiConfig(), updateAiConfig(patch) (admin), aiUsage(fromIso) (admin: every row; member: own),
 //   listConversations(), conversationMessages(id), deleteConversation(id),
 //   chat({conversationId, message, context}, onEvent, signal): POST functions/v1/chat, onEvent per SSE event (10.3).
+// Shadow AI (SPEC 10.6, log only): shadowDecisions(botId, {limit}) -> rows newest first (no snapshot),
+//   shadowMonthCost() -> USD of every visible row this Thai month; aiConfig / updateAiConfig carry the shadow_* settings.
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { createDemoDb, DEMO_OFFSET_MIN } from './demo.js';
 import { sleep, utcToServer } from './util.js';
 import { normalizeParams, remoteSubset, REMOTE_KEYS, RUNNER_KEYS, COMMAND_KEYS, formatValue, PARAM_BY_KEY, runnerSupported, validateCommand } from './params.js';
+
+const SHADOW_COLS = 'id,bot_id,ts,ticket,module,side,lots,open_price,sl,tp,bid,ask,profit,server_time,action,new_sl,confidence,reason,valid,model,cost_usd';
 
 export const SUPABASE_CDN = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm';
 
@@ -434,9 +438,20 @@ export class SupabaseApi {
   }
   async aiConfig() { return unwrap(await this.sb.from('ai_config').select('*').eq('id', 1).maybeSingle()); }
   async updateAiConfig(patch) {
-    const keys = ['enabled', 'member_daily_limit', 'admin_daily_limit', 'monthly_budget_usd', 'model'];
+    const keys = ['enabled', 'member_daily_limit', 'admin_daily_limit', 'monthly_budget_usd', 'model',
+      'shadow_enabled', 'shadow_model', 'shadow_budget_usd', 'shadow_interval_s'];
     const row = Object.fromEntries(Object.entries(patch || {}).filter(([k]) => keys.includes(k)));
     return unwrap(await this.sb.from('ai_config').update(row).eq('id', 1).select().single());
+  }
+  async shadowDecisions(botId, { limit = 400 } = {}) {
+    return unwrap(await this.sb.from('shadow_decisions').select(SHADOW_COLS).eq('bot_id', botId)
+      .order('ts', { ascending: false }).limit(limit));
+  }
+  async shadowMonthCost() {
+    const d = new Date(Date.now() + 7 * 3600e3);
+    const from = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) - 7 * 3600e3).toISOString();
+    const rows = unwrap(await this.sb.from('shadow_decisions').select('cost_usd').gte('ts', from).limit(20000));
+    return rows.reduce((s, r) => s + Number(r.cost_usd || 0), 0);
   }
   async aiUsage(fromIso) {
     return unwrap(await this.sb.from('ai_usage').select('user_id,ts,model,status,cost_usd,input_tokens,output_tokens')
@@ -1073,7 +1088,9 @@ export class DemoApi {
         }
       });
       this.db.ai = { convs: [], msgs: [], usage, seq: 1,
-        config: { id: 1, enabled: true, member_daily_limit: 20, admin_daily_limit: 100, monthly_budget_usd: 30, model: 'claude-opus-5-5', updated_at: new Date(now - 86400e3).toISOString(), updated_by: null } };
+        config: { id: 1, enabled: true, member_daily_limit: 20, admin_daily_limit: 100, monthly_budget_usd: 30, model: 'claude-opus-5-5',
+          shadow_enabled: true, shadow_model: 'claude-sonnet-5-5', shadow_budget_usd: 15, shadow_interval_s: 300,
+          updated_at: new Date(now - 86400e3).toISOString(), updated_by: null } };
     }
     return this.db.ai;
   }
@@ -1097,13 +1114,55 @@ export class DemoApi {
     const c = this.aiDb().config;
     const next = { ...c, ...patch };
     const int = (v, lo, hi) => Number.isInteger(Number(v)) && Number(v) >= lo && Number(v) <= hi;
+    const models = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
     if (!int(next.member_daily_limit, 0, 1000) || !int(next.admin_daily_limit, 0, 5000) || !(Number(next.monthly_budget_usd) >= 0 && Number(next.monthly_budget_usd) <= 100000)
-      || !['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'].includes(next.model)) throw new ApiError('invalid', '', 'ค่าที่ใส่อยู่นอกช่วงที่ตั้งได้');
+      || !models.includes(next.model) || !models.includes(next.shadow_model) || !int(next.shadow_interval_s, 60, 3600)
+      || !(Number(next.shadow_budget_usd) >= 0 && Number(next.shadow_budget_usd) <= 10000)) throw new ApiError('invalid', '', 'ค่าที่ใส่อยู่นอกช่วงที่ตั้งได้');
     const before = clone(c);
     Object.assign(c, { enabled: !!next.enabled, member_daily_limit: Number(next.member_daily_limit), admin_daily_limit: Number(next.admin_daily_limit),
-      monthly_budget_usd: Number(next.monthly_budget_usd), model: next.model, updated_at: new Date().toISOString(), updated_by: this.uidCur });
+      monthly_budget_usd: Number(next.monthly_budget_usd), model: next.model, shadow_enabled: !!next.shadow_enabled, shadow_model: next.shadow_model,
+      shadow_budget_usd: Number(next.shadow_budget_usd), shadow_interval_s: Number(next.shadow_interval_s), updated_at: new Date().toISOString(), updated_by: this.uidCur });
     this.audit(null, 'ai_config_update', before, clone(c));
     return clone(c);
+  }
+  // SPEC 10.6 shadow AI: a few made-up decisions on the demo bot (no AI is called in the demo)
+  shadowDb() {
+    if (!this.db.shadow) {
+      const now = Date.now(), rows = [];
+      const plan = [
+        { ticket: 900101, module: 'C5G', side: 'BUY', open: 4049.63, sl: 4043.93, tp: 4080.98, ago: 3, steps: [
+          [5, 4051.2, 'hold', null, 35, 'ราคายังอยู่เหนือ VWAP และยังไม่ถึงจุดล็อก ให้ระบบถือต่อ'],
+          [10, 4054.3, 'hold', null, 40, 'กำไรเพิ่มขึ้น แท่ง M15 ยังยกตัว ยังไม่มีเหตุให้ออกก่อน'],
+          [15, 4052.4, 'tighten', 4049.9, 58, 'ราคาย้อนลงจากจุดสูง 4,056 และ RSI ลดลง เลื่อน SL มาใกล้ทุนกันพลิกเป็นขาดทุน'],
+          [20, 4047.5, 'close', null, 62, 'ราคาหลุด VWAP และแท่ง M15 ปิดต่ำกว่าแท่งก่อนหน้า โมเมนตัมขาขึ้นหมดแล้ว']] },
+        { ticket: 900102, module: 'NY', side: 'SELL', open: 4033.33, sl: 4041.33, tp: 3993.33, ago: 27, steps: [
+          [3, 4030.1, 'hold', null, 30, 'เพิ่งทะลุกรอบ NY ลงมา แนวโน้ม H4 เป็นขาลง ให้ระบบถือต่อ'],
+          [8, 4026.4, 'hold', null, 45, 'ใกล้ถึงจุดล็อก 85 % แล้ว ปล่อยให้ตัวล็อกของบอททำงาน']] },
+      ];
+      let id = 1;
+      for (const bot of this.db.bots) {
+        for (const t of plan) {
+          const t0 = now - t.ago * 3600e3;
+          for (const [min, px, action, nsl, conf, reason] of t.steps) {
+            const pnl = Number(((t.side === 'BUY' ? px - t.open : t.open - px) * 20).toFixed(2));
+            rows.push({ id: id++, bot_id: bot.id, ts: new Date(t0 + min * 60e3).toISOString(), ticket: t.ticket, module: t.module, side: t.side, lots: 0.2,
+              open_price: t.open, sl: t.sl, tp: t.tp, bid: px, ask: Number((px + 0.16).toFixed(2)), profit: pnl, server_time: null, action, new_sl: nsl,
+              confidence: conf, reason, valid: true, model: 'claude-sonnet-5-5', cost_usd: 0.0082 });
+          }
+        }
+      }
+      this.db.shadow = rows;
+    }
+    return this.db.shadow;
+  }
+  async shadowDecisions(botId, { limit = 400 } = {}) {
+    await this.wait(80); this.readBot(botId);
+    return clone(this.shadowDb().filter((r) => r.bot_id === botId).sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, limit));
+  }
+  async shadowMonthCost() {
+    await this.wait(60); this.approvedOrThrow();
+    const mine = new Set(this.db.bots.filter((b) => this.isAdmin() || b.owner === this.uidCur).map((b) => b.id));
+    return this.shadowDb().filter((r) => mine.has(r.bot_id)).reduce((s, r) => s + Number(r.cost_usd || 0), 0);
   }
   async aiUsage(fromIso) {
     await this.wait(); this.approvedOrThrow();

@@ -1,0 +1,10 @@
+{
+  "name": "dobby-web-shadow-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Node tests for supabase/functions/shadow/index.ts with a fake fetch (GoTrue + PostgREST RPCs) and a fake Anthropic client",
+  "type": "module",
+  "scripts": {
+    "test": "node --import ./register.mjs --test --test-concurrency=1"
+  }
+}

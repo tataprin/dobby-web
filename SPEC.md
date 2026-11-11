@@ -776,6 +776,38 @@ within 48 h of now and for an EA v3.05 bot; the website does not load it as a se
 where the daily-cap reset button sends a fresh token after its own confirm dialog. Runner keys in a proposal for an EA
 below 3.05 are refused by the Edge Function and ignored by the website.
 
+### 10.6 Shadow AI "AI เงา" — forward test, log only (added 2026-11-11)
+Goal: test the owner's idea "let an AI watch every open trade and decide what to do" without risking money. While a
+Dobby trade is open, Claude is asked every `shadow_interval_s` (default 300 s) what it would do: `hold`, `close`,
+`tighten` (new stop strictly between the current stop and the price) or `reverse`. **The answer is only recorded.**
+Nothing is written to any EA file, no order is touched; the bot keeps trading on its fixed rules. After about 60-100
+closed trades the log is scored on real ticks against the real exits (research/strategies/shadow_score/score.py).
+- `ai_config` gains `shadow_enabled` (default **false**), `shadow_model` (default `claude-sonnet-5-5`, same allowed list),
+  `shadow_budget_usd` (default 15, 0..10000, its own monthly budget, separate from the assistant's),
+  `shadow_interval_s` (60..3600, default 300). Admin update through the existing `ai_config_update` policy.
+- Table `shadow_decisions` (bot_id, user_id, ts, ticket, module, side, lots, open_price, sl, tp, bid, ask, profit,
+  server_time, action in hold/close/tighten/reverse/error, new_sl, confidence 0..100, reason <= 2000 chars, valid,
+  snapshot jsonb, model, tokens, cost_usd). RLS select: the bot owner (approved) and the admin. No client writes.
+- RPCs, service_role only: `shadow_start(p_user, p_bot, p_ticket)` -> {model, interval_s}; raises not_approved,
+  bot_not_found (not the user's bot), shadow_disabled, shadow_budget (this Thai month's shadow cost >= budget),
+  shadow_too_soon (a decision for this ticket within interval - 20 s). `shadow_record(p_user, p_bot, p_row jsonb)` -> id.
+- Edge Function `shadow` (supabase/functions/shadow/index.ts; pasted once, Verify JWT off, secret ANTHROPIC_API_KEY):
+  POST {bot_id, snapshot} with the user's token -> 200 {ok, id, decision, valid, next_after_s, model, cost_usd} or
+  {error, message} (400/401/403/404/429/503). One Messages call with the forced tool `decide`
+  (action, new_sl, confidence, reason in Thai), no tools that read data; a failed call is recorded as action `error`.
+- Agent 1.3.0 (`ShadowWatcher`): after a successful login cycle, for every open position in the status
+  (`positions[].open = true`) whose next question is due, a background thread posts the snapshot (position, market,
+  last_bar, last 32 M15 bars with RSI / ATR / H4 EMA / VWAP from dobby2_bars.csv, the day's virtual P&L, rules,
+  USD High/Medium news from 2 h before to 6 h after, the last 12 journal rows of that strategy, the NY range for NY)
+  with the access token the main loop holds (never refreshed in the thread; skipped when < 150 s are left).
+  Pauses: shadow_disabled / ai_not_configured 30 min, shadow_budget / not_approved / bot_not_found 60 min,
+  shadow_too_soon 60 s, network 120 s. Each answer is appended to `shadow_decisions.jsonl` in the agent folder
+  (%APPDATA%\DobbyApp for the app). `agent_state.shadow` = {calls, last_at, last_error, paused}. Config `"shadow": false`
+  turns it off on that PC; dry-run never asks.
+- Website: page **AI เงา** (`#/shadow`, more-menu): per trade the decisions (time, price, P&L then, action, new stop,
+  confidence, reason), the bot's real result (journal CLOSE with `pos=<ticket>`) and the immediate effect of the first
+  non-hold decision; ผู้ใช้ > ผู้ช่วย AI has the admin's shadow switch, model, interval (minutes) and budget.
+
 ## 11. EA v3.05: runner mode + daily-cap reset (2026-11-10)
 Contract fixed 2026-11-10 between the EA (`D:\Dobby\mt5\Dobby3_v305.mq5` = v3.04 + this), the agent / app
 (dobby_agent.py 1.2.1 inside DobbyApp 1.2.2) and the website. Research reference: r44 (PREREG I3, best cell
