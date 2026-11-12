@@ -276,7 +276,7 @@ export function memoryPrompt(lessons: Json[], reviews: Json[], totalReviews: num
   const recent = (reviews || []).slice(0, 3);
   if (recent.length) {
     lines.push("Your latest reviews:");
-    for (const r of recent) lines.push(`- trade ${r.ticket} (${r.module} ${r.side}, bot ${r.outcome?.close?.pnl ?? "?"} USD): ${clip(r.mistakes || r.summary, 300)}`);
+    for (const r of recent) lines.push(`- trade ${r.ticket} (${r.module} ${r.side}, closed by ${r.outcome?.close?.reason ?? "?"}, ${r.outcome?.close?.pnl ?? "?"} USD): ${clip(r.mistakes || r.summary, 300)}${r.outcome?.better_plan ? ` Should have: ${clip(r.outcome.better_plan, 200)}` : ""}`);
   }
   lines.push("Use the lessons, but judge THIS trade on its own facts: a lesson that does not fit the situation does not apply. Call get_my_record for more of your history.");
   return lines.join("\n");
@@ -461,7 +461,8 @@ Rules for good learning:
 - Look at the decisions that were "worse": which fact did you misread or ignore? Which data would have helped (indicators you can request with get_indicators next time)?
 - Lessons must be general and testable: a condition you can see in a snapshot + what to do (e.g. "when the trade is past 70 % of the target and price is above VWAP, hold to the lock instead of closing"). No lessons about a single price level or date.
 - Prefer reinforce (this trade supports a lesson) or weaken (this trade contradicts it) on existing lessons over adding near-duplicates. Add at most 2 new lessons per review, only when this trade shows something your lessons do not cover. Retire a lesson that has proved wrong.
-- Write summary and mistakes in Thai (short sentences, with the prices and money).
+- The real result tells you how and why the trade ended (stop, target, lock, runner, time, your own close). Then say plainly what you SHOULD have done on this trade with hindsight: which action, at what time and price, and how much money that would have made versus what happened (better_plan). If holding was right, say so.
+- Write summary, mistakes and better_plan in Thai (short sentences, with the prices and money).
 
 Answer ONLY by calling the tool review.`;
 
@@ -473,6 +474,7 @@ export const REVIEW_TOOL = {
     properties: {
       summary: { type: "string", description: "Thai, 2-5 sentences: what happened to the trade and how your decisions did, with prices and money." },
       mistakes: { type: "string", description: "Thai, 1-5 sentences: what you got wrong and why (or that the decisions were right / it was luck)." },
+      better_plan: { type: "string", description: "Thai, 1-3 sentences: what you should have done with hindsight (action, time, price) and the money versus the real result." },
       lessons: {
         type: "array", maxItems: 6,
         items: { type: "object", properties: {
@@ -483,7 +485,7 @@ export const REVIEW_TOOL = {
         }, required: ["op", "id", "text", "why"], additionalProperties: false },
       },
     },
-    required: ["summary", "mistakes", "lessons"],
+    required: ["summary", "mistakes", "better_plan", "lessons"],
     additionalProperties: false,
   },
 };
@@ -949,13 +951,13 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
     try {
       res = await rpc(sb, "shadow_review_record", {
         p_user: user.id, p_bot: botId, p_ops: ops,
-        p_row: { ticket, module: d0.module, side: d0.side, outcome, summary: clip(rev?.summary, 2500), mistakes: clip(rev?.mistakes, 2500),
+        p_row: { ticket, module: d0.module, side: d0.side, outcome: { ...outcome, better_plan: clip(rev?.better_plan, 1500) }, summary: clip(rev?.summary, 2500), mistakes: clip(rev?.mistakes, 2500),
           model, input_tokens: usage.input_tokens || 0, output_tokens: usage.output_tokens || 0, cost_usd: cost },
       });
     } catch (e) {
       return jsonError(rpcErrorCode(e));
     }
-    return new Response(JSON.stringify({ ok: true, review_id: res?.review_id ?? null, summary: clip(rev?.summary, 2500), mistakes: clip(rev?.mistakes, 2500),
+    return new Response(JSON.stringify({ ok: true, review_id: res?.review_id ?? null, summary: clip(rev?.summary, 2500), mistakes: clip(rev?.mistakes, 2500), better_plan: clip(rev?.better_plan, 1500),
       applied: res?.applied ?? [], better: outcome.better, worse: outcome.worse, model, cost_usd: cost }), { status: 200, headers: JSON_HEADERS });
   }
 }

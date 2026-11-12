@@ -1217,6 +1217,7 @@ export class DemoApi {
           { id: lessons.length + 4, bot_id: bot.id, text: 'RSI M15 ต่ำกว่า 40 ให้ปิดไม้ซื้อทันที', weight: 0, status: 'retired', tickets: [900092, 900097], created_at: new Date(now - 6 * 86400e3).toISOString(), updated_at: new Date(now - 3 * 86400e3).toISOString() });
         reviews.push({ id: reviews.length + 1, bot_id: bot.id, ts: new Date(now - 2 * 3600e3).toISOString(), ticket: 900101, module: 'C5G', side: 'BUY',
           outcome: { close: { pnl: -111.6, reason: 'SL', price: 4044.05 }, better: 2, worse: 2, mfe: 131, mae: -111.6,
+            better_plan: 'ควรเลื่อน SL มาที่ 4,050.00 ตั้งแต่ราคาไปถึง 4,056.17 ตอนกำไร +131 ไม้นี้จะปิดที่ราว +7 แทน −111.60',
             checks: [{ action: 'hold', delta: -143, verdict: 'worse' }, { action: 'hold', delta: -205, verdict: 'worse' }, { action: 'tighten', delta: 117, verdict: 'better' }, { action: 'reverse', delta: 239, verdict: 'better' }] },
           summary: 'ไม้ซื้อ C5G เข้า 4,049.63 ขึ้นไปสูงสุด 4,056.17 (+131) แล้วกลับลงมาโดน SL ที่ 4,043.93 เสีย −111.60 การเลื่อน SL มาที่ 4,049.90 จะได้ +5.40 และการเปิดสวนจะได้ราว +127',
           mistakes: 'สองครั้งแรกให้ถือต่อทั้งที่ RSI M15 เริ่มอ่อนตัวจาก 61 เหลือ 55 และราคาไม่ผ่านจุดสูงเดิม ควรขอดู H1 ก่อน การถือไม่ผิดตามหลักแต่ควรเลื่อน SL เร็วกว่านี้ 10 นาที',

@@ -116,8 +116,11 @@ function reviewSection(rv, lessonsById) {
   const checks = (rv.outcome && rv.outcome.checks) || [];
   return h('section', { class: 'ai-review', 'aria-label': 'AI ทบทวนไม้นี้' },
     h('h3', null, icon('book'), 'AI ทบทวนหลังปิดไม้'),
+    rv.outcome && rv.outcome.close && fin(rv.outcome.close.pnl) ? h('p', { class: 'muted small' },
+      `ไม้ปิดเพราะ ${CLOSE_TH[rv.outcome.close.reason] || rv.outcome.close.reason || '—'}${fin(rv.outcome.close.price) ? ` ที่ ${fmtNum(rv.outcome.close.price)}` : ''} ผล `, pnl(rv.outcome.close.pnl)) : null,
     rv.summary ? h('p', null, rv.summary) : null,
     rv.mistakes ? h('p', null, h('strong', null, 'ผิดตรงไหน '), rv.mistakes) : null,
+    rv.outcome && rv.outcome.better_plan ? h('p', null, h('strong', null, 'ควรทำอะไร '), rv.outcome.better_plan) : null,
     checks.length ? h('div', { class: 'ai-checks' }, checks.map((c) => {
       const [label, tone] = VERDICT[c.verdict] || [c.verdict, 'off'];
       return h('span', { class: `chip ${tone}`, title: c.note || null }, `${(ACTION[c.action] || [c.action])[0]} ${label} `, h('span', { class: 'num' }, `${c.delta >= 0 ? '+' : '−'}${fmtNum(Math.abs(c.delta))}`));

@@ -2,7 +2,7 @@
 // tighten check, cost, and that every answer (also a failed call) is recorded through shadow_record.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHandler, checkDecision, readPosition, costOf, SYSTEM_PROMPT, aggregate, ema, rsi, indicator, evaluate, checkOpen, lastStop } from '../index.ts';
+import { createHandler, checkDecision, readPosition, costOf, SYSTEM_PROMPT, aggregate, ema, rsi, indicator, evaluate, checkOpen, lastStop, REVIEW_TOOL, memoryPrompt } from '../index.ts';
 
 const URL_ = 'https://proj.supabase.co';
 const USER = '11111111-1111-4111-8111-111111111111';
@@ -265,7 +265,7 @@ test('review mode: evaluates, asks Claude with the forced review tool, applies t
     profit: 28, action: 'hold', confidence: 40, valid: true, reason: 'ถือ', details: { pnl_now: 28, hold_target: 4058.18, target_pnl: 171, hold_exit: 4046, exit_pnl: -72.6 } }];
   const f = fakeFetch({ tables: { shadow_decisions: decisions, shadow_lessons: [{ id: 3, text: 'x', weight: 1 }] } });
   const an = fakeAnthropic({ content: [{ type: 'tool_use', name: 'review', id: 'r', input: {
-    summary: 'ไม้นี้โดน SL', mistakes: 'ควรปิดตอนหลุด 4,046',
+    summary: 'ไม้นี้โดน SL', mistakes: 'ควรปิดตอนหลุด 4,046', better_plan: 'ควรปิดตอน 19:20 ที่ 4,055.40 ได้ +115.40 แทน −111.60',
     lessons: [{ op: 'add', id: null, text: 'ถ้าหลุดจุดออกที่ตั้งไว้ ให้ปิดทันที', why: 'w' }, { op: 'weaken', id: 3, text: null, why: 'w' }, { op: 'boom', id: 1, text: null, why: '' }] } }],
     usage: { input_tokens: 5000, output_tokens: 400 }, stop_reason: 'tool_use' });
   const body = { mode: 'review', bot_id: BOT, ticket: 432543137, close: { ts_utc: '2026-11-11T12:03:08Z', ts_server: '2026.11.11 14:03:08', price: 4044.05, pnl: -111.6, reason: 'SL' },
@@ -280,6 +280,11 @@ test('review mode: evaluates, asks Claude with the forced review tool, applies t
   assert.equal(sent.your_lessons[0].id, 3);
   const rec = f.calls.find((c) => c.url.endsWith('/rpc/shadow_review_record'));
   assert.equal(rec.body.p_row.outcome.checks[0].exit_touched, true);
+  assert.equal(rec.body.p_row.outcome.better_plan, 'ควรปิดตอน 19:20 ที่ 4,055.40 ได้ +115.40 แทน −111.60');
+  assert.equal(out.better_plan, rec.body.p_row.outcome.better_plan);
+  assert.ok(REVIEW_TOOL.input_schema.required.includes('better_plan'));
+  assert.ok(memoryPrompt([], [{ ticket: 1, module: 'C5G', side: 'BUY', mistakes: 'm', outcome: { close: { pnl: -111.6, reason: 'SL' }, better_plan: 'ปิดที่ 4,055' } }], 1)
+    .includes('closed by SL, -111.6 USD): m Should have: ปิดที่ 4,055'));
   assert.equal(rec.body.p_row.cost_usd, 0.028);
 });
 
