@@ -818,6 +818,20 @@ closed trades the log is scored on real ticks against the real exits (research/s
   confidence, reason), the bot's real result (journal CLOSE with `pos=<ticket>`) and the immediate effect of the first
   non-hold decision; ผู้ใช้ > ผู้ช่วย AI has the admin's shadow switch, model, interval (minutes) and budget.
 
+### 10.6b Plan on one trade, binding stop, event questions (2026-11-13, owner's request)
+- The decision prompt gets the AI's own earlier answers on THIS trade (last 8: time, why asked, action, target, stop,
+  stop move, P&L then, confidence, short reason) and the reason it is asked now (`snapshot.trigger`: first, time,
+  m15_close, price_move, near_stop, near_target, news; stored as details.trigger).
+- No rule on direction: the AI may move its stop closer or further, but must say a further move plainly (`ถอย SL จาก A
+  ไปที่ B`). A hold's hold_exit IS its stop and binding (prompt and scorer); details.sl_from / sl_to / sl_move (closer /
+  further, against its last stop on the trade). tighten = move the stop either way (must stay on the losing side of the
+  price). On the AI's own paper trade a new hold_exit or new_sl becomes the trade's stop at once; the app closes it the
+  moment price touches it (every 5 s) and it cannot be set again.
+- The app asks every shadow_interval_s (5 min) AND on events: a new M15 bar, price moving 0.4 ATR since the last answer,
+  price entering the last 25 % (or 0.3 ATR) before the AI's stop or the target (TP0 for a Dobby trade), a High USD
+  release within 15 min; never sooner than 60 s after the previous question. shadow_start's floor is 40 s.
+- Website: the action chip says ถือต่อ ถอย SL / ถอย SL (cinnabar) or เลื่อน SL; each answer shows why it was asked.
+
 ### 10.7 Shadow AI memory: reviews, lessons, data tools (added 2026-11-11, owner's request)
 "Learning" here is in-context memory, not model training: after every closed trade the AI reviews its own decisions
 against what really happened and keeps a short list of lessons per bot that it reads before every next decision.

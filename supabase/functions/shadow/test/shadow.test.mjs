@@ -2,7 +2,7 @@
 // tighten check, cost, and that every answer (also a failed call) is recorded through shadow_record.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHandler, checkDecision, readPosition, costOf, SYSTEM_PROMPT, aggregate, ema, rsi, indicator, evaluate, checkOpen } from '../index.ts';
+import { createHandler, checkDecision, readPosition, costOf, SYSTEM_PROMPT, aggregate, ema, rsi, indicator, evaluate, checkOpen, lastStop } from '../index.ts';
 
 const URL_ = 'https://proj.supabase.co';
 const USER = '11111111-1111-4111-8111-111111111111';
@@ -93,7 +93,7 @@ test('asks Claude with the forced decide tool and records the decision with cost
   assert.equal(r.status, 200);
   const out = await r.json();
   assert.deepEqual(out.decision, { action: 'tighten', new_sl: 4047.5, confidence: 64, reason: 'ราคาย่อ',
-    details: { price_now: 4051.03, pnl_now: 28, new_sl: 4047.5, locked_pnl: -42.6, old_sl: 4043.93 } });
+    details: { price_now: 4051.03, pnl_now: 28, new_sl: 4047.5, locked_pnl: -42.6, old_sl: 4043.93, sl_from: 4043.93, sl_to: 4047.5, sl_move: 'closer' } });
   assert.equal(out.valid, true);
   assert.equal(out.next_after_s, 300);
   const p = an.seen[0];
@@ -130,12 +130,14 @@ test('a failed Claude call is recorded as action error (so the interval still ap
 test('checkDecision: tighten must sit between the stop and the price; unknown actions become invalid hold', () => {
   const buy = readPosition(SNAP);
   assert.equal(checkDecision({ action: 'tighten', new_sl: 4045, confidence: 50, reason: 'x' }, buy).valid, true);
-  assert.equal(checkDecision({ action: 'tighten', new_sl: 4040, confidence: 50, reason: 'x' }, buy).valid, false);   // wider
+  const wider = checkDecision({ action: 'tighten', new_sl: 4040, confidence: 50, reason: 'ถอย SL' }, buy);   // the owner allows a wider stop
+  assert.deepEqual([wider.valid, wider.details.sl_move, wider.details.sl_from, wider.details.sl_to], [true, 'further', 4043.93, 4040]);
   assert.equal(checkDecision({ action: 'tighten', new_sl: 4052, confidence: 50, reason: 'x' }, buy).valid, false);   // above bid
   assert.equal(checkDecision({ action: 'tighten', new_sl: null, confidence: 50, reason: 'x' }, buy).valid, false);
   const sell = readPosition({ ...SNAP, position: { ...SNAP.position, side: 'SELL', sl: 4056 } });
   assert.equal(checkDecision({ action: 'tighten', new_sl: 4053, confidence: 50, reason: 'x' }, sell).valid, true);
-  assert.equal(checkDecision({ action: 'tighten', new_sl: 4050, confidence: 50, reason: 'x' }, sell).valid, false);
+  assert.equal(checkDecision({ action: 'tighten', new_sl: 4050, confidence: 50, reason: 'x' }, sell).valid, false);   // under the ask: not a stop
+  assert.equal(checkDecision({ action: 'tighten', new_sl: 4060, confidence: 50, reason: 'x' }, sell).details.sl_move, 'further');
   const odd = checkDecision({ action: 'buy_more', confidence: 300, reason: 'x' }, buy);
   assert.deepEqual([odd.action, odd.valid, odd.confidence], ['hold', false, 100]);
   assert.equal(checkDecision({ action: 'close', new_sl: 1, confidence: 70, reason: 'x' }, buy).new_sl, null);
@@ -153,7 +155,10 @@ test('details: close / reverse / hold turn the AI prices into money at the trade
   assert.equal(checkDecision({ action: 'reverse', reverse_sl: 4045, reverse_tp: 4042.5, confidence: 55, reason: 'x' }, buy).valid, false); // stop below a SELL entry
   assert.equal(checkDecision({ action: 'reverse', reverse_sl: null, reverse_tp: 4042.5, confidence: 55, reason: 'x' }, buy).valid, false);
   const h = checkDecision({ action: 'hold', hold_target: 4058.18, hold_exit: 4046, confidence: 40, reason: 'x' }, buy);
-  assert.deepEqual(h.details, { price_now: 4051.03, pnl_now: 28, hold_target: 4058.18, target_pnl: 171, hold_exit: 4046, exit_pnl: -72.6 });
+  assert.deepEqual(h.details, { price_now: 4051.03, pnl_now: 28, hold_target: 4058.18, target_pnl: 171, hold_exit: 4046, exit_pnl: -72.6,
+    sl_from: 4043.93, sl_to: 4046, sl_move: 'closer' });
+  const h2 = checkDecision({ action: 'hold', hold_target: 4058.18, hold_exit: 4044, confidence: 40, reason: 'x' }, buy, 4046);   // vs the AI's last stop
+  assert.equal(h2.details.sl_move, 'further');
   const wrong = checkDecision({ action: 'hold', hold_target: 4040, hold_exit: 4060, confidence: 40, reason: 'x' }, buy);
   assert.deepEqual(wrong.details, { price_now: 4051.03, pnl_now: 28 });   // prices on the wrong side are dropped
   const sell = readPosition({ ...SNAP, position: { ...SNAP.position, side: 'SELL', open_price: 4060 } });
@@ -367,6 +372,45 @@ test('review of an AI paper trade without any management decision uses its openi
   const sent = JSON.parse(an.seen[0].messages[0].content.split('\n').slice(1).join('\n'));
   assert.equal(sent.your_own_trade.open_plan.reason, 'ซื้อตามเทรนด์');
   assert.equal(sent.trade.strategy, 'AI');
+});
+
+// ------------------------------------------------------------------ 2026-11-13: earlier answers, binding stop, triggers
+const PREV = [   // newest first, as the table answers
+  { ts: '2026-11-12T16:52:00Z', action: 'hold', confidence: 50, valid: true, profit: -163.4, reason: 'ถือ ถอย SL', details: { hold_target: 3858.5, hold_exit: 3887.5, sl_move: 'further', trigger: 'price_move' } },
+  { ts: '2026-11-12T16:46:00Z', action: 'hold', confidence: 58, valid: true, profit: -9.8, reason: 'ถือ', details: { hold_target: 3858.5, hold_exit: 3884, trigger: 'first' } },
+];
+const AI_SNAP = { ...SNAP, trigger: 'near_stop', position: { ...SNAP.position, module: 'AI', ticket: 900000000004, side: 'SELL', open_price: 3874.04, sl: 3887.5, tp: 3858.5, lots: 0.2 },
+  market: { bid: 3880.3, ask: 3880.47 } };
+
+test('the AI gets its earlier answers on this trade and why it is asked now; the trigger is stored', async () => {
+  const f = fakeFetch({ tables: { shadow_decisions: PREV } });
+  const an = fakeAnthropic(toolReply({ action: 'hold', hold_target: 3858.5, hold_exit: 3887.5, confidence: 55, reason: 'ถือ SL เดิม' }));
+  await createHandler({ env: ENV, fetch: f, anthropic: an })(post({ bot_id: BOT, snapshot: AI_SNAP }));
+  const msg = an.seen[0].messages[0].content;
+  assert.ok(msg.startsWith('You are asked now because price is close to the stop.'));
+  const prev = JSON.parse(msg.split('\n')[2]);
+  assert.deepEqual(prev.map((p) => [p.time_utc, p.stop, p.stop_move, p.asked_because]), [['2026-11-12T16:46Z', 3884, null, 'first'], ['2026-11-12T16:52Z', 3887.5, 'further', 'price_move']]);
+  const q = f.calls.find((c) => c.url.includes('/rest/v1/shadow_decisions?'));
+  assert.ok(q.url.includes('ticket=eq.900000000004') && q.headers.Authorization === 'Bearer tok');   // the user's token (RLS)
+  const rec = f.calls.find((c) => c.url.endsWith('/rpc/shadow_record'));
+  assert.equal(rec.body.p_row.details.trigger, 'near_stop');
+  assert.equal(f.calls.filter((c) => c.url.endsWith('/rpc/ai_trade_apply')).length, 0);       // same stop: nothing to change
+});
+
+test('own trade: a hold with a new stop moves the paper trade\'s stop (also further away); the move is labelled', async () => {
+  const f = fakeFetch({ tables: { shadow_decisions: PREV } });
+  const an = fakeAnthropic(toolReply({ action: 'hold', hold_target: 3858.5, hold_exit: 3889, confidence: 50, reason: 'ถอย SL จาก 3887.50 ไปที่ 3889.00' }));
+  const out = await (await createHandler({ env: ENV, fetch: f, anthropic: an })(post({ bot_id: BOT, snapshot: AI_SNAP }))).json();
+  assert.equal(out.decision.details.sl_move, 'further');
+  assert.equal(out.decision.details.sl_from, 3887.5);
+  const ap = f.calls.find((c) => c.url.endsWith('/rpc/ai_trade_apply'));
+  assert.deepEqual(ap.body.p_op, { op: 'sl', sl: 3889 });
+});
+
+test('lastStop: the newest valid stop of the earlier answers', () => {
+  assert.equal(lastStop([...PREV].reverse()), 3887.5);
+  assert.equal(lastStop([{ action: 'tighten', valid: true, details: { new_sl: 3881 } }, { action: 'close', valid: true, details: {} }]), 3881);
+  assert.equal(lastStop([{ action: 'hold', valid: false, details: { hold_exit: 1 } }]), null);
 });
 
 test('costOf uses the model prices and never under-counts an unknown model', () => {

@@ -82,15 +82,17 @@ How the open trade is managed by the fixed rules (all prices in USD per ounce):
 - Historical tests on 2026 data found that closing early on pullbacks, trailing stops and stop-and-reverse rules all LOST money against these fixed rules, because most pullbacks are noise and the trade still reaches TP0. Only deviate from "hold" when the snapshot gives you a concrete reason (for example a scheduled high-impact USD release in the next minutes, a structural break against the trade, or momentum that has clearly failed).
 
 Your options, and the exact prices you MUST give with each (2 decimals, real prices, not distances):
-- hold: leave the trade to the fixed rules. Give hold_target = the price you expect this trade to reach (usually TP0, or further when you expect the runner to carry it) and hold_exit = the price at which you would stop holding and close it (between the current stop and the current price). Both on the correct sides of the current price.
+- hold: keep the trade. Give hold_target = the price you expect it to reach and hold_exit = YOUR STOP: the price at which this trade is finished. Your stop is real and binding: the moment price touches it the trade is closed (for your own paper trade at once; for a Dobby trade the forward test closes it there). Once it is hit the trade is over and cannot be set again later. Repeat the same hold_exit as before unless you mean to move it.
+- tighten: move your stop to new_sl now (use it when you only change the stop). The stop must stay on the losing side of the current price (below the bid for a BUY, above the ask for a SELL).
+- Moving the stop is your free choice, in either direction. When you move it AWAY from the price (more room, more risk) you MUST say it plainly in the reason in Thai, for example "ถอย SL จาก 3884.00 ไปที่ 3887.50 เพราะ ...", and when you move it closer say "เลื่อน SL จาก ... ไปที่ ...".
 - close: close the whole trade now at market (bid for a BUY, ask for a SELL). No extra prices.
-- tighten: move the stop to new_sl, strictly between the current stop and the current price; never widen the stop.
 - reverse: close now and open the opposite trade with the same lots. Give reverse_sl and reverse_tp for the new trade: for a new SELL (entered at the bid) the stop above and the target below; for a new BUY (entered at the ask) the stop below and the target above. Size them from the chart (recent swing, ATR); a stop tighter than 0.5 x ATR is noise.
-Set every field that does not belong to your action to null. The system turns your prices into money at this trade's lots (1.00 $ of price = lots x 100 USD).
+
+Your earlier answers on THIS trade are in the message (time, action, target, stop, short reason, why you were asked). Keep one consistent plan: build on what you said before, and when you change the target or the stop, say what changed and why. The message also says why you are being asked now (the regular 5-minute check, a new M15 bar, a fast price move, price near the stop or the target, or a news release).Set every field that does not belong to your action to null. The system turns your prices into money at this trade's lots (1.00 $ of price = lots x 100 USD).
 
 Data: the snapshot has the trade, the market, 32 M15 bars with the EA's RSI / ATR / H4 EMA / VWAP, the news and the journal. When you need more (another timeframe, EMA / MACD / Bollinger / swings / levels, the bot's recent results, your own past reviews), call get_indicators, get_price_history, get_trade_history or get_my_record first (a few calls at most), then decide.
 
-Finish by calling the tool decide. confidence = how sure you are that your action beats "hold" for this trade (0-100; use 50 or less when it is a coin flip). reason: 2 to 4 short sentences in Thai that name the facts from the snapshot behind the decision AND the plan with its prices (for hold: where you expect it to go and where you would get out; for close: why now; for tighten: why that stop level; for reverse: why the other way and why that stop and target).`;
+Finish by calling the tool decide. confidence = how sure you are that your action beats "hold" for this trade (0-100; use 50 or less when it is a coin flip). reason: 2 to 4 short sentences in Thai that name the facts from the snapshot behind the decision AND the plan with its prices (for hold: where you expect it to go and where your stop is; for close: why now; for tighten: from which stop to which and why; for reverse: why the other way and why that stop and target).`;
 
 export const DECIDE_TOOL = {
   name: "decide",
@@ -99,11 +101,11 @@ export const DECIDE_TOOL = {
     type: "object",
     properties: {
       action: { type: "string", enum: [...ACTIONS] },
-      new_sl: { type: ["number", "null"], description: "tighten only: the new stop price. Otherwise null." },
+      new_sl: { type: ["number", "null"], description: "tighten only: the new stop price (closer or further). Otherwise null." },
       reverse_sl: { type: ["number", "null"], description: "reverse only: the stop price of the new opposite trade. Otherwise null." },
       reverse_tp: { type: ["number", "null"], description: "reverse only: the target price of the new opposite trade. Otherwise null." },
       hold_target: { type: ["number", "null"], description: "hold only: the price you expect the trade to reach. Otherwise null." },
-      hold_exit: { type: ["number", "null"], description: "hold only: the price at which you would close instead of holding. Otherwise null." },
+      hold_exit: { type: ["number", "null"], description: "hold only: your stop, binding: the trade is closed when price touches it. Otherwise null." },
       confidence: { type: "integer", minimum: 0, maximum: 100 },
       reason: { type: "string", description: "2 to 4 short sentences in Thai: the facts and the plan with its prices." },
     },
@@ -142,8 +144,11 @@ export interface Decision {
 }
 
 /** Normalises the tool input and turns the AI's prices into money at this trade's lots (`details`, SPEC 10.6).
- *  `valid` is false when the action cannot be applied as given (a stop or target on the wrong side, a missing price). */
-export function checkDecision(input: Json, pos: Json): Decision {
+ *  `valid` is false when the action cannot be applied as given (a stop or target on the wrong side, a missing price).
+ *  2026-11-13 (owner): the AI's stop (hold_exit or tighten's new_sl) is binding and may move in either direction;
+ *  details.sl_move says "closer" or "further" compared with `prevStop` (the AI's last stop on this trade, else the
+ *  trade's own stop). */
+export function checkDecision(input: Json, pos: Json, prevStop: number | null = null): Decision {
   const action = ACTIONS.includes(input?.action) ? input.action : "hold";
   let valid = ACTIONS.includes(input?.action);
   const buy = pos.side === "BUY";
@@ -153,13 +158,18 @@ export function checkDecision(input: Json, pos: Json): Decision {
   const ok = px !== null && pos.open_price !== null && mult > 0;
   const details: Json = {};
   if (ok) { details.price_now = px; details.pnl_now = pnlAt(px); }
+  const before = prevStop !== null && prevStop > 0 ? prevStop : (pos.sl !== null && pos.sl > 0 ? pos.sl : null);
+  const stopMove = (stop: number) => {
+    details.sl_from = before;
+    details.sl_to = stop;
+    if (before !== null && Math.abs(stop - before) >= 0.005) details.sl_move = (buy ? stop < before : stop > before) ? "further" : "closer";
+  };
   let newSl: number | null = null;
   if (action === "tighten") {
     newSl = px2(input?.new_sl);
     if (newSl === null || px === null) valid = false;
-    else if (buy) valid = valid && newSl < px && (pos.sl === null || pos.sl <= 0 || newSl > pos.sl);
-    else valid = valid && newSl > px && (pos.sl === null || pos.sl <= 0 || newSl < pos.sl);
-    if (ok && newSl !== null) { details.new_sl = newSl; details.locked_pnl = pnlAt(newSl); details.old_sl = pos.sl; }
+    else valid = valid && (buy ? newSl < px : newSl > px);  // on the losing side of the price; either direction
+    if (ok && newSl !== null) { details.new_sl = newSl; details.locked_pnl = pnlAt(newSl); details.old_sl = before; stopMove(newSl); }
   } else if (action === "close") {
     if (ok) { details.close_price = px; details.close_pnl = pnlAt(px); }
     else valid = false;
@@ -178,15 +188,35 @@ export function checkDecision(input: Json, pos: Json): Decision {
       details.total_if_tp = r2(details.close_pnl + reward);
       details.total_if_sl = r2(details.close_pnl - risk);
     }
-  } else if (ok) {                                           // hold: where it should go, where the AI would get out
+  } else if (ok) {                                           // hold: where it should go, and the AI's binding stop
     const target = px2(input?.hold_target), exit = px2(input?.hold_exit);
     if (target !== null && (buy ? target > px : target < px)) { details.hold_target = target; details.target_pnl = pnlAt(target); }
-    if (exit !== null && (buy ? exit < px : exit > px)) { details.hold_exit = exit; details.exit_pnl = pnlAt(exit); }
+    if (exit !== null && (buy ? exit < px : exit > px)) { details.hold_exit = exit; details.exit_pnl = pnlAt(exit); stopMove(exit); }
   }
   const c = num(input?.confidence);
   return { action, new_sl: newSl, confidence: c === null ? null : Math.max(0, Math.min(100, Math.round(c))), reason: clip(input?.reason, 1200).trim(), valid, details };
 }
 
+/** The AI's last binding stop on this trade from its earlier answers (newest valid hold_exit / new_sl), or null. */
+export function lastStop(prev: Json[]): number | null {
+  for (let i = (prev || []).length - 1; i >= 0; i--) {
+    const d = prev[i] || {};
+    if (d.valid === false || d.action === "error") continue;
+    const s = num(d.details?.hold_exit ?? (d.action === "tighten" ? d.details?.new_sl ?? d.new_sl : null));
+    if (s !== null) return s;
+  }
+  return null;
+}
+
+/** Earlier answers on this trade, oldest first, compact for the prompt. */
+export function previousAnswers(prev: Json[]): Json[] {
+  return (prev || []).slice(-8).map((d) => ({
+    time_utc: String(d.ts || "").slice(0, 16) + "Z", asked_because: d.details?.trigger ?? null, action: d.action,
+    target: d.details?.hold_target ?? null, stop: d.details?.hold_exit ?? d.details?.new_sl ?? null,
+    stop_move: d.details?.sl_move ?? null, pnl_then: d.profit ?? d.details?.pnl_now ?? null, confidence: d.confidence ?? null,
+    valid: d.valid !== false, reason: clip(d.reason, 220),
+  }));
+}
 export function costOf(model: string, u: Json): number {
   const [pi, po, pr, pw] = PRICES[model] || PRICE_UNKNOWN;
   const c = ((u?.input_tokens || 0) * pi + (u?.output_tokens || 0) * po + (u?.cache_read_input_tokens || 0) * pr +
@@ -194,8 +224,17 @@ export function costOf(model: string, u: Json): number {
   return Math.round(c * 1e6) / 1e6;
 }
 
-export function userMessage(snapshot: Json): string {
-  return `Snapshot of the open trade and the market (JSON; times: *_utc = UTC, server_time = broker server time):\n${JSON.stringify(snapshot)}`;
+export const TRIGGERS: Record<string, string> = {
+  time: "the regular check (every few minutes)", m15_close: "a new M15 bar has closed", price_move: "price moved fast since your last answer",
+  near_stop: "price is close to the stop", near_target: "price is close to the target", news: "a high-impact USD release is due within 15 minutes",
+  first: "the first check of this trade",
+};
+export function userMessage(snapshot: Json, previous: Json[] = []): string {
+  const why = TRIGGERS[String(snapshot?.trigger || "")] || TRIGGERS.time;
+  const prev = previous.length
+    ? `Your earlier answers on THIS trade (oldest first; stop = your binding stop then):\n${JSON.stringify(previousAnswers(previous))}`
+    : "You have not answered on this trade before.";
+  return `You are asked now because ${why}.\n${prev}\n\nSnapshot of the open trade and the market (JSON; times: *_utc = UTC, server_time = broker server time):\n${JSON.stringify(snapshot)}`;
 }
 
 // ------------------------------------------------------------------ memory (SPEC 10.7)
@@ -680,17 +719,21 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
     const model = String(start?.model || "claude-opus-5-5");
     const interval = Number(start?.interval_s) || 300;
     const memory = await loadMemory(sb, botId);
+    // 2026-11-13: the AI sees its own earlier answers on this trade (and its last binding stop)
+    const previous = await sbGet(sb, "shadow_decisions",
+      `bot_id=eq.${botId}&ticket=eq.${pos.ticket}&select=ts,action,new_sl,confidence,reason,valid,details,profit&order=ts.desc&limit=8`).then((r) => r.reverse()).catch(() => []);
 
     // the decision: up to MAX_ROUNDS rounds of data tools, then `decide` is forced
     let decision: Decision = { action: "error", new_sl: null, confidence: null, reason: "", valid: false, details: {} };
     const ownTrade = pos.module === "AI" && pos.ticket > AI_TICKET_BASE;     // SPEC 10.8: the AI manages its own paper trade
     const loop = await toolLoop(makeClient(anthropicKey), model, SYSTEM_PROMPT + memoryPrompt(memory.lessons, memory.reviews, memory.total) +
       (ownTrade ? "\n\nThis open trade is YOUR OWN paper trade (module AI): your answer IS applied to it (close, new stop or reverse)." : ""),
-      userMessage(snapshot), DECIDE_TOOL, sb, botId);
+      userMessage(snapshot, previous), DECIDE_TOOL, sb, botId);
     const usage = loop.usage, used = loop.used;
-    if (loop.block) decision = checkDecision(loop.block.input, pos);
+    if (loop.block) decision = checkDecision(loop.block.input, pos, ownTrade ? pos.sl : lastStop(previous));
     else decision = { ...decision, reason: loop.error };
     if (used.length) decision.details = { ...decision.details, data_used: used.slice(0, 12) };
+    if (TRIGGERS[String(snapshot.trigger || "")]) decision.details = { ...decision.details, trigger: String(snapshot.trigger) };
 
     const cost = costOf(model, usage);
     let id: Json = null;
@@ -709,9 +752,12 @@ export function createHandler(deps: ShadowDeps): (req: Request) => Promise<Respo
     if (decision.action === "error") return new Response(JSON.stringify({ ok: false, id, error: "ai_failed", message: decision.reason, next_after_s: interval }), { status: 200, headers: JSON_HEADERS });
     // SPEC 10.8: on its own paper trade the decision is applied
     let aiTrade: Json = null;
-    if (ownTrade && decision.valid && decision.action !== "hold") {
+    // the AI's stop is binding: a hold's stop or a tighten's new_sl becomes the paper trade's stop (either direction)
+    const holdStop = decision.action === "hold" ? num(decision.details?.hold_exit) : null;
+    if (ownTrade && decision.valid && (decision.action !== "hold" || (holdStop !== null && Math.abs(holdStop - Number(pos.sl)) >= 0.005))) {
       const d = decision.details || {};
-      const op = decision.action === "tighten" ? { op: "sl", sl: decision.new_sl }
+      const op = decision.action === "hold" ? { op: "sl", sl: holdStop }
+        : decision.action === "tighten" ? { op: "sl", sl: decision.new_sl }
         : decision.action === "close" ? { op: "close", price: d.close_price, reason: "ai_close" }
         : d.reverse ? { op: "reverse", price: d.close_price, entry: d.reverse.entry, sl: d.reverse.sl, tp: d.reverse.tp, reason_text: decision.reason } : null;
       if (op) {

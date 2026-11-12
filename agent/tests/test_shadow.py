@@ -394,3 +394,66 @@ def test_no_question_while_the_market_is_closed(env):
     env.write_status()                                      # back to a weekday
     a.cycle()
     assert len(fake.calls) == 1
+
+
+# ------------------------------------------------------------------ 2026-11-13: ask on events as well as every 5 min
+def triggers_of(fake):
+    return [c["body"]["snapshot"].get("trigger") for c in fake.calls if "snapshot" in c["body"] and c["body"].get("mode") is None]
+
+
+def bar(env, t, atr=5.0):
+    lb = dict(env.status.get("last_bar") or {})
+    lb.update({"bar_time": t, "atr": atr})
+    return lb
+
+
+def test_events_ask_between_the_regular_checks(env):
+    open_status(env, last_bar=bar(env, "2026.11.09 10:00:00"))
+    a, fake = make(env)
+    a.cycle()
+    assert triggers_of(fake) == ["first"]
+    env.tick(30, positions=env.status["positions"], last_bar=bar(env, "2026.11.09 10:15:00"))
+    a.cycle()
+    assert triggers_of(fake) == ["first"]                                  # an event, but within 60 s of the last question
+    env.tick(40, positions=env.status["positions"])
+    a.cycle()
+    assert triggers_of(fake) == ["first", "m15_close"]
+    env.tick(70, positions=env.status["positions"], market={"bid": 4053.2, "ask": 4053.36, "spread": 0.16})   # +2.17 >= 0.4 x 5
+    a.cycle()
+    assert triggers_of(fake)[-1] == "price_move"
+    env.tick(70, positions=env.status["positions"])
+    a.cycle()
+    assert len(triggers_of(fake)) == 3                                     # nothing new: wait for the 5-min check
+    env.tick(240, positions=env.status["positions"])
+    a.cycle()
+    assert triggers_of(fake)[-1] == "time"
+
+
+def test_near_the_ai_stop_asks_once(env):
+    open_status(env, last_bar=bar(env, "2026.11.09 10:00:00", atr=1.0))
+    a, fake = make(env, answers=[(200, {"ok": True, "decision": {"action": "hold", "details": {"hold_exit": 4047.0}}, "valid": True,
+                                        "next_after_s": 300})])
+    a.cycle()
+    assert a.shadow.ai_stop[432543137] == 4047.0
+    env.tick(70, positions=env.status["positions"], market={"bid": 4047.4, "ask": 4047.56, "spread": 0.16})
+    a.cycle()                                                              # 0.4 from the AI's stop (<= 25 % of 2.63)
+    assert triggers_of(fake)[-1] in ("near_stop", "price_move")
+    n = len(fake.calls)
+    env.tick(70, positions=env.status["positions"], market={"bid": 4047.3, "ask": 4047.46, "spread": 0.16})
+    a.cycle()
+    assert len(fake.calls) == n                                            # still near: not again until it leaves
+
+
+def test_news_within_15_minutes_asks(env):
+    open_status(env, last_bar=bar(env, "2026.11.09 10:00:00"))
+    a, fake = make(env)
+    a.cycle()
+    a.news.cache = {"fetched_at": env.clock(), "events": [{"title": "CPI m/m", "ts_utc": da.iso_z(env.clock() + 600), "currency": "USD",
+                                                           "impact": "High"}]}
+    a.news.next_try = env.clock() + 10 ** 6                               # no fetch in the test
+    env.tick(70, positions=env.status["positions"])
+    a.cycle()
+    assert triggers_of(fake)[-1] == "news"
+    env.tick(70, positions=env.status["positions"])
+    a.cycle()
+    assert triggers_of(fake).count("news") == 1

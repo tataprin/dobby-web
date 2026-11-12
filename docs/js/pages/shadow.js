@@ -78,11 +78,11 @@ export function planLines(r) {
   const out = [];
   if (r.action === 'hold') {
     if (fin(d.hold_target)) out.push(L(`ถือไปหาเป้า ${fmtNum(d.hold_target)} ถ้าถึงได้ `, pnl(d.target_pnl)));
-    if (fin(d.hold_exit)) out.push(L(`ถ้าราคาไปถึง ${fmtNum(d.hold_exit)} จะปิด ผล `, pnl(d.exit_pnl)));
+    if (fin(d.hold_exit)) out.push(L(`SL ของ AI ${fmtNum(d.hold_exit)} ถ้าโดน `, pnl(d.exit_pnl), stopMoveText(d)));
   } else if (r.action === 'close') {
     if (fin(d.close_pnl)) out.push(L(`ปิดทั้งไม้ที่ ${fmtNum(d.close_price)} ผล `, pnl(d.close_pnl)));
   } else if (r.action === 'tighten') {
-    if (fin(d.new_sl)) out.push(L(`เลื่อน SL จาก ${fmtNum(d.old_sl)} ไป ${fmtNum(d.new_sl)} ถ้าโดน SL ใหม่ ผล `, pnl(d.locked_pnl)));
+    if (fin(d.new_sl)) out.push(L(`ย้าย SL ไป ${fmtNum(d.new_sl)} ถ้าโดน `, pnl(d.locked_pnl), stopMoveText(d)));
     else if (fin(r.new_sl)) out.push(L(`SL ใหม่ ${fmtNum(r.new_sl)}`));
   } else if (r.action === 'reverse' && d.reverse) {
     const v = d.reverse;
@@ -93,8 +93,20 @@ export function planLines(r) {
   return out;
 }
 
+/** " (ถอย SL จาก A)" / " (เลื่อน SL จาก A)": the AI's stop moved since its last answer (2026-11-13) */
+function stopMoveText(d) {
+  if (!d || !d.sl_move || !fin(d.sl_from)) return null;
+  return h('span', { class: `ai-move ${d.sl_move}` }, d.sl_move === 'further' ? ` ถอย SL จาก ${fmtNum(d.sl_from)}` : ` เลื่อน SL จาก ${fmtNum(d.sl_from)}`);
+}
+const TRIGGER_TH = { first: 'ถามครั้งแรก', time: 'ถามตามรอบ 5 นาที', m15_close: 'แท่ง M15 เพิ่งปิด', price_move: 'ราคาวิ่งเร็ว', near_stop: 'ราคาใกล้ SL',
+  near_target: 'ราคาใกล้เป้า', news: 'ข่าวแรงใกล้ออก' };
+
 function actionChip(r) {
-  const [label, tone] = ACTION[r.action] || [r.action, 'pending'];
+  let [label, tone] = ACTION[r.action] || [r.action, 'pending'];
+  const mv = r.details && r.details.sl_move;
+  if (r.action === 'tighten' && mv === 'further') [label, tone] = ['ถอย SL', 'bad'];
+  else if (r.action === 'hold' && mv === 'further') [label, tone] = ['ถือต่อ ถอย SL', 'warn'];
+  else if (r.action === 'hold' && mv === 'closer') label = 'ถือต่อ เลื่อน SL';
   return h('span', { class: `chip ${tone}`, title: r.valid === false ? 'ทำตามไม่ได้ เช่น SL ใหม่ไม่อยู่ระหว่าง SL เดิมกับราคา' : null },
     label, r.valid === false && r.action !== 'error' ? ' (ใช้ไม่ได้)' : '');
 }
@@ -263,7 +275,8 @@ function decisionItem(r) {
     h('div', { class: 'tl-body' },
       h('p', { class: 'tl-ev' }, actionChip(r),
         fin(r.confidence) ? h('span', { class: 'muted small' }, 'มั่นใจ ', h('span', { class: 'num' }, `${r.confidence}%`)) : null,
-        h('span', { class: 'muted small' }, 'ราคา ', h('span', { class: 'num' }, fmtNum(px)), ' กำไรตอนนั้น '), pnl(r.profit)),
+        h('span', { class: 'muted small' }, 'ราคา ', h('span', { class: 'num' }, fmtNum(px)), ' กำไรตอนนั้น '), pnl(r.profit),
+        r.details && TRIGGER_TH[r.details.trigger] ? h('span', { class: 'ai-trigger' }, TRIGGER_TH[r.details.trigger]) : null),
       ...planLines(r),
       r.action === 'error' ? h('p', { class: 'muted small' }, 'AI ตอบไม่สำเร็จในรอบนี้') : r.reason ? h('p', { class: 'tl-text' }, r.reason) : null));
 }

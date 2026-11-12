@@ -1161,6 +1161,7 @@ export class DemoApi {
           [20, 4047.5, 'reverse', { reverse_sl: 4052.6, reverse_tp: 4039.0 }, 62, 'ราคาหลุด VWAP และแท่ง M15 ปิดต่ำกว่าแท่งก่อนหน้า ปิดไม้ซื้อแล้วเปิดขายที่ 4,047.50 SL 4,052.60 เหนือจุดย่อล่าสุด เป้า 4,039.00 แถวแนวรับของเมื่อวาน']] },
         { ticket: 900102, module: 'NY', side: 'SELL', open: 4033.33, sl: 4041.33, tp: 3993.33, ago: 27, steps: [
           [3, 4030.1, 'hold', { hold_target: 4025.33, hold_exit: 4036.0 }, 30, 'เพิ่งทะลุกรอบ NY ลงมา แนวโน้ม H4 เป็นขาลง ถือไปหาเป้า 4,025.33 ถ้าเด้งกลับเหนือ 4,036.00 จะปิด'],
+          [6, 4031.2, 'hold', { hold_target: 4025.33, hold_exit: 4037.5 }, 40, 'ราคาเด้งกลับแรงกว่าที่คิดแต่ยังไม่ผ่านจุดสวิง ถอย SL จาก 4,036.00 ไปที่ 4,037.50 ให้อยู่เหนือจุดสวิงล่าสุด ยังถือไปเป้า 4,025.33'],
           [8, 4026.4, 'close', {}, 45, 'ใกล้เป้าแล้วแต่ข่าว CPI จะออกในอีก 5 นาที ปิดเก็บกำไรตอนนี้เลยดีกว่าเสี่ยงโดนเหวี่ยง']] },
       ];
       // the same arithmetic as the Edge Function's checkDecision (details in USD at 0.20 lot)
@@ -1171,6 +1172,9 @@ export class DemoApi {
         if (action === 'tighten') Object.assign(d, { new_sl: inp.new_sl, locked_pnl: at(inp.new_sl), old_sl: t.sl });
         if (action === 'close') Object.assign(d, { close_price: px, close_pnl: at(px) });
         if (action === 'hold') Object.assign(d, { hold_target: inp.hold_target, target_pnl: at(inp.hold_target), hold_exit: inp.hold_exit, exit_pnl: at(inp.hold_exit) });
+        const stop = action === 'hold' ? inp.hold_exit : action === 'tighten' ? inp.new_sl : null;
+        if (stop) { const from = t.lastStop || t.sl; if (Math.abs(stop - from) >= 0.005) Object.assign(d, { sl_from: from, sl_to: stop, sl_move: (buy ? stop < from : stop > from) ? 'further' : 'closer' }); t.lastStop = stop; }
+        d.trigger = ['first', 'time', 'm15_close', 'price_move', 'near_stop'][Math.min(t.k = (t.k ?? -1) + 1, 4)];
         if (action === 'reverse') {
           const side = buy ? 'SELL' : 'BUY', entry = side === 'SELL' ? bid : ask;
           const risk = r2(Math.abs(entry - inp.reverse_sl) * mult), reward = r2(Math.abs(inp.reverse_tp - entry) * mult);
@@ -1182,6 +1186,7 @@ export class DemoApi {
       let id = 1;
       for (const bot of this.db.bots) {
         for (const t of plan) {
+          t.lastStop = null; t.k = -1;                       // the demo's stop history starts again per bot
           const t0 = now - t.ago * 3600e3;
           for (const [min, px, action, inp, conf, reason] of t.steps) {     // px = where this trade closes now
             const buy = t.side === 'BUY';

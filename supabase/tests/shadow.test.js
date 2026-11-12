@@ -68,7 +68,9 @@ test('shadow_record + shadow_start: one question per trade per interval; other t
   assert.deepEqual((await ctx.sql(`select details from public.shadow_decisions where id = $1`, [id2]))[0].details, {});
   await rejects(start(bob, botB, 77), 'shadow_too_soon');
   assert.ok(await start(bob, botB, 78));
-  await ctx.sql(`update public.shadow_decisions set ts = now() - interval '5 minutes' where ticket = 77`);
+  await ctx.sql(`update public.shadow_decisions set ts = now() - interval '30 seconds' where ticket = 77`);
+  await rejects(start(bob, botB, 77), 'shadow_too_soon');            // 40 s floor (events may ask between the 5-min checks)
+  await ctx.sql(`update public.shadow_decisions set ts = now() - interval '45 seconds' where ticket = 77`);
   assert.ok(await start(bob, botB, 77));
 });
 

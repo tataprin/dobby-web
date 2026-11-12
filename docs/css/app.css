@@ -1920,3 +1920,6 @@ textarea.input.chat-input { flex: 1 1 auto; min-height: var(--h-input); max-heig
 .ai-row > summary > .ai-chev { grid-column: 4; grid-row: 1; }
 .ai-row > summary { position: relative; }
 .ai-row > summary::before { position: absolute; }
+.ai-move { font-size: var(--fs-14); color: var(--slate); }
+.ai-move.further { color: var(--cinnabar); font-weight: 600; }
+.ai-trigger { font-size: var(--fs-13); color: var(--slate); border: 1px solid var(--hair); border-radius: var(--r-chip); padding: 0 var(--s2); line-height: 22px; }

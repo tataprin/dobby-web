@@ -103,6 +103,7 @@ NEWS_REPORT_MAX = 60
 SHADOW_PATH = "/functions/v1/shadow"
 SHADOW_LOG_NAME = "shadow_decisions.jsonl"
 SHADOW_INTERVAL_S = 300             # until the function answers with its own next_after_s
+SHADOW_EVENT_GAP_S = 60             # an event never asks sooner than this after the previous question
 SHADOW_TIMEOUT_S = 150             # the function may think and fetch data for up to ~140 s (Supabase stops it at 150 s)
 SHADOW_TOKEN_LEFT_S = 150           # the call uses the current access token only when it has this long left
 SHADOW_BARS = 32                    # 8 h of M15 bars in the snapshot
@@ -2326,7 +2327,9 @@ class ShadowWatcher(object):
         self.threaded = threaded
         self.clock = clock
         self.log_path = os.path.join(agent.agent_dir, SHADOW_LOG_NAME)
-        self.next_at = {}            # ticket -> epoch of the next question
+        self.next_at = {}            # ticket -> epoch of the next regular question
+        self.last_ask = {}           # ticket -> {t, price, bar, near_stop, near_target, news} of the last question
+        self.ai_stop = {}            # ticket -> the AI's last binding stop (its answers' hold_exit / new_sl)
         self.busy = set()            # tickets with a call in flight
         self.paused_until = 0.0
         self.pause_reason = ""
@@ -2729,6 +2732,8 @@ class ShadowWatcher(object):
             for t in list(self.next_at):
                 if t not in open_tickets and t not in self.busy:
                     del self.next_at[t]
+                    self.last_ask.pop(t, None)
+                    self.ai_stop.pop(t, None)
             moved = False
             for t in list(self.asked):                       # SPEC 10.7: a watched trade closed -> review it
                 if t >= AI_TICKET_BASE:                      # AI paper trades are queued with their close by _ai_closed
@@ -2763,14 +2768,19 @@ class ShadowWatcher(object):
         for p in positions:
             ticket = int(to_num(p["ticket"]))
             with self.lock:
-                if ticket in self.busy or now < self.next_at.get(ticket, 0):
+                if ticket in self.busy:
+                    continue
+                trigger = self.trigger(status, p, ticket, now)   # 2026-11-13: every 5 min AND on events
+                if trigger is None:
                     continue
                 self.busy.add(ticket)
                 self.next_at[ticket] = now + SHADOW_INTERVAL_S
                 if ticket not in self.asked:
                     self.asked[ticket] = {"module": p.get("module"), "side": p.get("side"), "first_utc": iso_z(now)}
                     self._save()
-            body = {"bot_id": bot_id, "snapshot": self.snapshot(status, p, now)}
+            snap = self.snapshot(status, p, now)
+            snap["trigger"] = trigger
+            body = {"bot_id": bot_id, "snapshot": snap}
             headers = {"apikey": client.key, "Authorization": "Bearer " + token, "Content-Type": "application/json",
                        "Accept": "application/json"}
             args = (client.url + SHADOW_PATH, headers, body, ticket, p)
@@ -2778,6 +2788,56 @@ class ShadowWatcher(object):
                 threading.Thread(target=self._call, args=args, name="shadow-%d" % ticket, daemon=True).start()
             else:
                 self._call(*args)
+
+    def trigger(self, status, pos, ticket, now):
+        """Why to ask about this open trade now, or None (call with self.lock held). The regular rhythm is next_at
+        (5 min); between those, an event asks at once: a new M15 bar, price moving 0.4 ATR since the last answer,
+        price entering the last 25 % before the AI's stop or the target, a high-impact USD release within 15 min.
+        Never closer than SHADOW_EVENT_GAP_S to the previous question."""
+        st = status or {}
+        m = st.get("market") or {}
+        buy = pos.get("side") == "BUY"
+        px = to_num(m.get("bid") if buy else m.get("ask"))
+        bar = (st.get("last_bar") or {}).get("bar_time")
+        atr = to_num((st.get("last_bar") or {}).get("atr")) or 5.0
+        entry = to_num(pos.get("open_price"))
+        stop = self.ai_stop.get(ticket) or to_num(pos.get("sl"))
+        target = to_num(pos.get("tp"))
+        mt = re.search(r"\bt([\d.]+)", pos.get("comment") or "")
+        if mt and entry and pos.get("module") != "AI":         # a Dobby trade: the real target is TP0, not the safety TP
+            target = entry + float(mt.group(1)) if buy else entry - float(mt.group(1))
+
+        def near(level):
+            return bool(px and entry and level and abs(px - level) <= max(0.25 * abs(entry - level), 0.3 * atr))
+        near_stop, near_target = near(stop), near(target)
+        news_ts = None
+        for e in self.agent.news.events:
+            t = parse_utc(e.get("ts_utc"))
+            if t is not None and 0 <= t - now <= 15 * 60 and e.get("currency") == "USD" and e.get("impact") == "High":
+                news_ts = e.get("ts_utc")
+                break
+        last = self.last_ask.get(ticket)
+        why = None
+        if last is None:
+            why = "first"
+        elif now - last["t"] < SHADOW_EVENT_GAP_S:
+            return None
+        elif now >= self.next_at.get(ticket, 0):
+            why = "time"
+        elif bar and bar != last.get("bar"):
+            why = "m15_close"
+        elif px and last.get("price") and abs(px - last["price"]) >= 0.4 * atr:
+            why = "price_move"
+        elif near_stop and not last.get("near_stop"):
+            why = "near_stop"
+        elif near_target and not last.get("near_target"):
+            why = "near_target"
+        elif news_ts and news_ts != last.get("news"):
+            why = "news"
+        if why:
+            self.last_ask[ticket] = {"t": now, "price": px, "bar": bar, "near_stop": near_stop, "near_target": near_target,
+                                     "news": news_ts or (last or {}).get("news")}
+        return why
 
     def _call(self, url, headers, body, ticket, pos):
         started = self.clock()
@@ -2803,6 +2863,11 @@ class ShadowWatcher(object):
                 self.last_error = ""
                 LOG.info("shadow AI: %s #%s -> %s (%s%%) %s", pos.get("module"), ticket, d.get("action"),
                          d.get("confidence"), clean_note(d.get("reason"), 120))
+                det = d.get("details") if isinstance(d.get("details"), dict) else {}
+                stop = to_num(det.get("hold_exit")) or (to_num(det.get("new_sl")) if d.get("action") == "tighten" else None)
+                if stop and data.get("valid") is not False:
+                    with self.lock:
+                        self.ai_stop[ticket] = stop            # its binding stop: the near-stop trigger watches it
                 if ticket >= AI_TICKET_BASE and isinstance(data.get("ai_trade"), dict):   # SPEC 10.8: applied to its own trade
                     entry["ai_trade"] = data["ai_trade"]
                     self._apply_server_trade(data["ai_trade"], self.clock())

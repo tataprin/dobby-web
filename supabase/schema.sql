@@ -1064,8 +1064,10 @@ begin
   if public.shadow_month_cost() >= v_cfg.shadow_budget_usd then
     raise exception 'shadow_budget';
   end if;
+  -- 2026-11-13: the app also asks on events (new M15 bar, fast move, near the stop / target, news), so the gap is a
+  -- 40 s floor against storms; the regular rhythm (shadow_interval_s) is kept by the app
   select max(d.ts) into v_last from public.shadow_decisions d where d.bot_id = p_bot and d.ticket = p_ticket;
-  if v_last is not null and v_last > now() - make_interval(secs => greatest(v_cfg.shadow_interval_s - 20, 30)) then
+  if v_last is not null and v_last > now() - interval '40 seconds' then
     raise exception 'shadow_too_soon';
   end if;
   return jsonb_build_object('model', v_cfg.shadow_model, 'interval_s', v_cfg.shadow_interval_s,
