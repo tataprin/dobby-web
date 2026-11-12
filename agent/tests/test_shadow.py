@@ -372,3 +372,25 @@ def test_member_bot_is_refused_and_paused_for_hours(env):
     a.cycle()
     assert len(fake.calls) == 1                                  # 6 h pause
     assert a.agent_state(env.clock())["shadow"]["paused"] == "shadow_admin_only"
+
+
+def test_market_open_hours():
+    assert da.market_open("2026.11.13 12:00:00")            # Friday midday
+    assert not da.market_open("2026.11.14 12:00:00")        # Saturday
+    assert not da.market_open("2026.11.15 23:00:00")        # Sunday night
+    assert not da.market_open("2026.11.16 00:30:00")        # Monday before the open
+    assert da.market_open("2026.11.16 01:00:00")
+    assert not da.market_open("2026.11.13 23:59:00")        # daily break
+    assert not da.market_open(None)
+
+
+def test_no_question_while_the_market_is_closed(env):
+    open_status(env)
+    a, fake = make(env)
+    sat = server_time_str(env.clock() + 5 * 86400)          # T0 is Monday: +5 days = Saturday
+    env.write_status(fresh=False, server_time=sat, heartbeat_gmt_unix=int(env.clock()))
+    a.cycle()
+    assert fake.calls == []
+    env.write_status()                                      # back to a weekday
+    a.cycle()
+    assert len(fake.calls) == 1

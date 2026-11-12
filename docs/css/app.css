@@ -1913,3 +1913,10 @@ textarea.input.chat-input { flex: 1 1 auto; min-height: var(--h-input); max-heig
 .ai-body .pos-facts { margin-top: 0; }
 .ai-body .pos-fact dd { font-size: var(--fs-16); }
 .ai-list .trade-main > p + p { white-space: normal; overflow: visible; line-height: 1.55; }
+/* explicit cells: a stray pseudo element (an older cached rule) can never shift the row */
+.ai-row > summary > .trade-ico { grid-column: 1; grid-row: 1; }
+.ai-row > summary > .trade-main { grid-column: 2; grid-row: 1; }
+.ai-row > summary > .trade-pnl { grid-column: 3; grid-row: 1; }
+.ai-row > summary > .ai-chev { grid-column: 4; grid-row: 1; }
+.ai-row > summary { position: relative; }
+.ai-row > summary::before { position: absolute; }

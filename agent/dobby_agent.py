@@ -2265,6 +2265,16 @@ class CommonLock(object):
 # ---------------------------------------------------------------------------------------------------------------------
 # The agent loop (SPEC 3.4)
 # ---------------------------------------------------------------------------------------------------------------------
+def market_open(server_time):
+    """Gold trades Monday 01:00 to Friday 23:58 broker server time, with a daily break 23:58-01:00. The shadow AI is
+    never asked while it is closed (no new price = a wasted question). Unknown time = closed."""
+    dt = parse_server_dt(server_time or "")
+    if dt is None:
+        return False
+    mins = dt.hour * 60 + dt.minute
+    return dt.weekday() < 5 and 60 <= mins < 23 * 60 + 58
+
+
 def shadow_bar_rows(text, offset_min, keep=SHADOW_BARS):
     """SPEC 10.6: the last `keep` M15 bars of dobby2_bars.csv with the EA's indicators, for the shadow snapshot.
     Columns: 0 bar_time (server), 2 close, 3 rsi, 4 atr, 6 h4_close, 7 h4_ema, 9 trend, 14 vwap (newer EA rows)."""
@@ -2738,6 +2748,8 @@ class ShadowWatcher(object):
         if now >= self.paused_until:
             self._ai_scan(status, now)
         if not positions or now < self.paused_until:
+            return
+        if not market_open((status or {}).get("server_time")):   # weekend / daily break: the price does not move
             return
         client = self.agent.client
         token = getattr(client, "access_token", None)

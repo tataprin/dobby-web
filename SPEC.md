@@ -811,7 +811,8 @@ closed trades the log is scored on real ticks against the real exits (research/s
   with the access token the main loop holds (never refreshed in the thread; skipped when < 150 s are left).
   Pauses: shadow_disabled / ai_not_configured 30 min, shadow_budget / not_approved / bot_not_found 60 min,
   shadow_too_soon 60 s, network 120 s. Each answer is appended to `shadow_decisions.jsonl` in the agent folder
-  (%APPDATA%\DobbyApp for the app). `agent_state.shadow` = {calls, last_at, last_error, paused}. Config `"shadow": false`
+  (%APPDATA%\DobbyApp for the app). Never asked while the market is closed (weekend, Monday before 01:00, the daily
+  break 23:58-01:00 server time: `market_open`). `agent_state.shadow` = {calls, last_at, last_error, paused}. Config `"shadow": false`
   turns it off on that PC; dry-run never asks.
 - Website: page **AI เงา** (`#/shadow`, more-menu): per trade the decisions (time, price, P&L then, action, new stop,
   confidence, reason), the bot's real result (journal CLOSE with `pos=<ticket>`) and the immediate effect of the first
