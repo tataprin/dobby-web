@@ -1838,17 +1838,78 @@ textarea.input.chat-input { flex: 1 1 auto; min-height: var(--h-input); max-heig
 .runner-adv > summary { min-height: 44px; display: flex; align-items: center; color: var(--ink); font-weight: 600; cursor: pointer; }
 .runner-adv .adv-list { display: grid; }
 
-/* AI เงา (SPEC 10.6) */
-.shadow-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 10px; }
-.shadow-reason { min-width: 16rem; max-width: 34rem; white-space: normal; }
-.shadow-count { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; }
-.shadow-plan { min-width: 15rem; white-space: normal; }
-.shadow-plan-line { line-height: 1.5; }
-.shadow-review { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--well-strong); }
-.shadow-review-title { font-weight: 600; margin-bottom: 6px; }
-.shadow-checks { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-.shadow-ops { margin: 6px 0 0 18px; }
-.shadow-lessons { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-.shadow-lesson { display: flex; gap: 12px; align-items: flex-start; }
-.shadow-lesson.retired { opacity: .6; }
-.shadow-weight { font-weight: 600; white-space: nowrap; }
+/* ================================================================ AI เงา (SPEC 10.6-10.8; DESIGN.md "AI เงา") */
+/* expandable rows: the summary is a .trade row (icon, main, amount) plus a chevron; the body opens under it */
+.ai-list > li + li .trade { border-top: 1px solid var(--hair); }
+.ai-list > li:first-child .trade { border-top: 0; padding-top: 0; }
+.ai-row > summary.trade { grid-template-columns: 20px minmax(0, 1fr) auto 20px; list-style: none; cursor: pointer; font-weight: 400; }
+.ai-row > summary::-webkit-details-marker { display: none; }
+.ai-row > summary:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: var(--r-ctl); }
+.ai-chev { color: var(--slate); display: grid; place-items: center; transition: transform .2s var(--ease); }
+.ai-chev .ico { width: var(--ico-sm); height: var(--ico-sm); }
+.ai-row[open] > summary .ai-chev { transform: rotate(90deg); }
+.ai-body { display: grid; gap: var(--s4); padding: var(--s2) 0 var(--s5) calc(20px + var(--s3)); }
+.ai-more { margin-top: var(--s3); justify-self: start; }
+
+/* timeline of the AI's answers on one trade (the trade page's timeline, wider time column for the date) */
+.ai-timeline .tl-ev { flex-wrap: wrap; row-gap: var(--s1); font-weight: 400; }
+.ai-timeline .tl-ev .chip { font-weight: 500; }
+.ai-timeline .tl-item.ev-hold .tl-dot::before { border-color: var(--slate); }
+.ai-timeline .tl-item.ev-close .tl-dot::before { border-color: var(--cinnabar); background: var(--cinnabar); }
+.ai-plan-line { font-size: var(--fs-14); line-height: 1.6; }
+.ai-plan-line .num, .ai-plan-line .pnl { font-size: var(--fs-14); }
+
+/* the AI's reasons and reviews: plain text at reading width, sections split by a hairline, never a box in a box */
+.ai-why { max-width: 72ch; line-height: 1.65; overflow-wrap: anywhere; }
+.ai-why strong { font-weight: 600; }
+.ai-review { display: grid; gap: var(--s2); padding-top: var(--s4); border-top: 1px solid var(--hair); max-width: 80ch; }
+.ai-review h3 { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-16); font-weight: 600; }
+.ai-review h3 .ico { color: var(--gold-ink); width: var(--ico-sm); height: var(--ico-sm); }
+.ai-review p { line-height: 1.65; overflow-wrap: anywhere; }
+.ai-checks { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.ai-ops { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); }
+.ai-ops li { display: flex; gap: var(--s2); align-items: baseline; flex-wrap: wrap; font-size: var(--fs-14); line-height: 1.6; }
+
+/* last look at the market */
+.ai-scan { display: flex; flex-direction: column; gap: var(--s3); flex: 1 1 auto; }
+.ai-verdict { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; min-height: 40px; }
+.ai-verdict-text { font-size: var(--fs-22); font-weight: 600; line-height: 1.3; }
+.ai-verdict-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--slate); flex: 0 0 auto; }
+.ai-verdict-dot.open { background: var(--gold); box-shadow: 0 0 0 4px color-mix(in srgb, var(--gold) 25%, transparent); }
+.ai-verdict-dot.error { background: transparent; border: 2px solid var(--cinnabar); }
+.meter-fill.ai-conf { background: var(--gold); }
+.ai-older > summary { font-size: var(--fs-14); color: var(--slate); min-height: var(--h-btn); display: flex; align-items: center; }
+.ai-older-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.ai-older-list li { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: var(--s2) var(--s3); align-items: baseline; padding: var(--s2) 0; border-top: 1px solid var(--hair); }
+.ai-older-reason { font-size: var(--fs-14); line-height: 1.55; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ai-note { margin-top: auto; padding-top: var(--s3); }
+
+/* memory: weight badge, lesson, retire */
+.ai-lessons { list-style: none; margin: 0; padding: 0; display: grid; }
+.ai-lesson { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: var(--s3); align-items: start; padding: var(--s3) 0; border-top: 1px solid var(--hair); }
+.ai-lessons > .ai-lesson:first-child { border-top: 0; padding-top: 0; }
+.ai-lesson-main { display: grid; gap: 2px; min-width: 0; }
+.ai-lesson-main > p:first-child { line-height: 1.6; overflow-wrap: anywhere; }
+.ai-weight { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--well-strong);
+  font-family: var(--font-num); font-variant-numeric: tabular-nums; font-weight: 600; font-size: var(--fs-16); color: var(--ink); }
+.ai-weight.strong { background: color-mix(in srgb, var(--gold) 28%, transparent); }
+.ai-lesson.retired .ai-lesson-main > p:first-child { color: var(--slate); text-decoration: line-through; text-decoration-color: var(--hair); }
+.ai-lesson.retired .ai-weight { background: transparent; border: 1px solid var(--hair); color: var(--slate); }
+
+@media (max-width: 599px) {
+  .ai-body { padding-left: 0; }
+  .ai-timeline .tl-item { grid-template-columns: 44px 12px minmax(0, 1fr); }
+  .ai-timeline .tl-item:not(:last-child)::after { left: calc(44px + var(--s3) + 5px); }
+  .ai-lesson { grid-template-columns: 40px minmax(0, 1fr); }
+  .ai-lesson > .btn { grid-column: 2; justify-self: start; }
+  .ai-older-list li { grid-template-columns: auto minmax(0, 1fr); }
+  .ai-older-reason { grid-column: 1 / -1; }
+  .ai-verdict-text { font-size: var(--fs-18); }
+}
+@media (prefers-reduced-motion: reduce) { .ai-chev { transition: none; } }.ai-scan .pos-facts { margin-top: 0; }
+.ai-conf-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s3); align-items: center; }
+.ai-row > summary::before { content: none; display: none; }   /* the site-wide details chevron: these rows use the right-hand one */
+.ai-list .trade-main > p:first-child { white-space: normal; overflow: visible; }
+.ai-body .pos-facts { margin-top: 0; }
+.ai-body .pos-fact dd { font-size: var(--fs-16); }
+.ai-list .trade-main > p + p { white-space: normal; overflow: visible; line-height: 1.55; }

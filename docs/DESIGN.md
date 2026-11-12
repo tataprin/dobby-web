@@ -203,6 +203,32 @@ profit / TP, cinnabar = loss / SL).
   It follows the page's strategy and tag filters (said in the sub-line), not the dates; a day picked on the calendar
   jumps the chart to that day. 260 px tall on phones, 340 from 560 px.
 
+## AI เงา (SPEC 10.6-10.8, 2026-11-13)
+
+- **Order**: page head (one sentence: watches the bot, trades on paper, learns; no real orders), status callouts only
+  when something is wrong, four figures (AI paper P&L with trades / win rate, the AI's open trade live, advice checked
+  against the real result "2 จาก 4 ครั้ง", memory size with this month's AI cost for the admin), then two `.dash-cols`
+  rows: the AI's open trade | its last look at the market, and its closed trades | its memory, then the bot's trades it
+  watched (full width), then "AI เงาทำงานยังไง" as a closed `details.panel`.
+- **The AI's open trade** reuses the dashboard's position: side, "ไม้ของ AI" chip (eye), lots, live P&L, the SL - entry -
+  price - TP gauge (a gold tick where the AI moved the stop) and four facts (price, time open, TP money, SL money), then
+  "ทำไม AI เปิด" as reading-width text. Paper is said once, in the panel head.
+- **Last look at the market**: a 12 px dot (gold = open, slate = wait, cinnabar ring = failed) and the verdict at 22 px,
+  the confidence as the 4 px meter in gold with "มั่นใจ 51%" beside it, SL / TP as two facts with distance and money,
+  the reason, "ดูตลาดครั้งต่อไปประมาณ …", and the earlier looks folded in a details (time, chip, two-line reason).
+- **Lists** (AI trades, the bot's watched trades) are the dashboard's `.trade` rows made expandable: icon, two lines
+  (both may wrap), the amount right, a 16 px chevron that turns 90° when open; the site-wide details chevron is hidden
+  on these rows. Six rows, then "แสดงทั้งหมด". The body is indented to the text column (flush on phones).
+- **Answers on a trade** use the trade page's timeline (72 px time column, 44 px on phones): dot slate = hold, gold =
+  tighten, cinnabar = close / reverse, ring = failed; the line is the action chip, confidence, price and P&L then; the
+  plan's prices and money in 14 px lines; the reason at reading width.
+- **Reviews** are a section under a hairline with a gold book icon (never a box in a box): summary, "ผิดตรงไหน", one
+  chip per decision (ดีกว่าบอท jade / แย่กว่าบอท cinnabar / เท่ากับบอท slate with the USD difference), the lesson
+  changes as quiet chips + text.
+- **Memory**: one row per lesson: a 40 px weight disc (gold tint from weight 3), the lesson, a 14 px slate line (number,
+  trades, last change), "เลิกใช้" as a small ghost button (under the text on phones); retired lessons folded, struck
+  through in slate.
+
 ## Principles
 1. **The market is always visible** — a live XAUUSD ticker in the header (22 px price on desktop); the dashboard hero is
    today's price line with Dobby's own trades stamped on it (bars from `bots.agent_state.bars`, SPEC 8).
