@@ -504,6 +504,7 @@ export class BotSim {
       params: {
         sl_cap: P.InpA_SLCap, tp_ratio: P.InpA_TPRatio, lots_input: P.InpLotsA, lots_ny: P.InpLotsNY, lots_c5g: P.InpLotsC5G, max_lots: P.InpMaxLots,
         recovery_mult: P.InpRecoveryMult, daily_cap_pct: P.InpDailyCapPct, max_spread_input: P.InpMaxSpread, modules: 'A_new+NY+C5G',
+        ...(parseFloat(this.cfg.ea) >= 3.07 - 1e-9 ? { c5g_vwap_tol: P.InpC5_VwapTol } : {}),
         ...(v6 ? { runner: { enable: P.InpRunnerEnable, a: P.InpRunner_A, ny: P.InpRunner_NY, c5g: P.InpRunner_C5G,
           keep_pct: P.InpRunnerKeepPct, step: P.InpRunnerStep, max_steps: P.InpRunnerMaxSteps, safety_tp: P.InpRunnerSafetyTP } } : {}),
       },
@@ -513,6 +514,7 @@ export class BotSim {
       // an EA below 3.05 does not know the runner keys, so its effective set has none of them
       const effective = remoteSubset(P);
       if (!v6) for (const k of RUNNER_KEYS) delete effective[k];
+      if (!(parseFloat(this.cfg.ea) >= 3.07 - 1e-9)) delete effective.InpC5_VwapTol;   // EA v3.07 key
       st.remote = {
         params_enabled: P.InpRemoteParams, live_enabled: P.InpRemoteLive, file_exists: true, version: this.remote.version,
         applied_version: this.remote.applied_version, pending: this.remote.pending, waiting: this.remote.waiting, live: a.live,

@@ -1016,3 +1016,50 @@ Everything of schema 5 and of the v3.04 remote file is unchanged. A v3.04 bot ke
 1.2.1: the website never sends it the runner keys or `cap_reset`, the agent drops them if they appear, the runner section
 is an update callout and the daily-cap button is disabled with "ต้องอัปเดต EA เป็น v3.05". Presets and .set files may
 carry the runner inputs (MT5 ignores unknown keys in a .set).
+
+## 12. EA v3.06: which MT5 trade permission is off (2026-11-13)
+v3.05 reports one combined `account.trade_permitted` (= the four MT5 permissions below), so the app and the website
+always said "press Algo Trading to green", also when the toolbar button was already green. v3.06 trades exactly like
+v3.05 (same inputs, the v3.05 web preset fits) and only adds detail.
+
+### 12.1 Status JSON, schema_version 7 (everything of schema 6 unchanged)
+- `account.trade_flags: {"ea": bool, "terminal": bool, "account": bool, "expert": bool}`:
+  `ea` = MQL_TRADE_ALLOWED (the EA's own Allow Algo Trading tick, F7 > Common), `terminal` = TERMINAL_TRADE_ALLOWED
+  (the toolbar Algo Trading button), `account` = ACCOUNT_TRADE_ALLOWED (false: investor password, no connection,
+  read-only / disabled account), `expert` = ACCOUNT_TRADE_EXPERT (false: the broker disallows EAs on the account).
+  All true in the Strategy Tester (which writes no status anyway). `account.trade_permitted` stays (= all four).
+- Journal SKIP reason: `AutoTrading / trading not permitted: <the missing ones>` (same prefix as v3.05).
+
+### 12.2 App (`dobby_app_core.trade_block`) and website (`docs/js/tradeflags.js`)
+One message, in this order (login / broker first: no button helps until they are fixed): `account` false and
+`connected` false -> not connected to the broker; `account` false -> logged in with the investor password, log in again
+with the main password (File > Login to Trade Account); `expert` false -> the broker does not allow EAs on this account;
+`terminal` and `ea` false -> the toolbar button and the tick; `terminal` false -> the toolbar button; `ea` false -> the
+tick (F7 > Common). No `trade_flags` (EA before v3.06) or no flag false -> the old texts word for word. The app's
+readiness row 4, the main status line and the "ดูวิธีเปิด" dialog (only the steps that are off; no dialog for the login /
+broker cases) use it; the website's state banner (`effectiveState`) uses the same order and words.
+
+## 13. EA v3.07: C5G VWAP tolerance (2026-11-13, owner's request)
+A friend's bot sold a C5G bar that ours skipped: their close was 0.10 below VWAP, ours 0.11 above (different price
+feeds). The owner wants a setting to choose either behaviour. v3.07 = v3.06 + one input; at its default 0 it trades
+exactly like v3.06. Research r51 (2026, vs live RL85): no tolerance 0.01..0.30 $ or 2..4 % ATR passed (0/8); the
+website says so next to the switch.
+
+### 13.1 EA input (remote allow-listed, SPEC 4.2)
+- `InpC5_VwapTol` double, default 0, 0..0.50 $ (OnInit and the remote file reject anything else). C5G short needs
+  `close < VWAP + tol`, long `close > VWAP - tol`; every other C5G condition is unchanged. When only the tolerance let
+  the bar through, the SIGNAL note ends with `(close X on the wrong side of VWAP, within tolerance T)`.
+- Status JSON (schema 7 unchanged): `params.c5g_vwap_tol`, and `remote.effective.InpC5_VwapTol` like every remote key.
+
+### 13.2 App / agent 1.3.1
+- `REMOTE_PARAMS` gains `("InpC5_VwapTol", "float", 0.0, 0.5)` before `cap_reset` (which stays the last line).
+- `drop_v305_keys` also drops `V307_KEYS` for an EA below 3.07 (such an EA rejects the whole file on an unknown key).
+- The app's own settings (wizard, .set preset `Dobby3_v305_web.set`) never carry the key; the EA default 0 applies.
+
+### 13.3 Website
+- `params.js`: the input in group c5 with `since: 3.07, app: '1.3.1'`; `vwapTolSupported(ea, app)` and
+  `unsupportedKeys(ea, app)`. `toDesiredParams`, preset pushes, preset loading and AI proposals leave the key out unless
+  the bot reports EA >= 3.07 AND app >= 1.3.1 (an app 1.3.0 refuses a whole set with a key it does not know). Left out =
+  the EA keeps the value it has.
+- ตั้งค่าบอท: section "C5G: ไม้ที่ปิดก้ำกึ่งเส้น VWAP" (`#set-vwap`): ไม่เปิด (ค่าเดิม) / เปิด + "ปิดเลยเส้นไปอีกฝั่งได้ไม่เกิน"
+  0.05..0.50 step 0.05 (first switch-on 0.15, the 13 Nov bar needed > 0.11). An older bot gets an update callout.

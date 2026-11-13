@@ -4,7 +4,7 @@ import { h, mount, icon, fmtNum, fmtSigned, fmtPct, fmtThai, toast, errText, con
   emptyState, field, busy, downloadBlob, callout, newId, debounce } from '../util.js';
 import { app, myBot, isAdmin } from '../state.js';
 import { GROUPS, GROUP_SINCE, PARAMS, PARAM_BY_KEY, REMOTE_KEYS, TEMPLATES, templateParams, normalizeParams, validatePreset, validateRemote,
-  liveValuesFromStatus, presetFromLive, remoteSubset, formatValue, sameValue, minutesToClock, defaults, runnerSupported } from '../params.js';
+  liveValuesFromStatus, presetFromLive, remoteSubset, formatValue, sameValue, minutesToClock, defaults, runnerSupported, unsupportedKeys } from '../params.js';
 import { parseSet, buildSet, setFileName } from '../setfile.js';
 import { patchDesired, cmdBlock, normDesired } from '../botctl.js';
 import { calculate, tableForBalance, HORIZON30, DAILY_BASE, BASE_BALANCE, BASE_LOT } from '../lotcalc.js';
@@ -401,7 +401,7 @@ async function renderEditor(root, ctx, id) {
     // the eight v3.05 runner keys go only to a bot that reports EA >= 3.05 (SPEC 11)
     const eaVersion = (st && st.ea_version) || bot.ea_version;
     const remote = remoteSubset(v);
-    if (!runnerSupported(eaVersion)) for (const k of Object.keys(remote)) if (PARAM_BY_KEY[k].group === 'runner') delete remote[k];
+    for (const k of unsupportedKeys(eaVersion, bot.agent_version)) delete remote[k];   // runner < EA 3.05; VWAP tolerance < EA 3.07 / app 1.3.1
     const sentKeys = Object.keys(remote);
     const remoteChanges = sentKeys.filter((k) => !(k in live.values) || !sameValue(live.values[k], v[k]));
     const skippedRunner = REMOTE_KEYS.filter((k) => !sentKeys.includes(k) && !sameValue(defaults()[k], v[k]));
@@ -419,7 +419,7 @@ async function renderEditor(root, ctx, id) {
         h('td', null, h('code', null, k)), h('td', { class: 'num' }, k in live.values ? formatValue(PARAM_BY_KEY[k], live.values[k]) : '?'),
         h('td', { 'aria-hidden': 'true' }, '→'), h('td', { class: 'num' }, formatValue(PARAM_BY_KEY[k], v[k]))))))
         : h('p', { class: 'muted' }, `ค่าที่ส่งได้ตรงกับบอทแล้ว (จะส่งทั้ง ${sentKeys.length} ค่าเพื่อยืนยัน)`),
-      skippedRunner.length ? callout('info', 'ค่าโหมด runner ไม่ถูกส่ง', h('p', null, `บอทนี้ยังไม่ใช่ EA v3.05 จึงไม่รู้จัก ${skippedRunner.join(', ')} (แอป Dobby ก็ตัดค่ากลุ่มนี้ออกเงียบ ๆ สำหรับบอทรุ่นเก่ากว่า 3.05) อัปเดต EA และแอป Dobby 1.2.2 ก่อน`)) : null,
+      skippedRunner.length ? callout('info', 'บางค่าไม่ถูกส่ง', h('p', null, `บอทนี้ยังไม่รู้จัก ${skippedRunner.join(', ')} (โหมด runner ต้องใช้ EA v3.05 และแอป 1.2.2 ขึ้นไป, InpC5_VwapTol ต้องใช้ EA v3.07 และแอป 1.3.1 ขึ้นไป)`)) : null,
       h('p', { class: 'muted small' }, 'EA ใช้ค่าใหม่เมื่อไม่มีไม้และคำสั่งรอของบอทเปิดอยู่ ระหว่างรอ หน้าควบคุมจะขึ้น "รอ: มีไม้เปิดอยู่"'),
       localChanges.length ? callout('info', `ต้องโหลด .set ที่เครื่อง (${localChanges.length} ค่า)`,
         h('p', null, 'ค่าเหล่านี้เว็บส่งไม่ได้ ส่งออก .set แล้วโหลดใน Inputs ของ EA ที่เครื่อง:'),

@@ -153,7 +153,7 @@ async function sendCapital(c, value) {
   await patchDesired(c.bot.id, (n) => {
     const base = n.params ? normalizeParams({ ...vals, ...n.params }) : normalizeParams(vals);
     base.InpVirtualStart = value;
-    n.params = toDesiredParams(base, { eaVersion: (c.st && c.st.ea_version) || c.bot.ea_version });
+    n.params = toDesiredParams(base, { eaVersion: (c.st && c.st.ea_version) || c.bot.ea_version, agentVersion: c.bot.agent_version });
   });
 }
 

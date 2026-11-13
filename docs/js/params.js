@@ -27,6 +27,25 @@ export const GROUPS = [
 export const GROUP_SINCE = { runner: 3.05 };
 export const RUNNER_SINCE = 3.05;
 export const runnerSupported = (eaVersion) => parseFloat(String(eaVersion || '')) >= RUNNER_SINCE;
+// v3.07 C5G VWAP tolerance: needs EA 3.07 (it rejects an unknown key) AND app 1.3.1 (an older app refuses a whole set with
+// a key it does not know). Without a version the key is left out, so the EA keeps the value it already has.
+export const VWAP_TOL_SINCE = 3.07;
+export const VWAP_TOL_APP = '1.3.1';
+const verAtLeast = (v, min) => {
+  const a = String(v || '').replace(/^v/i, '').split('.').map((x) => parseInt(x, 10)), b = String(min).split('.').map(Number);
+  if (!Number.isFinite(a[0])) return false;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) { const x = a[i] || 0, y = b[i] || 0; if (x !== y) return x > y; }
+  return true;
+};
+export const vwapTolSupported = (eaVersion, agentVersion) =>
+  parseFloat(String(eaVersion || '').replace(/^v/i, '')) >= VWAP_TOL_SINCE - 1e-9 && verAtLeast(agentVersion, VWAP_TOL_APP);
+// Keys a bot cannot take yet (EA / app too old): left out of desired.params and preset pushes.
+export function unsupportedKeys(eaVersion, agentVersion) {
+  const out = [];
+  if (!runnerSupported(eaVersion)) out.push(...PARAMS.filter((p) => p.group === 'runner').map((p) => p.key));
+  if (!vwapTolSupported(eaVersion, agentVersion)) out.push('InpC5_VwapTol');
+  return out;
+}
 export const RUNNER_WARNING = 'ทดสอบในคอมแล้ว ยังไม่ผ่าน Strategy Tester กำไรเพิ่มมาจากไม้ส่วนน้อยที่วิ่งไกล';
 
 const B = (key, group, def, label, help, o = {}) => ({ key, group, type: 'bool', def, label, help, remote: false, advanced: false, ...o });
@@ -79,6 +98,10 @@ export const PARAMS = [
   I('InpC5_TimeStop', 'c5', 48, 1, 500, 'ปิดตามเวลา (แท่ง M15)', 'Time stop, M15 bars'),
   I('InpC5_MinBars', 'c5', 4, 0, 96, 'แท่งสัญญาณต้องเป็นแท่งที่ N ของวันขึ้นไป', 'Signal bar must be at least the Nth bar of the server day', ADV),
   I('InpC5_Touch', 'c5', 3, 1, 20, 'แตะ VWAP ภายใน N แท่งล่าสุด', 'VWAP touch within the last N bars', ADV),
+  // v3.07 (r51): the signal bar may close up to this $ on the wrong side of VWAP (0 = must close beyond = v3.06). Remote
+  // allow-listed, sent only to EA >= 3.07 with app >= 1.3.1 (paramSupported).
+  D('InpC5_VwapTol', 'c5', 0.0, 0, 0.5, 0.05, 'C5G: ยอมให้แท่งสัญญาณปิดเลยเส้น VWAP ไปอีกฝั่งได้ไม่เกิน ($)',
+    'v3.07: close may be up to this $ on the wrong side of VWAP (0 = must close beyond; 0..0.50)', { ...R, since: 3.07, app: '1.3.1' }),
 
   // Virtual portfolio
   D('InpVirtualStart', 'virtual', 200.0, 1, 10000000, 1, 'ทุนเริ่มต้นของพอร์ตจำลอง',
@@ -309,6 +332,7 @@ export function liveValuesFromStatus(st) {
   set('InpA_SLCap', p.sl_cap); set('InpA_TPRatio', p.tp_ratio);
   set('InpLotsA', p.lots_input); set('InpLotsNY', p.lots_ny); set('InpLotsC5G', p.lots_c5g); set('InpMaxLots', p.max_lots);
   set('InpRecoveryMult', p.recovery_mult); set('InpDailyCapPct', p.daily_cap_pct); set('InpMaxSpread', p.max_spread_input);
+  set('InpC5_VwapTol', p.c5g_vwap_tol);                                                      // EA v3.07
   set('InpVirtualStart', vr.start); set('InpKillBalance', vr.kill_balance);
   set('InpMagicA', st.magic);
   const mods = Object.fromEntries((st.modules || []).map((m) => [m.module, m]));

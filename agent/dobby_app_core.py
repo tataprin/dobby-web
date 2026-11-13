@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - python 2
 import dobby_agent as da
 
 APP_NAME = "Dobby App"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 DEFAULT_URL = "https://rpzuzhefviydjmeggvvz.supabase.co"
 DEFAULT_KEY = "sb_publishable_208tCs0INvDHYohhl5_DGQ_ezVQkJst"   # publishable key: public by design (RLS protects data)
 WEB_URL = "https://tataprin.github.io/dobby-web/"
@@ -664,6 +664,62 @@ def summarize_status(status, now):
     }
 
 
+# EA v3.06 account.trade_flags = the four MT5 permissions behind account.trade_permitted:
+#   ea = the EA's own Allow Algo Trading tick (F7 > Common), terminal = the toolbar Algo Trading button,
+#   account = the account may trade (false: investor password, no connection, disabled), expert = the broker allows EAs.
+# One fix at a time, login / broker first (no button helps there); the screen updates as soon as the EA reports again.
+TRADE_HELP_STEPS = {
+    "allow": ("allow", "ติ๊ก Allow Algo Trading ของ Dobby",
+              "คลิกกราฟที่มี Dobby แล้วกด F7: แท็บ Common ติ๊ก Allow Algo Trading แล้วกด OK"),
+    "algo": ("algo", "ปุ่ม Algo Trading เป็นสีเขียว", "กดปุ่ม Algo Trading บนแถบเครื่องมือด้านบนของ MT5"),
+}
+TRADE_BLOCK_TH = {      # key: (title, how to fix, help-dialog steps)
+    "connection": ("MT5 ไม่ได้เชื่อมต่อกับโบรก",
+                   "MT5 ต่อเซิร์ฟเวอร์ของโบรกไม่ได้ จึงส่งคำสั่งไม่ได้: ตรวจอินเทอร์เน็ต และดูมุมขวาล่างของ MT5 "
+                   "ถ้าขึ้น No connection ให้ล็อกอินบัญชีใหม่", ()),
+    "account": ("MT5 ล็อกอินแบบดูได้อย่างเดียว",
+                "บัญชีนี้ส่งคำสั่งไม่ได้ มักเพราะล็อกอินด้วยรหัสผ่านนักลงทุน (investor): ใน MT5 กด File > "
+                "Login to Trade Account แล้วใส่รหัสผ่านหลัก (ถ้าใช้รหัสหลักอยู่แล้ว ให้ถามโบรกว่าบัญชีถูกปิดการเทรดไหม)", ()),
+    "expert": ("โบรกไม่อนุญาตให้ใช้บอทกับบัญชีนี้",
+               "โบรกปิดการเทรดด้วย EA ของบัญชีนี้ไว้ กดปุ่มใน MT5 ก็แก้ไม่ได้: ติดต่อโบรกให้เปิด หรือใช้บัญชีอื่น", ()),
+    "terminal_ea": ("ปุ่ม Algo Trading ยังไม่เปิด",
+                    "กดปุ่ม Algo Trading บนแถบเครื่องมือของ MT5 ให้เป็นสีเขียว และติ๊ก Allow Algo Trading ของ Dobby "
+                    "(คลิกกราฟของ Dobby กด F7 > แท็บ Common)", ("allow", "algo")),
+    "terminal": ("ปุ่ม Algo Trading ยังไม่เปิด",
+                 "กดปุ่ม Algo Trading บนแถบเครื่องมือด้านบนของ MT5 ให้เป็นสีเขียว", ("algo",)),
+    "ea": ("ยังไม่ได้ติ๊ก Allow Algo Trading ของ Dobby",
+           "ปุ่มบนแถบเครื่องมือเปิดแล้ว เหลือติ๊กของ Dobby: คลิกกราฟที่มี Dobby กด F7 > แท็บ Common > "
+           "ติ๊ก Allow Algo Trading > OK", ("allow",)),
+    # an EA before v3.06 (only trade_permitted): which of the four is off is unknown (the callers keep the old text)
+    "unknown": ("Algo Trading ยังไม่เปิด",
+                "ติ๊ก Allow Algo Trading ในหน้าต่างของ Dobby และกดปุ่ม Algo Trading ให้เป็นสีเขียว", ("allow", "algo")),
+}
+
+
+def trade_block(acc):
+    """Why MT5 does not let Dobby trade, from the status "account" block: None when trade_permitted is true, else
+    {key, title, how, steps}; key: connection | account | expert | terminal_ea | terminal | ea | unknown
+    (unknown = no trade_flags (EA before v3.06) or no flag false); steps: (picture key, title, detail) for the
+    help dialog."""
+    acc = acc if isinstance(acc, dict) else {}
+    if acc.get("trade_permitted") is True:
+        return None
+    fl = acc.get("trade_flags") if isinstance(acc.get("trade_flags"), dict) else {}
+    off = set(k for k in ("ea", "terminal", "account", "expert") if fl.get(k) is False)
+    if "account" in off:
+        key = "connection" if acc.get("connected") is False else "account"
+    elif "expert" in off:
+        key = "expert"
+    elif "terminal" in off:
+        key = "terminal_ea" if "ea" in off else "terminal"
+    elif "ea" in off:
+        key = "ea"
+    else:
+        key = "unknown"
+    title, how, steps = TRADE_BLOCK_TH[key]
+    return {"key": key, "title": title, "how": how, "steps": [TRADE_HELP_STEPS[s] for s in steps]}
+
+
 def build_checklist(cfg, status, snap, now, running):
     """The six readiness checks of the main screen: [{key, state ok|warn|bad|idle, title, detail}]."""
     cfg = cfg or {}
@@ -709,8 +765,8 @@ def build_checklist(cfg, status, snap, now, running):
     elif acc.get("trade_permitted") is True:
         add("algo", "ok", "Algo Trading เปิดอยู่", "MT5 อนุญาตให้ Dobby ส่งคำสั่งซื้อขาย")
     else:
-        add("algo", "bad", "Algo Trading ยังไม่เปิด",
-            "ติ๊ก Allow Algo Trading ในหน้าต่างของ Dobby และกดปุ่ม Algo Trading ให้เป็นสีเขียว")
+        blk = trade_block(acc)          # EA v3.06: the permission that is off; older EAs: the combined message
+        add("algo", "bad", blk["title"], blk["how"])
     # 5 live trading
     flags = (st or {}).get("flags") if isinstance((st or {}).get("flags"), dict) else {}
     remote = (st or {}).get("remote") if isinstance((st or {}).get("remote"), dict) else {}
@@ -1358,7 +1414,7 @@ def settings_to_params(s):
         "InpLockShadow": True, "InpLock1Enable": stages >= 2,
         "InpLockAtPct": at, "InpLockToPct": to, "InpLock1AtPct": a1, "InpLock1ToPct": t1,
     }
-    return dict((k, v[k]) for k in da.REMOTE_KEYS if k not in da.V305_KEYS)
+    return dict((k, v[k]) for k in da.REMOTE_KEYS if k not in da.V305_KEYS and k not in da.V307_KEYS)
 
 
 def params_to_settings(p):
@@ -2280,7 +2336,14 @@ def hero_state(cfg, status, snap, now, running, stopping=False, phase=None, lock
                 "ที่แล้ว", "")
         return out("warn", "รอ MT5", text, "mt5", "เชื่อม MT5")
     if acc.get("trade_permitted") is not True:
-        return out("warn", "รอ MT5", "ปุ่ม Algo Trading ใน MT5 ยังไม่เปิด: กดให้เป็นสีเขียว", "algo_help", "ดูวิธีเปิด")
+        blk = trade_block(acc)
+        if blk["key"] == "unknown":     # EA before v3.06: which permission is off is not known
+            return out("warn", "รอ MT5", "ปุ่ม Algo Trading ใน MT5 ยังไม่เปิด: กดให้เป็นสีเขียว", "algo_help", "ดูวิธีเปิด")
+        if blk["steps"]:
+            return out("warn", blk["title"], blk["how"], "algo_help", "ดูวิธีเปิด")
+        if blk["key"] == "connection":
+            return out("warn", blk["title"], blk["how"])
+        return out("warn", blk["title"], blk["how"], stamp=("cinnabar", "ต้องแก้"))     # login / broker: no button helps
     if err.startswith("network:"):
         return out("warn", "เชื่อมต่อเว็บไม่ได้", "ตรวจอินเทอร์เน็ต แอปจะลองใหม่เอง (Dobby ใน MT5 ทำงานต่อตามคำสั่งล่าสุด)",
                    stamp=("cinnabar", "ออฟไลน์"))
@@ -2617,6 +2680,7 @@ class DemoEA(object):
         self._bars_at = None
         self.balance = balance
         self.trade_permitted = True
+        self.trade_flags = None             # EA v3.06 account.trade_flags dict; None = the v3.05 status (no flags)
         self.live_locked = None             # None: follow the remote file (live=1 -> unlocked)
         self.position = True
         self.paused = None
@@ -2689,12 +2753,15 @@ class DemoEA(object):
             "open": False, "module": "C5G"}
         locked = (not self.live) if self.live_locked is None else self.live_locked
         mods = [{"module": name, "enabled": bool(e[use_k]), "lots": e[lot_k]} for _, name, use_k, lot_k in MODULES]
+        account = {"mode": "REAL", "currency": "USD", "balance": self.balance,
+                   "equity": round(self.balance + self.profit, 2), "connected": True,
+                   "trade_permitted": self.trade_permitted}
+        if self.trade_flags is not None:
+            account["trade_flags"] = dict(self.trade_flags)
         return {
             "schema_version": 6, "ea": "Dobby3", "ea_version": "3.05", "tag": "A_new+NY+C5G", "symbol": "XAUUSD",
             "server_time": server, "heartbeat_gmt_unix": int(now),
-            "account": {"mode": "REAL", "currency": "USD", "balance": self.balance,
-                        "equity": round(self.balance + self.profit, 2), "connected": True,
-                        "trade_permitted": self.trade_permitted},
+            "account": account,
             "virtual": {"start": e["InpVirtualStart"], "balance": round(e["InpVirtualStart"] + 32.4, 2), "day": day,
                         "day_start": e["InpVirtualStart"], "day_pnl": 12.4, "day_cap_hit": self.day_cap_hit,
                         "trades": 12, "wins": 7, "losses": 5, "cap_reset_applied": self.cap_reset_applied,

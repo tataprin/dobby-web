@@ -3,6 +3,7 @@ import { app, emit, isAdmin } from './state.js';
 import { ApiError } from './api.js';
 import { adminUnlock } from './adminunlock.js';
 import { h, icon, agoSeconds, copyButton, serverToUtc, callout, fmtThai } from './util.js';
+import { tradeBlock } from './tradeflags.js';
 
 // desired JSON (bot_control.desired), as written by this website:
 // { live: bool,
@@ -277,7 +278,8 @@ export function effectiveState(st, bot, ctl) {
   if (v.killed) return { tone: 'critical', label: 'หยุดถาวร', text: 'พอร์ตจำลองแตะจุดตัดขาดทุน (InpKillBalance) EA ไม่เปิดไม้ใหม่' };
   if (a.connected === false) return { tone: 'critical', label: 'MT5 ไม่ได้เชื่อมต่อโบรกเกอร์', text: 'ตรวจอินเทอร์เน็ตหรือการล็อกอินบัญชีใน MT5 ที่เครื่อง' };
   if (f.live_locked) return { tone: 'warn', label: 'EA ล็อกการเทรดจริง', text: 'บัญชีจริงแต่ InpAllowLive = false ตั้งค่านี้ที่เครื่อง (หรือใช้ v3.04 กับ InpRemoteLive = true)' };
-  if (a.trade_permitted === false) return { tone: 'warn', label: 'ปุ่ม Algo Trading ปิดอยู่', text: 'กดปุ่ม Algo Trading บนแถบเครื่องมือของ MT5 ที่เครื่อง ให้เป็นสีเขียว' };
+  const tb = tradeBlock(a);   // EA v3.06: which MT5 permission is off; older EAs: the toolbar button message
+  if (tb) return { tone: tb.tone, label: tb.label, text: tb.text };
   const keep = open ? ` ไม้ที่เปิดอยู่ ${open} ไม้ยังมี SL/TP ตามเดิม` : '';
   if (c.mode === 'pause') {
     const d = ctl ? normDesired(ctl.desired) : null;

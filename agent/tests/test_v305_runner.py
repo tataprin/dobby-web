@@ -40,9 +40,10 @@ def desired(params, live=True):
 
 # ---------------------------------------------------------------------------------------------------------- allow-list
 def test_allow_list_order_kinds_and_bounds():
-    assert da.REMOTE_KEYS[-9:] == list(da.V305_KEYS)                               # the nine new keys, cap_reset last
+    assert da.REMOTE_KEYS[-10:-2] == list(da.V305_KEYS[:8]) and da.REMOTE_KEYS[-1] == "cap_reset"   # cap_reset last
+    assert da.REMOTE_KEYS[-2] == "InpC5_VwapTol" and da.REMOTE_SPEC["InpC5_VwapTol"] == ("float", 0.0, 0.5)   # v3.07
     assert da.REMOTE_KEYS[da.REMOTE_KEYS.index("InpLock1ToPct") + 1] == "InpRunnerEnable"   # right after the locks
-    assert len(da.REMOTE_KEYS) == len(set(da.REMOTE_KEYS)) == 38
+    assert len(da.REMOTE_KEYS) == len(set(da.REMOTE_KEYS)) == 39
     for k in ("InpRunnerEnable", "InpRunner_A", "InpRunner_NY", "InpRunner_C5G"):
         assert da.REMOTE_SPEC[k] == ("bool", None, None), k
     assert da.REMOTE_SPEC["InpRunnerKeepPct"] == ("float", 50.0, 99.0)
@@ -50,8 +51,8 @@ def test_allow_list_order_kinds_and_bounds():
     assert da.REMOTE_SPEC["InpRunnerMaxSteps"] == ("int", 0, 50)
     assert da.REMOTE_SPEC["InpRunnerSafetyTP"] == ("float", 0.0, 10.0)
     assert da.REMOTE_SPEC["cap_reset"] == ("token", None, None)
-    assert da.TOKEN_WINDOW_S == 48 * 3600 and da.V305_MIN_EA == (3, 5)
-    assert da.AGENT_VERSION == "1.3.0" and core.APP_VERSION == "1.3.0"
+    assert da.TOKEN_WINDOW_S == 48 * 3600 and da.V305_MIN_EA == (3, 5) and da.V307_MIN_EA == (3, 7)
+    assert da.AGENT_VERSION == "1.3.1" and core.APP_VERSION == "1.3.1"
 
 
 @pytest.mark.parametrize("key,value,ok", [
@@ -180,6 +181,24 @@ def test_drop_v305_keys_pure():
     assert da.drop_v305_keys({"InpLotsA": 0.05}, "3.04") == ({"InpLotsA": 0.05}, [])     # nothing to drop: no note
     assert da.drop_v305_keys(None, "3.04") == (None, [])
     assert da.drop_v305_keys({"cap_reset": 1762794000}, None) == ({}, ["cap_reset"])
+
+
+def test_drop_v307_vwap_tolerance_key():
+    """v3.07: InpC5_VwapTol reaches only an EA >= 3.07; below that it leaves the file (the EA would reject it)."""
+    full = dict(RUNNER, InpLotsA=0.05, InpC5_VwapTol=0.15, cap_reset=1762794000)
+    kept, dropped = da.drop_v305_keys(full, "3.06")
+    assert dropped == ["InpC5_VwapTol"] and kept == dict(RUNNER, InpLotsA=0.05, cap_reset=1762794000)
+    kept, dropped = da.drop_v305_keys(full, "3.04")
+    assert kept == {"InpLotsA": 0.05} and dropped == [k for k in da.REMOTE_KEYS if k in full and k != "InpLotsA"]
+    assert da.drop_v305_keys(full, "3.07") == (full, [])
+    assert da.drop_v305_keys(full, "3.10") == (full, [])
+    lines = da.render_remote_text(4, None, {"InpC5_VwapTol": 0.15, "cap_reset": 1762794000}, WRITTEN).split("\r\n")
+    assert lines.index("InpC5_VwapTol=0.15") < lines.index("cap_reset=1762794000")       # cap_reset stays last
+    lim = dict(da.DEFAULT_LIMITS, allow_remote_params=True)
+    ok, codes, _ = da.check_params({"InpC5_VwapTol": 0.15}, lim)
+    assert ok == {"InpC5_VwapTol": 0.15} and not codes
+    for bad in (-0.01, 0.51, "x", True):
+        assert da.check_params({"InpC5_VwapTol": bad}, lim)[0] is None, bad
     assert da.render_remote_text(3, None, {}, WRITTEN).split("\r\n")[1:-1] == ["version=3"]
 
 

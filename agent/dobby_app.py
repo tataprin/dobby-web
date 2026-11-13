@@ -2931,6 +2931,12 @@ class DobbyUI(object):
         return self.choose(title, text, [(True, "ใช่", "primary"), (False, "ไม่", "secondary")], kind="warn") is True
 
     def algo_help(self):
+        blk = core.trade_block((self.status or {}).get("account") if isinstance(self.status, dict) else None)
+        if blk and blk["key"] != "unknown":     # EA v3.06: only the permission that is off
+            steps = blk["steps"]
+            self.choose(blk["title"], blk["how"], [(True, "เข้าใจแล้ว", "primary")], kind="info",
+                        extra=(lambda p: manual_steps(p, steps).pack(fill="x", pady=(px(12), 0))) if steps else None)
+            return
         steps = core.mt5_steps((self.cfg.get("app") or {}).get("ea_file") or core.EA_CHART_NAME)
         self.choose("เปิด Algo Trading ใน MT5", "Dobby ส่งคำสั่งซื้อขายได้เมื่อเปิด 2 อย่างนี้:",
                     [(True, "เข้าใจแล้ว", "primary")], kind="info",
@@ -3414,7 +3420,7 @@ def run_selftest(out_png, data_dir):
               len(reg) == 1 and des.get("live") is True and des.get("control") == {
                   "mode": "run", "allow_long": True, "allow_short": True} and des.get("blackouts") == [])
         check("params = the full v3.04 remote key set of the settings (runner keys are the website's)",
-              list(params) == [k for k in da.REMOTE_KEYS if k not in da.V305_KEYS] and
+              list(params) == [k for k in da.REMOTE_KEYS if k not in da.V305_KEYS and k not in da.V307_KEYS] and
               params["InpLotsA"] == 0.03 and params["InpVirtualStart"] == 300.0 and params["InpLock1Enable"] is True)
         check("params pass the agent's own check with the chosen limits",
               not da.check_params(params, da.get_limits(ui.cfg))[1])
@@ -3477,6 +3483,26 @@ def run_selftest(out_png, data_dir):
         ui.dialog_hook = dialog_shot("algo_help_dialog")
         ui.algo_help()
         ui.dialog_hook = None
+        # EA v3.06: only the EA's own Allow Algo Trading tick is off (the toolbar button is green)
+        demo_ea.trade_flags = {"ea": False, "terminal": True, "account": True, "expert": True}
+        pump(until=lambda: "trade_flags" in ((ui.status or {}).get("account") or {}), timeout=15)
+        pump(1.2)
+        hs = core.hero_state(ui.cfg, ui.status, ui.snap, time.time(), True)
+        check("v3.06 EA tick off: hero names the F7 > Common tick, not the toolbar",
+              "Allow Algo Trading" in hs["title"] and "F7" in hs["text"] and hs["action"] == "algo_help", hs["title"])
+        shot("main_ea_tick_off")
+        ui.dialog_hook = dialog_shot("algo_help_ea_tick_dialog")
+        ui.algo_help()
+        ui.dialog_hook = None
+        demo_ea.trade_flags = {"ea": True, "terminal": True, "account": False, "expert": True}
+        pump(until=lambda: ((ui.status or {}).get("account") or {}).get("trade_flags", {}).get("account") is False,
+             timeout=15)
+        pump(1.2)
+        hs = core.hero_state(ui.cfg, ui.status, ui.snap, time.time(), True)
+        check("v3.06 investor password: hero says log in with the main password",
+              "รหัสผ่านหลัก" in hs["text"] and hs["action"] is None, hs["title"])
+        shot("main_investor_login")
+        demo_ea.trade_flags = None
         demo_ea.trade_permitted = True
         pump(2.5)
         server.web_change(bot_id, lots=0.5)

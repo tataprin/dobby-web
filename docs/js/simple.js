@@ -1,7 +1,7 @@
 // SPEC 7: the simple bot settings model shared by the website and the app.
 // The editor keeps a full params object (every SPEC 4.2 remote key); the simple fields read and write those keys.
 // Nothing here talks to the API.
-import { normalizeParams, remoteSubset, REMOTE_KEYS, RUNNER_KEYS, PARAM_BY_KEY, sameValue, coerce, liveValuesFromStatus, runnerSupported } from './params.js';
+import { normalizeParams, remoteSubset, REMOTE_KEYS, PARAM_BY_KEY, sameValue, coerce, liveValuesFromStatus, unsupportedKeys } from './params.js';
 import { calculate, HORIZON30, BASE_BALANCE } from './lotcalc.js';
 import { fmtNum, fmtSigned } from './util.js';
 
@@ -97,11 +97,18 @@ export const suggestedLocalMaxLots = (L) => Math.min(0.5, Math.max(0.02, r2(2 * 
 // eaVersion: the bot's EA version (status.ea_version or bots.ea_version). The eight v3.05 runner keys (InpRunner*) go only to a bot
 // that reports EA >= 3.05: an app still on 1.2.0 refuses a whole set with keys it does not know, and the EA v3.04 of a
 // friend has no use for them (SPEC 11). Without a version they are left out.
-export function toDesiredParams(v, { eaVersion } = {}) {
+// v3.07: InpC5_VwapTol goes only to EA >= 3.07 with app >= 1.3.1 (agentVersion = bots.agent_version).
+export function toDesiredParams(v, { eaVersion, agentVersion } = {}) {
   const out = remoteSubset(normalizeParams(v));
   for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
-  if (!runnerSupported(eaVersion)) for (const k of RUNNER_KEYS) delete out[k];
+  for (const k of unsupportedKeys(eaVersion, agentVersion)) delete out[k];
   return out;
+}
+
+// v3.07 C5G VWAP tolerance in one phrase
+export function vwapTolText(v) {
+  const t = Number(v.InpC5_VwapTol) || 0;
+  return t > 0 ? `เปิด ถ้าปิดเลยเส้นไม่เกิน ${fmtNum(t, 2)} $` : 'ไม่เปิด (ต้องปิดเลยเส้น VWAP)';
 }
 
 // ------------------------------------------------------------------ plain Thai text
@@ -181,6 +188,7 @@ export function summaryRows(v, currency = 'USD', pnl = null) {
     ['ขาดทุนสูงสุดต่อวัน', `${pctText(v.InpDailyCapPct)}%`],
     // only a v3.05 bot can have it on; an older bot does not know the key, so no "ปิด" row for it
     v.InpRunnerEnable ? ['โหมด runner', runnerText(v, true)] : null,
+    Number(v.InpC5_VwapTol) > 0 ? ['C5G ไม้ก้ำกึ่ง VWAP', vwapTolText(v)] : null,   // EA v3.07, only when on
   ].filter(Boolean);
 }
 
@@ -194,6 +202,7 @@ const FIELDS = [
   { label: 'ล็อกกำไร', text: (v) => lockText(v) },
   { label: 'ขาดทุนสูงสุดต่อวัน', text: (v) => `${pctText(v.InpDailyCapPct)}%` },
   { label: 'โหมด runner', text: (v) => runnerText(v) },
+  { label: 'C5G ไม้ที่ปิดก้ำกึ่งเส้น VWAP', text: (v) => vwapTolText(v) },
   { label: 'ค่าของ runner', text: (v) => runnerNumbersText(v), adv: true },
   { label: 'ล็อกใช้กับสูตร', text: (v) => STRATS.filter((s) => v[s.lock]).map((s) => s.title).join(', ') || 'ไม่มี', adv: true },
   { label: 'ไม้แก้หลังแพ้ (recovery)', text: (v) => `×${fmtNum(v.InpRecoveryMult, 1)}`, adv: true },
@@ -254,6 +263,7 @@ export function validateSimple(v, ceil = {}) {
   if (!(v.InpRunnerStep >= 0.1 && v.InpRunnerStep <= 2)) e.InpRunnerStep = 'ก้าวตั้งได้ 0.1 ถึง 2.0 เท่าของระยะ SL';
   if (!(v.InpRunnerMaxSteps >= 0 && v.InpRunnerMaxSteps <= 50 && Number.isInteger(v.InpRunnerMaxSteps))) e.InpRunnerMaxSteps = 'จำนวนก้าวตั้งได้ 0 (ไม่จำกัด) ถึง 50';
   if (!(v.InpRunnerSafetyTP >= 0 && v.InpRunnerSafetyTP <= 10)) e.InpRunnerSafetyTP = 'TP กันเหนียวตั้งได้ 0 (ไม่มี) ถึง 10 เท่าของระยะ SL';
+  if (v.InpC5_VwapTol !== undefined && !(v.InpC5_VwapTol >= 0 && v.InpC5_VwapTol <= 0.5)) e.InpC5_VwapTol = 'ตั้งได้ 0 ถึง 0.50 $';
   return e;
 }
 

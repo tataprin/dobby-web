@@ -256,7 +256,7 @@ export async function render(root, ctx) {
       if (capClearing) await capClearing;
       ctl = await patchDesired(bot.id, (d) => {
         // the current params (what the web last sent, else what the bot runs now) + the fresh token
-        const base = d.params && typeof d.params === 'object' && Object.keys(d.params).length ? d.params : toDesiredParams(currentValues(st).values, { eaVersion: eaVer() });
+        const base = d.params && typeof d.params === 'object' && Object.keys(d.params).length ? d.params : toDesiredParams(currentValues(st).values, { eaVersion: eaVer(), agentVersion: bot.agent_version });
         d.params = { ...base, cap_reset: token };
       }, { keepCommand: true });
       capTimedOut = 0;

@@ -7,7 +7,7 @@ import { app, currentBot, updateBotRow, on, ownsBot, canControl } from '../state
 import { normDesired, patchDesired, onlineInfo, onlineBadge, pendingChip, rejectionsBlock, appliedVersion, isPending, applyProgress } from '../botctl.js';
 import { liveSwitch, appliedLive } from '../liveswitch.js';
 import { panel, pageHead, noBotState, stepper, bigToggle, segmented, progressSteps, helpBtn } from '../views.js';
-import { normalizeParams, presetFromLive, remoteSubset, defaults, PARAM_BY_KEY, coerce, runnerSupported, RUNNER_WARNING, RUNNER_KEYS, isCommandKey,
+import { normalizeParams, presetFromLive, remoteSubset, defaults, PARAM_BY_KEY, coerce, runnerSupported, RUNNER_WARNING, RUNNER_KEYS, isCommandKey, unsupportedKeys, vwapTolSupported,
   runnerSafetyTooClose, RUNNER_SAFETY_WARNING } from '../params.js';
 import { PROPOSAL_KEY } from '../chat.js';
 import { buildSet, setFileName } from '../setfile.js';
@@ -126,7 +126,7 @@ export async function render(root, ctx) {
   const bar = h('div', { class: 'action-bar', role: 'region', 'aria-label': 'บันทึกการเปลี่ยนแปลง', hidden: true });
   // section anchors (the app routes by hash, so they scroll instead of changing location.hash)
   const ANCHORS = [['set-now', 'ค่าที่ใช้อยู่'], ['set-switch', 'สวิตช์หลัก'], ['set-money', 'ทุนและล็อต'], ['set-strat', 'สูตร'],
-    ['set-lock', 'ล็อกกำไร'], ['set-cap', 'ขาดทุนต่อวัน'], ['set-runner', 'runner'], ['set-adv', 'ขั้นสูง'], ['set-sides', 'ฝั่งที่เข้าได้'], ['set-bo', 'งดเข้าไม้']];
+    ['set-lock', 'ล็อกกำไร'], ['set-cap', 'ขาดทุนต่อวัน'], ['set-runner', 'runner'], ['set-vwap', 'C5G ก้ำกึ่ง VWAP'], ['set-adv', 'ขั้นสูง'], ['set-sides', 'ฝั่งที่เข้าได้'], ['set-bo', 'งดเข้าไม้']];
   const smooth = () => (window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
   const anchors = h('nav', { class: 'anchors', 'aria-label': 'ส่วนต่าง ๆ ของหน้านี้' }, ANCHORS.map(([id, label]) => h('a', {
     href: `#${id}`, dataset: { target: id },
@@ -539,6 +539,46 @@ export async function render(root, ctx) {
         h('div', { class: 'group' }, runT, runWarn, explain, runAdv));
     }
 
+    // --- C5G: a signal bar that closes a few cents on the wrong side of VWAP (EA v3.07 InpC5_VwapTol, r51)
+    let secVwap;
+    const vwHead = secHead('C5G: ไม้ที่ปิดก้ำกึ่งเส้น VWAP',
+      'ปกติ C5G เปิดเมื่อแท่งปิดเลยเส้น VWAP ไปแล้วเท่านั้น ถ้าปิดห่างเส้นแค่ไม่กี่เซนต์ บอทที่อยู่คนละโบรกอาจเห็นคนละฝั่ง');
+    if (!vwapTolSupported(eaVer(), bot.agent_version)) {
+      secVwap = h('section', { class: 'ed-sec', id: 'set-vwap' }, vwHead,
+        h('div', { class: 'group' }, viewOnly
+          ? h('p', { class: 'muted group-note' }, 'บอทนี้ยังไม่มีค่านี้ (มีตั้งแต่ EA v3.07 กับแอป Dobby 1.3.1)')
+          : callout('info', 'ต้องอัปเดต EA เป็น v3.07 และแอป Dobby 1.3.1 ก่อน',
+            h('p', null, `บอทนี้รายงาน EA ${eaVer() || 'ไม่ทราบรุ่น'} แอป ${bot.agent_version || 'ไม่ทราบรุ่น'} ติดตั้งแอปใหม่ก่อน แล้วค่อยเปลี่ยน EA บนกราฟเป็น Dobby3_v307 ตอนไม่มีไม้เปิด ส่วนนี้จะกดเลือกได้เมื่อบอทรายงานรุ่นใหม่ทั้งสองตัว`))));
+    } else {
+      let lastOn = Number(v.InpC5_VwapTol) > 0 ? Number(v.InpC5_VwapTol) : 0.15;
+      const tolSeg = reg(segmented({
+        label: 'ไม้ C5G ที่ปิดก้ำกึ่งเส้น VWAP', wide: true, disabled: locked,
+        get: () => (Number(v.InpC5_VwapTol) > 0 ? 1 : 0),
+        set: (m) => {
+          if (m) v.InpC5_VwapTol = lastOn;
+          else { if (Number(v.InpC5_VwapTol) > 0) lastOn = Number(v.InpC5_VwapTol); v.InpC5_VwapTol = 0; }
+          onChange();
+        },
+        options: [{ value: 0, label: 'ไม่เปิด (ค่าเดิม)' }, { value: 1, label: 'เปิด' }],
+      }));
+      const tolStep = reg(stepper({ label: 'ปิดเลยเส้นได้ไม่เกิน', get: getKey('InpC5_VwapTol'), set: (x) => { v.InpC5_VwapTol = x; lastOn = x; onChange(); },
+        step: 0.05, min: 0.05, max: 0.5, decimals: 2, unit: '$', disabled: locked }));
+      const tolRow = setRow(h('label', { class: 'set-label', for: tolStep.input.id }, 'ปิดเลยเส้นไปอีกฝั่งได้ไม่เกิน'),
+        [h('span', { class: 'hint' }, '0.15 ขึ้นไปจะได้ไม้แบบวันที่ 13 พ.ย. ที่แท่งปิดเหนือเส้น 0.11')], tolStep, [errLine('InpC5_VwapTol')]);
+      tolRow.update = () => { tolRow.hidden = !(Number(v.InpC5_VwapTol) > 0); };
+      reg(tolRow);
+      const tolText = h('p', { class: 'hint' });
+      tolText.update = () => {
+        const t = Number(v.InpC5_VwapTol) || 0;
+        tolText.textContent = t > 0
+          ? `ขายได้ถ้าแท่งปิดสูงกว่าเส้นไม่เกิน ${fmtNum(t, 2)} $ และซื้อได้ถ้าปิดต่ำกว่าเส้นไม่เกิน ${fmtNum(t, 2)} $ เงื่อนไขอื่นของ C5G เหมือนเดิมทุกข้อ ผลทดสอบปี 2026: ยังไม่มีระยะไหนดีกว่าแบบไม่เปิด ไม้ก้ำกึ่งแบบนี้ชนะราวครึ่งเดียว`
+          : 'บอทเปิดเฉพาะเมื่อแท่งปิดเลยเส้น VWAP ไปแล้ว (ขายต้องปิดใต้เส้น ซื้อต้องปิดเหนือเส้น) เป็นค่าที่ใช้มาตลอดและผ่านการทดสอบ';
+      };
+      reg(tolText);
+      secVwap = h('section', { class: 'ed-sec', id: 'set-vwap' }, vwHead,
+        h('div', { class: 'group' }, setRow(h('span', { class: 'set-label' }, 'ไม้ก้ำกึ่งเส้น VWAP'), [], tolSeg), tolRow, tolText));
+    }
+
     // --- presets + .set
     const tools = viewOnly
       ? h('div', { class: 'ed-tools' }, h('button', { class: 'btn ghost', type: 'button', onclick: () => downloadSet() }, icon('download'), 'ดาวน์โหลด .set ของค่านี้'))
@@ -554,7 +594,7 @@ export async function render(root, ctx) {
           h('p', { class: 'muted small' }, viewOnly ? `ค่าที่บอทของ ${ownerName} ใช้อยู่ ดูอย่างเดียว แก้ไม่ได้` : B.readOnly ? 'ค่าที่บอทรุ่นนี้รายงานมา' : 'แก้ได้หลายอย่าง แล้วกด "บันทึกและส่งให้บอท" ที่แถบด้านล่างครั้งเดียว')),
         helpBtn('settings')),
       roBox,
-      h('div', { class: `editor-body${ro ? ' readonly' : ''}` }, secMoney, secStrat, secLock, secCap, secRunner, advBox),
+      h('div', { class: `editor-body${ro ? ' readonly' : ''}` }, secMoney, secStrat, secLock, secCap, secRunner, secVwap, advBox),
       tools);
     for (const u of updaters) u.update();
     editorBox.querySelector('.editor-body').classList.toggle('readonly', locked());
@@ -658,7 +698,7 @@ export async function render(root, ctx) {
     if (!ok) return;
     busy(btn, true, 'กำลังส่ง…');
     try {
-      const params = toDesiredParams(v, { eaVersion: eaVer() });
+      const params = toDesiredParams(v, { eaVersion: eaVer(), agentVersion: bot.agent_version });
       ctl = await patchDesired(bot.id, (d) => { d.params = params; });
       justSent = true;
       writeDraft(null);
@@ -748,7 +788,7 @@ export async function render(root, ctx) {
       if (c && isCommandKey(c.key)) { command = true; continue; } // cap_reset is a button on ภาพรวม, never a setting (SPEC 11)
       const def = PARAM_BY_KEY[c && c.key];
       if (!def || !def.remote) continue;
-      if (def.group === 'runner' && !runnerOk()) continue; // an older bot never gets the runner keys
+      if (unsupportedKeys(eaVer(), bot.agent_version).includes(c.key)) continue; // an older bot never gets runner / VWAP-tolerance keys
       const x = coerce(def, c.to);
       if (x !== undefined) vals[c.key] = x;
     }
@@ -768,7 +808,7 @@ export async function render(root, ctx) {
   }
   function applyPreset(p) {
     const src = remoteSubset(normalizeParams(p.params));
-    if (!runnerOk()) for (const k of RUNNER_KEYS) delete src[k]; // an older bot keeps its (hidden) runner defaults
+    for (const k of unsupportedKeys(eaVer(), bot.agent_version)) delete src[k]; // an older bot keeps its (hidden) runner / VWAP-tolerance values
     v = normalizeParams({ ...v, ...src });
     lotMode = lotsSame(v) ? 'same' : 'per';
     onChange();
