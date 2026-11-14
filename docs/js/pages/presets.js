@@ -419,7 +419,7 @@ async function renderEditor(root, ctx, id) {
         h('td', null, h('code', null, k)), h('td', { class: 'num' }, k in live.values ? formatValue(PARAM_BY_KEY[k], live.values[k]) : '?'),
         h('td', { 'aria-hidden': 'true' }, '→'), h('td', { class: 'num' }, formatValue(PARAM_BY_KEY[k], v[k]))))))
         : h('p', { class: 'muted' }, `ค่าที่ส่งได้ตรงกับบอทแล้ว (จะส่งทั้ง ${sentKeys.length} ค่าเพื่อยืนยัน)`),
-      skippedRunner.length ? callout('info', 'บางค่าไม่ถูกส่ง', h('p', null, `บอทนี้ยังไม่รู้จัก ${skippedRunner.join(', ')} (โหมด runner ต้องใช้ EA v3.05 และแอป 1.2.2 ขึ้นไป, InpC5_VwapTol ต้องใช้ EA v3.07 และแอป 1.3.1 ขึ้นไป)`)) : null,
+      skippedRunner.length ? callout('info', 'บางค่าไม่ถูกส่ง', h('p', null, `บอทนี้ยังไม่รู้จัก ${skippedRunner.join(', ')} (โหมด runner ต้องใช้ EA v3.05 และแอป 1.2.2 ขึ้นไป, InpC5_VwapTol ต้องใช้ EA v3.07 และแอป 1.3.1, InpC5_M15Trend ต้องใช้ EA v3.08 และแอป 1.3.2)`)) : null,
       h('p', { class: 'muted small' }, 'EA ใช้ค่าใหม่เมื่อไม่มีไม้และคำสั่งรอของบอทเปิดอยู่ ระหว่างรอ หน้าควบคุมจะขึ้น "รอ: มีไม้เปิดอยู่"'),
       localChanges.length ? callout('info', `ต้องโหลด .set ที่เครื่อง (${localChanges.length} ค่า)`,
         h('p', null, 'ค่าเหล่านี้เว็บส่งไม่ได้ ส่งออก .set แล้วโหลดใน Inputs ของ EA ที่เครื่อง:'),

@@ -40,10 +40,11 @@ def desired(params, live=True):
 
 # ---------------------------------------------------------------------------------------------------------- allow-list
 def test_allow_list_order_kinds_and_bounds():
-    assert da.REMOTE_KEYS[-10:-2] == list(da.V305_KEYS[:8]) and da.REMOTE_KEYS[-1] == "cap_reset"   # cap_reset last
-    assert da.REMOTE_KEYS[-2] == "InpC5_VwapTol" and da.REMOTE_SPEC["InpC5_VwapTol"] == ("float", 0.0, 0.5)   # v3.07
+    assert da.REMOTE_KEYS[-11:-3] == list(da.V305_KEYS[:8]) and da.REMOTE_KEYS[-1] == "cap_reset"   # cap_reset last
+    assert da.REMOTE_KEYS[-3] == "InpC5_VwapTol" and da.REMOTE_SPEC["InpC5_VwapTol"] == ("float", 0.0, 0.5)   # v3.07
+    assert da.REMOTE_KEYS[-2] == "InpC5_M15Trend" and da.REMOTE_SPEC["InpC5_M15Trend"] == ("bool", None, None)   # v3.08
     assert da.REMOTE_KEYS[da.REMOTE_KEYS.index("InpLock1ToPct") + 1] == "InpRunnerEnable"   # right after the locks
-    assert len(da.REMOTE_KEYS) == len(set(da.REMOTE_KEYS)) == 39
+    assert len(da.REMOTE_KEYS) == len(set(da.REMOTE_KEYS)) == 40
     for k in ("InpRunnerEnable", "InpRunner_A", "InpRunner_NY", "InpRunner_C5G"):
         assert da.REMOTE_SPEC[k] == ("bool", None, None), k
     assert da.REMOTE_SPEC["InpRunnerKeepPct"] == ("float", 50.0, 99.0)
@@ -51,8 +52,8 @@ def test_allow_list_order_kinds_and_bounds():
     assert da.REMOTE_SPEC["InpRunnerMaxSteps"] == ("int", 0, 50)
     assert da.REMOTE_SPEC["InpRunnerSafetyTP"] == ("float", 0.0, 10.0)
     assert da.REMOTE_SPEC["cap_reset"] == ("token", None, None)
-    assert da.TOKEN_WINDOW_S == 48 * 3600 and da.V305_MIN_EA == (3, 5) and da.V307_MIN_EA == (3, 7)
-    assert da.AGENT_VERSION == "1.3.1" and core.APP_VERSION == "1.3.1"
+    assert da.TOKEN_WINDOW_S == 48 * 3600 and da.V305_MIN_EA == (3, 5) and da.V307_MIN_EA == (3, 7) and da.V308_MIN_EA == (3, 8)
+    assert da.AGENT_VERSION == "1.3.2" and core.APP_VERSION == "1.3.2"
 
 
 @pytest.mark.parametrize("key,value,ok", [
@@ -192,6 +193,17 @@ def test_drop_v307_vwap_tolerance_key():
     assert kept == {"InpLotsA": 0.05} and dropped == [k for k in da.REMOTE_KEYS if k in full and k != "InpLotsA"]
     assert da.drop_v305_keys(full, "3.07") == (full, [])
     assert da.drop_v305_keys(full, "3.10") == (full, [])
+    # v3.08: the C5G H4-or-M15 switch reaches only an EA >= 3.08
+    f8 = dict(full, InpC5_M15Trend=True)
+    kept, dropped = da.drop_v305_keys(f8, "3.07")
+    assert dropped == ["InpC5_M15Trend"] and kept == full
+    assert da.drop_v305_keys(f8, "3.06")[1] == ["InpC5_VwapTol", "InpC5_M15Trend"]
+    assert da.drop_v305_keys(f8, "3.08") == (f8, [])
+    l8 = da.render_remote_text(5, None, {"InpC5_M15Trend": True, "InpC5_VwapTol": 0.15, "cap_reset": 1762794000}, WRITTEN).split("\r\n")
+    assert l8.index("InpC5_VwapTol=0.15") < l8.index("InpC5_M15Trend=true") < l8.index("cap_reset=1762794000")
+    ok8, codes8, _ = da.check_params({"InpC5_M15Trend": True}, dict(da.DEFAULT_LIMITS, allow_remote_params=True))
+    assert ok8 == {"InpC5_M15Trend": True} and not codes8
+    assert da.check_params({"InpC5_M15Trend": "maybe"}, dict(da.DEFAULT_LIMITS, allow_remote_params=True))[0] is None
     lines = da.render_remote_text(4, None, {"InpC5_VwapTol": 0.15, "cap_reset": 1762794000}, WRITTEN).split("\r\n")
     assert lines.index("InpC5_VwapTol=0.15") < lines.index("cap_reset=1762794000")       # cap_reset stays last
     lim = dict(da.DEFAULT_LIMITS, allow_remote_params=True)

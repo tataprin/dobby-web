@@ -105,6 +105,9 @@ export function toDesiredParams(v, { eaVersion, agentVersion } = {}) {
   return out;
 }
 
+// v3.08 C5G trend gate in one phrase
+export const m15TrendText = (v) => (v.InpC5_M15Trend ? 'H4 หรือ 15 นาที (ไม้มากขึ้น)' : 'H4 อย่างเดียว');
+
 // v3.07 C5G VWAP tolerance in one phrase
 export function vwapTolText(v) {
   const t = Number(v.InpC5_VwapTol) || 0;
@@ -189,6 +192,7 @@ export function summaryRows(v, currency = 'USD', pnl = null) {
     // only a v3.05 bot can have it on; an older bot does not know the key, so no "ปิด" row for it
     v.InpRunnerEnable ? ['โหมด runner', runnerText(v, true)] : null,
     Number(v.InpC5_VwapTol) > 0 ? ['C5G ไม้ก้ำกึ่ง VWAP', vwapTolText(v)] : null,   // EA v3.07, only when on
+    v.InpC5_M15Trend ? ['C5G เทรนด์', m15TrendText(v)] : null,                       // EA v3.08, only when on
   ].filter(Boolean);
 }
 
@@ -203,6 +207,7 @@ const FIELDS = [
   { label: 'ขาดทุนสูงสุดต่อวัน', text: (v) => `${pctText(v.InpDailyCapPct)}%` },
   { label: 'โหมด runner', text: (v) => runnerText(v) },
   { label: 'C5G ไม้ที่ปิดก้ำกึ่งเส้น VWAP', text: (v) => vwapTolText(v) },
+  { label: 'C5G เทรนด์ที่ใช้เข้าไม้', text: (v) => m15TrendText(v) },
   { label: 'ค่าของ runner', text: (v) => runnerNumbersText(v), adv: true },
   { label: 'ล็อกใช้กับสูตร', text: (v) => STRATS.filter((s) => v[s.lock]).map((s) => s.title).join(', ') || 'ไม่มี', adv: true },
   { label: 'ไม้แก้หลังแพ้ (recovery)', text: (v) => `×${fmtNum(v.InpRecoveryMult, 1)}`, adv: true },

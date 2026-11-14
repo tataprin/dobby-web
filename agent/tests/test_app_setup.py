@@ -59,7 +59,7 @@ EA_CEILINGS = {"ceilings": {"max_lots": core.PRESET_MAX_LOTS, "max_cap_pct": cor
 
 def test_params_full_remote_key_set_and_values():
     p = core.settings_to_params(core.auto_settings(300))
-    assert list(p) == [k for k in da.REMOTE_KEYS if k not in da.V305_KEYS and k not in da.V307_KEYS]   # every v3.04 key
+    assert list(p) == [k for k in da.REMOTE_KEYS if k not in da.V305_KEYS + da.V307_KEYS + da.V308_KEYS]   # every v3.04 key
     assert p == {
         "InpUseA": True, "InpUseNY": True, "InpUseC5G": True, "InpUseAsia": False,
         "InpLotsA": 0.03, "InpLotsNY": 0.03, "InpLotsC5G": 0.03, "InpMaxLots": 0.03, "InpLotsAsia": 0.01,

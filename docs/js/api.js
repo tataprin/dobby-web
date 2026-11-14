@@ -42,7 +42,7 @@
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { createDemoDb, DEMO_OFFSET_MIN } from './demo.js';
 import { sleep, utcToServer } from './util.js';
-import { normalizeParams, remoteSubset, REMOTE_KEYS, RUNNER_KEYS, COMMAND_KEYS, formatValue, PARAM_BY_KEY, runnerSupported, validateCommand, VWAP_TOL_SINCE } from './params.js';
+import { normalizeParams, remoteSubset, REMOTE_KEYS, RUNNER_KEYS, COMMAND_KEYS, formatValue, PARAM_BY_KEY, runnerSupported, validateCommand, VWAP_TOL_SINCE, M15_TREND_SINCE } from './params.js';
 
 const SHADOW_COLS = 'id,bot_id,ts,ticket,module,side,lots,open_price,sl,tp,bid,ask,profit,server_time,action,new_sl,confidence,reason,valid,details,model,cost_usd';
 
@@ -852,6 +852,7 @@ export class DemoApi {
         const params = { ...d.params };
         if (!runnerSupported(sim.cfg.ea)) for (const k of [...RUNNER_KEYS, ...COMMAND_KEYS]) delete params[k];
         if (!(parseFloat(sim.cfg.ea) >= VWAP_TOL_SINCE - 1e-9)) delete params.InpC5_VwapTol;   // agent 1.3.1: dropped below EA 3.07
+        if (!(parseFloat(sim.cfg.ea) >= M15_TREND_SINCE - 1e-9)) delete params.InpC5_M15Trend; // agent 1.3.2: dropped below EA 3.08
         // the one-shot command travels with the params but is not a parameter: the EA evaluates it at once (not when flat)
         const capToken = params.cap_reset;
         delete params.cap_reset;

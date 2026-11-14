@@ -39,11 +39,17 @@ const verAtLeast = (v, min) => {
 };
 export const vwapTolSupported = (eaVersion, agentVersion) =>
   parseFloat(String(eaVersion || '').replace(/^v/i, '')) >= VWAP_TOL_SINCE - 1e-9 && verAtLeast(agentVersion, VWAP_TOL_APP);
+// v3.08 C5G "H4 or M15" trend switch: EA 3.08 and app 1.3.2, same reasons.
+export const M15_TREND_SINCE = 3.08;
+export const M15_TREND_APP = '1.3.2';
+export const m15TrendSupported = (eaVersion, agentVersion) =>
+  parseFloat(String(eaVersion || '').replace(/^v/i, '')) >= M15_TREND_SINCE - 1e-9 && verAtLeast(agentVersion, M15_TREND_APP);
 // Keys a bot cannot take yet (EA / app too old): left out of desired.params and preset pushes.
 export function unsupportedKeys(eaVersion, agentVersion) {
   const out = [];
   if (!runnerSupported(eaVersion)) out.push(...PARAMS.filter((p) => p.group === 'runner').map((p) => p.key));
   if (!vwapTolSupported(eaVersion, agentVersion)) out.push('InpC5_VwapTol');
+  if (!m15TrendSupported(eaVersion, agentVersion)) out.push('InpC5_M15Trend');
   return out;
 }
 export const RUNNER_WARNING = 'ทดสอบในคอมแล้ว ยังไม่ผ่าน Strategy Tester กำไรเพิ่มมาจากไม้ส่วนน้อยที่วิ่งไกล';
@@ -102,6 +108,11 @@ export const PARAMS = [
   // allow-listed, sent only to EA >= 3.07 with app >= 1.3.1 (paramSupported).
   D('InpC5_VwapTol', 'c5', 0.0, 0, 0.5, 0.05, 'C5G: ยอมให้แท่งสัญญาณปิดเลยเส้น VWAP ไปอีกฝั่งได้ไม่เกิน ($)',
     'v3.07: close may be up to this $ on the wrong side of VWAP (0 = must close beyond; 0..0.50)', { ...R, since: 3.07, app: '1.3.1' }),
+  // v3.08 (r52): C5G may also enter when H4 disagrees but the signal bar closes on the trade side of the M15 EMA
+  // (false = H4 only = v3.07). Remote allow-listed, sent only to EA >= 3.08 with app >= 1.3.2.
+  B('InpC5_M15Trend', 'c5', false, 'C5G: เข้าได้เมื่อเทรนด์ H4 หรือเทรนด์ 15 นาทีเห็นด้วย',
+    'v3.08: C5G may also enter when the M15 EMA agrees although H4 does not (false = H4 only)', { ...R, since: 3.08, app: '1.3.2' }),
+  I('InpC5_M15EMA', 'c5', 50, 10, 200, 'ความยาว EMA ของเทรนด์ 15 นาที (ตั้งที่เครื่อง)', 'v3.08: EMA length on M15 closes for InpC5_M15Trend (10..200)', ADV),
 
   // Virtual portfolio
   D('InpVirtualStart', 'virtual', 200.0, 1, 10000000, 1, 'ทุนเริ่มต้นของพอร์ตจำลอง',
@@ -333,6 +344,7 @@ export function liveValuesFromStatus(st) {
   set('InpLotsA', p.lots_input); set('InpLotsNY', p.lots_ny); set('InpLotsC5G', p.lots_c5g); set('InpMaxLots', p.max_lots);
   set('InpRecoveryMult', p.recovery_mult); set('InpDailyCapPct', p.daily_cap_pct); set('InpMaxSpread', p.max_spread_input);
   set('InpC5_VwapTol', p.c5g_vwap_tol);                                                      // EA v3.07
+  set('InpC5_M15Trend', p.c5g_m15_trend);                                                    // EA v3.08
   set('InpVirtualStart', vr.start); set('InpKillBalance', vr.kill_balance);
   set('InpMagicA', st.magic);
   const mods = Object.fromEntries((st.modules || []).map((m) => [m.module, m]));

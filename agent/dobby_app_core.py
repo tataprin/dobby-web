@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - python 2
 import dobby_agent as da
 
 APP_NAME = "Dobby App"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 DEFAULT_URL = "https://rpzuzhefviydjmeggvvz.supabase.co"
 DEFAULT_KEY = "sb_publishable_208tCs0INvDHYohhl5_DGQ_ezVQkJst"   # publishable key: public by design (RLS protects data)
 WEB_URL = "https://tataprin.github.io/dobby-web/"
@@ -1414,7 +1414,7 @@ def settings_to_params(s):
         "InpLockShadow": True, "InpLock1Enable": stages >= 2,
         "InpLockAtPct": at, "InpLockToPct": to, "InpLock1AtPct": a1, "InpLock1ToPct": t1,
     }
-    return dict((k, v[k]) for k in da.REMOTE_KEYS if k not in da.V305_KEYS and k not in da.V307_KEYS)
+    return dict((k, v[k]) for k in da.REMOTE_KEYS if k not in da.V305_KEYS + da.V307_KEYS + da.V308_KEYS)
 
 
 def params_to_settings(p):

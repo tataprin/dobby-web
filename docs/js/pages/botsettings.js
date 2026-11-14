@@ -7,7 +7,7 @@ import { app, currentBot, updateBotRow, on, ownsBot, canControl } from '../state
 import { normDesired, patchDesired, onlineInfo, onlineBadge, pendingChip, rejectionsBlock, appliedVersion, isPending, applyProgress } from '../botctl.js';
 import { liveSwitch, appliedLive } from '../liveswitch.js';
 import { panel, pageHead, noBotState, stepper, bigToggle, segmented, progressSteps, helpBtn } from '../views.js';
-import { normalizeParams, presetFromLive, remoteSubset, defaults, PARAM_BY_KEY, coerce, runnerSupported, RUNNER_WARNING, RUNNER_KEYS, isCommandKey, unsupportedKeys, vwapTolSupported,
+import { normalizeParams, presetFromLive, remoteSubset, defaults, PARAM_BY_KEY, coerce, runnerSupported, RUNNER_WARNING, RUNNER_KEYS, isCommandKey, unsupportedKeys, vwapTolSupported, m15TrendSupported,
   runnerSafetyTooClose, RUNNER_SAFETY_WARNING } from '../params.js';
 import { PROPOSAL_KEY } from '../chat.js';
 import { buildSet, setFileName } from '../setfile.js';
@@ -126,7 +126,7 @@ export async function render(root, ctx) {
   const bar = h('div', { class: 'action-bar', role: 'region', 'aria-label': 'บันทึกการเปลี่ยนแปลง', hidden: true });
   // section anchors (the app routes by hash, so they scroll instead of changing location.hash)
   const ANCHORS = [['set-now', 'ค่าที่ใช้อยู่'], ['set-switch', 'สวิตช์หลัก'], ['set-money', 'ทุนและล็อต'], ['set-strat', 'สูตร'],
-    ['set-lock', 'ล็อกกำไร'], ['set-cap', 'ขาดทุนต่อวัน'], ['set-runner', 'runner'], ['set-vwap', 'C5G ก้ำกึ่ง VWAP'], ['set-adv', 'ขั้นสูง'], ['set-sides', 'ฝั่งที่เข้าได้'], ['set-bo', 'งดเข้าไม้']];
+    ['set-lock', 'ล็อกกำไร'], ['set-cap', 'ขาดทุนต่อวัน'], ['set-runner', 'runner'], ['set-c5trend', 'C5G เทรนด์'], ['set-vwap', 'C5G ก้ำกึ่ง VWAP'], ['set-adv', 'ขั้นสูง'], ['set-sides', 'ฝั่งที่เข้าได้'], ['set-bo', 'งดเข้าไม้']];
   const smooth = () => (window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
   const anchors = h('nav', { class: 'anchors', 'aria-label': 'ส่วนต่าง ๆ ของหน้านี้' }, ANCHORS.map(([id, label]) => h('a', {
     href: `#${id}`, dataset: { target: id },
@@ -539,6 +539,33 @@ export async function render(root, ctx) {
         h('div', { class: 'group' }, runT, runWarn, explain, runAdv));
     }
 
+    // --- C5G trend gate: H4 only, or H4 or the M15 EMA (EA v3.08 InpC5_M15Trend, r52)
+    let secTrend;
+    const trHead = secHead('C5G: เทรนด์ที่ใช้เข้าไม้',
+      'ปกติ C5G ซื้อได้เฉพาะตอนเทรนด์ 4 ชั่วโมงขึ้น และขายได้เฉพาะตอนเทรนด์ 4 ชั่วโมงลง');
+    if (!m15TrendSupported(eaVer(), bot.agent_version)) {
+      secTrend = h('section', { class: 'ed-sec', id: 'set-c5trend' }, trHead,
+        h('div', { class: 'group' }, viewOnly
+          ? h('p', { class: 'muted group-note' }, 'บอทนี้ยังไม่มีค่านี้ (มีตั้งแต่ EA v3.08 กับแอป Dobby 1.3.2)')
+          : callout('info', 'ต้องอัปเดต EA เป็น v3.08 และแอป Dobby 1.3.2 ก่อน',
+            h('p', null, `บอทนี้รายงาน EA ${eaVer() || 'ไม่ทราบรุ่น'} แอป ${bot.agent_version || 'ไม่ทราบรุ่น'} ติดตั้งแอปใหม่ก่อน แล้วค่อยเปลี่ยน EA บนกราฟเป็น Dobby3_v308 ตอนไม่มีไม้เปิด ส่วนนี้จะกดเลือกได้เมื่อบอทรายงานรุ่นใหม่ทั้งสองตัว`))));
+    } else {
+      const trSeg = reg(segmented({
+        label: 'เทรนด์ที่ C5G ใช้เข้าไม้', wide: true, disabled: locked,
+        get: () => (v.InpC5_M15Trend ? 1 : 0), set: (m) => { v.InpC5_M15Trend = !!m; onChange(); },
+        options: [{ value: 0, label: 'H4 อย่างเดียว (ค่าเดิม)' }, { value: 1, label: 'H4 หรือ 15 นาที' }],
+      }));
+      const trText = h('p', { class: 'hint' });
+      trText.update = () => {
+        trText.textContent = v.InpC5_M15Trend
+          ? 'C5G เข้าได้เมื่อเทรนด์ 4 ชั่วโมงเห็นด้วย หรือเมื่อแท่งสัญญาณปิดอยู่ฝั่งเดียวกับเส้น EMA50 ของกราฟ 15 นาที (ซื้อ: ปิดเหนือเส้น ขาย: ปิดใต้เส้น) จึงมีไม้ที่สวนเทรนด์ 4 ชั่วโมงเพิ่มเข้ามา ราว 9 ไม้ต่อเดือน ผล Strategy Tester ปี 2026 ด้วย tick จริง: กำไรรวมมากขึ้น แต่ครึ่งปีแรกแย่ลง ขาดทุนต่อเนื่องลึกขึ้นราว 36% และชนเพดานขาดทุนรายวันบ่อยขึ้น ยังไม่แนะนำให้เปิด'
+          : 'C5G เข้าเฉพาะเมื่อเทรนด์ 4 ชั่วโมงเห็นด้วย เป็นค่าที่ใช้มาตลอด';
+      };
+      reg(trText);
+      secTrend = h('section', { class: 'ed-sec', id: 'set-c5trend' }, trHead,
+        h('div', { class: 'group' }, setRow(h('span', { class: 'set-label' }, 'เทรนด์ที่ใช้'), [], trSeg), trText));
+    }
+
     // --- C5G: a signal bar that closes a few cents on the wrong side of VWAP (EA v3.07 InpC5_VwapTol, r51)
     let secVwap;
     const vwHead = secHead('C5G: ไม้ที่ปิดก้ำกึ่งเส้น VWAP',
@@ -594,7 +621,7 @@ export async function render(root, ctx) {
           h('p', { class: 'muted small' }, viewOnly ? `ค่าที่บอทของ ${ownerName} ใช้อยู่ ดูอย่างเดียว แก้ไม่ได้` : B.readOnly ? 'ค่าที่บอทรุ่นนี้รายงานมา' : 'แก้ได้หลายอย่าง แล้วกด "บันทึกและส่งให้บอท" ที่แถบด้านล่างครั้งเดียว')),
         helpBtn('settings')),
       roBox,
-      h('div', { class: `editor-body${ro ? ' readonly' : ''}` }, secMoney, secStrat, secLock, secCap, secRunner, secVwap, advBox),
+      h('div', { class: `editor-body${ro ? ' readonly' : ''}` }, secMoney, secStrat, secLock, secCap, secRunner, secTrend, secVwap, advBox),
       tools);
     for (const u of updaters) u.update();
     editorBox.querySelector('.editor-body').classList.toggle('readonly', locked());

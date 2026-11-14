@@ -3420,7 +3420,7 @@ def run_selftest(out_png, data_dir):
               len(reg) == 1 and des.get("live") is True and des.get("control") == {
                   "mode": "run", "allow_long": True, "allow_short": True} and des.get("blackouts") == [])
         check("params = the full v3.04 remote key set of the settings (runner keys are the website's)",
-              list(params) == [k for k in da.REMOTE_KEYS if k not in da.V305_KEYS and k not in da.V307_KEYS] and
+              list(params) == [k for k in da.REMOTE_KEYS if k not in da.V305_KEYS + da.V307_KEYS + da.V308_KEYS] and
               params["InpLotsA"] == 0.03 and params["InpVirtualStart"] == 300.0 and params["InpLock1Enable"] is True)
         check("params pass the agent's own check with the chosen limits",
               not da.check_params(params, da.get_limits(ui.cfg))[1])

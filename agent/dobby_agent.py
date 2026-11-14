@@ -46,7 +46,7 @@ try:
 except ImportError:  # only the real HTTP transport needs it; the tests inject a fake transport
     requests = None
 
-AGENT_VERSION = "1.3.1"
+AGENT_VERSION = "1.3.2"
 
 LOG = logging.getLogger("dobby_agent")
 LOG.addHandler(logging.NullHandler())
@@ -183,6 +183,8 @@ REMOTE_PARAMS = [
     # v3.07: C5G VWAP tolerance ($ the signal close may sit on the wrong side of VWAP; 0 = v3.06). An EA below 3.07
     # rejects the key, so it leaves the file for such an EA (drop_v305_keys) like the v3.05 keys do.
     ("InpC5_VwapTol", "float", 0.0, 0.5),
+    # v3.08: C5G may also enter with the M15 EMA trend although H4 disagrees (false = H4 only). Dropped for EA < 3.08.
+    ("InpC5_M15Trend", "bool", None, None),
     ("cap_reset", "token", None, None),
 ]
 REMOTE_SPEC = dict((k, (kind, lo, hi)) for k, kind, lo, hi in REMOTE_PARAMS)
@@ -192,6 +194,8 @@ V305_KEYS = ("InpRunnerEnable", "InpRunner_A", "InpRunner_NY", "InpRunner_C5G", 
 V305_MIN_EA = (3, 5)                # the first EA that knows the keys above
 V307_KEYS = ("InpC5_VwapTol",)
 V307_MIN_EA = (3, 7)                # the first EA that knows InpC5_VwapTol
+V308_KEYS = ("InpC5_M15Trend",)
+V308_MIN_EA = (3, 8)                # the first EA that knows InpC5_M15Trend
 TOKEN_WINDOW_S = 48 * 3600          # a cap_reset token must be within 48 h of the agent's UTC clock
 
 
@@ -824,6 +828,8 @@ def drop_v305_keys(params, ea_version):
         drop.update(V305_KEYS)
     if t is None or t < V307_MIN_EA:          # v3.07: the C5G VWAP tolerance key, same rule one version later
         drop.update(V307_KEYS)
+    if t is None or t < V308_MIN_EA:          # v3.08: the C5G H4-or-M15 switch
+        drop.update(V308_KEYS)
     dropped = [k for k in REMOTE_KEYS if k in drop and k in params]
     if not dropped:
         return params, []

@@ -1063,3 +1063,30 @@ website says so next to the switch.
   the EA keeps the value it has.
 - ตั้งค่าบอท: section "C5G: ไม้ที่ปิดก้ำกึ่งเส้น VWAP" (`#set-vwap`): ไม่เปิด (ค่าเดิม) / เปิด + "ปิดเลยเส้นไปอีกฝั่งได้ไม่เกิน"
   0.05..0.50 step 0.05 (first switch-on 0.15, the 13 Nov bar needed > 0.11). An older bot gets an update callout.
+
+## 14. EA v3.08: C5G "H4 or M15" trend switch (2026-11-14, owner's request)
+Research r52 (2026, vs live RL85, 19 trend gates for C5G): one cell passed, H4|M15 = C5G may enter when the H4 trend
+agrees OR the signal bar closes on the trade side of EMA50 on M15 (D +1397 / V1 +1358 / V2 +957 vs +1238 / +901 / +737,
+DD 109 vs 120, 8 of 10 months, P 0.02; about 27 % more C5G trades). The Strategy Tester with real ticks did NOT confirm it
+(mt5/tester PARITY9: net +435 but Jan-Jun -84, max DD 124 -> 169, day-cap days 4 -> 10), so the website advises against
+switching it on. The owner wants it as a web switch. v3.08 = v3.07
++ two inputs; with the switch off it trades exactly like v3.07.
+
+### 14.1 EA inputs
+- `InpC5_M15Trend` bool, default false, remote allow-listed (SPEC 4.2). true: C5G long also when `close > EMA(M15)`,
+  short also when `close < EMA(M15)` at the signal bar, although the H4 trend disagrees. Every other C5G condition is
+  unchanged; A_new and NY keep the H4 trend. When only the M15 trend let the bar through, the SIGNAL note ends with
+  `(M15 trend: close vs EMA50 <value>, H4 trend <-1|0|1>)`.
+- `InpC5_M15EMA` int, default 50, 10..200, local only (not remote): EMA on M15 closes, seeded with the first close of
+  the loaded window (>= 600 bars).
+- Status JSON (schema 7 unchanged): `params.c5g_m15_trend`, and `remote.effective.InpC5_M15Trend`.
+
+### 14.2 App / agent 1.3.2
+`REMOTE_PARAMS` gains `("InpC5_M15Trend", "bool")` after `InpC5_VwapTol` (cap_reset stays last); `V308_KEYS` are dropped
+for an EA below 3.08. The app's own settings and .set preset never carry the key.
+
+### 14.3 Website
+`params.js`: `InpC5_M15Trend` (remote, since 3.08, app 1.3.2) and `InpC5_M15EMA` (local, advanced);
+`m15TrendSupported(ea, app)`; `unsupportedKeys` leaves the key out unless EA >= 3.08 AND app >= 1.3.2.
+ตั้งค่าบอท: section "C5G: เทรนด์ที่ใช้เข้าไม้" (`#set-c5trend`): H4 อย่างเดียว (ค่าเดิม) / H4 หรือ 15 นาที. An older
+bot gets an update callout. Shown in "ค่าที่บอทใช้อยู่ตอนนี้" only when on.
